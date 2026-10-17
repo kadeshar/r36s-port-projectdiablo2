@@ -1,32 +1,32 @@
-# AGENTS.md — Project Diablo 2 Port na konsolę R36S
+# AGENTS.md — Project Diablo 2 Port for R36S Console
 
-Niniejszy dokument stanowi kompendium wiedzy architektonicznej, technicznej i operacyjnej dla agentów AI oraz deweloperów pracujących nad portem gry **Project Diablo 2 (Diablo II: Lord of Destruction)** na konsolę retro **R36S**.
+This document serves as an architectural, technical, and operational knowledge base for AI agents and developers working on the **Project Diablo 2 (Diablo II: Lord of Destruction)** port for the **R36S** retro handheld console.
 
 ---
 
-## 1. Specyfikacja sprzętowa urządzenia docelowego (R36S)
+## 1. Hardware Specification of Target Device (R36S)
 
-Konsola R36S to budżetowy handheld oparty na platformie Rockchip RK3326. Wszystkie decyzje inżynieryjne muszą uwzględniać następujące ograniczenia:
+The R36S console is a budget handheld based on the Rockchip RK3326 platform. All engineering decisions must take the following hardware constraints into account:
 
-| Komponent | Specyfikacja | Wpływ na architekturę |
+| Component | Specification | Architectural Impact |
 |---|---|---|
-| **SoC** | Rockchip RK3326 | Układ 64-bitowy z 2018 roku |
-| **CPU** | 4x ARM Cortex-A35 @ 1.30 GHz | Rdzenie energooszczędne ARMv8-A (in-order execution, brak predykcji spekulacyjnej o dużej głębokości, małe cache L1/L2). Każdy cykl CPU jest na wagę złota. |
-| **GPU** | ARM Mali-G31 MP2 (Bifrost v1) | Obsługa OpenGL ES 2.0 / 3.0, Vulkan 1.0. **Brak sprzętowego desktopowego OpenGL (GLX)** w 32-bitowym userlandzie. |
-| **RAM** | 1024 MB LPDDR3 (współdzielony) | Ekstremalnie ciasny budżet pamięci. Pomiędzy systemem, Westonem, Xwaylandem i Wine zostaje ok. 500–600 MB na grę. Swapowanie na wolną kartę microSD zabija płynność. |
-| **Ekran** | 3.5" IPS LCD, 640×480 (4:3) | Interfejs MIPI DSI, bufor klatek sterowany przez `/dev/dri/card0` (Direct Rendering Manager). |
-| **Audio** | Rockchip RK817 (I2S Codec) | Węzły ALSA: `/dev/snd/pcmC0D0p` oraz `/dev/snd/controlC0`. Wymaga zgodności z 64-bitowym sterownikiem jądra. |
-| **Wejścia** | Gamepad zintegrowany (evdev) | 2 analogi, D-Pad, A/B/X/Y, L1/R1, L2/R2, Select, Start, L3, R3, Menu. Kody sprzętowe: Select `0x2C0`, Start `0x2C1`, L3 `0x2C2`, R3 `0x2C3`, Menu `0x2C4`. |
-| **OS / Kernel** | ArkOS / Linux 4.4.189+ aarch64 | Jądro 64-bitowe, przestrzeń użytkownika hybrydowa (biblioteki systemowe AArch64 oraz multiarch ARMHF 32-bit). Środowisko uruchomieniowe PortMaster. |
+| **SoC** | Rockchip RK3326 | 64-bit chip from 2018 |
+| **CPU** | 4x ARM Cortex-A35 @ 1.30 GHz | Low-power ARMv8-A cores (in-order execution, shallow speculative execution, small L1/L2 caches). Every CPU cycle is precious. |
+| **GPU** | ARM Mali-G31 MP2 (Bifrost v1) | OpenGL ES 2.0 / 3.0, Vulkan 1.0 support. **No hardware desktop OpenGL (GLX)** in 32-bit userland. |
+| **RAM** | 1024 MB LPDDR3 (shared) | Extremely tight memory budget. Between the OS, Weston, Xwayland, and Wine, approx. 500–600 MB remains for the game. Swapping to a slow microSD card destroys frame pacing. |
+| **Display** | 3.5" IPS LCD, 640×480 (4:3) | MIPI DSI interface, framebuffer controlled via `/dev/dri/card0` (Direct Rendering Manager). |
+| **Audio** | Rockchip RK817 (I2S Codec) | ALSA device nodes: `/dev/snd/pcmC0D0p` and `/dev/snd/controlC0`. Requires compatibility with the 64-bit kernel driver. |
+| **Inputs** | Integrated Gamepad (evdev) | 2 analog sticks, D-Pad, A/B/X/Y, L1/R1, L2/R2, Select, Start, L3, R3, Menu. Hardware evdev codes: Select `0x2C0`, Start `0x2C1`, L3 `0x2C2`, R3 `0x2C3`, Menu `0x2C4`. |
+| **OS / Kernel** | ArkOS / Linux 4.4.189+ aarch64 | 64-bit kernel, hybrid userland (AArch64 system libraries and multiarch ARMHF 32-bit). PortMaster runtime environment. |
 
 ---
 
-## 2. Architektura oprogramowania (Stos uruchomieniowy)
+## 2. Software Architecture (Runtime Stack)
 
-Gra jest 32-bitową aplikacją Windows x86. Nie ma możliwości skompilowania jej natywnie na ARM (zamknięty kod źródłowy Blizzard / PD2). Cały stos opiera się na wydajnej emulacji w przestrzeni użytkownika Linux:
+The game is a 32-bit Windows x86 application. Native ARM compilation is impossible due to proprietary Blizzard / PD2 source code. The entire runtime stack relies on efficient userland emulation on Linux:
 
 ```
-[ Gra: Game.exe -ddraw (Win32 x86) ]
+[ Game: Game.exe -ddraw (Win32 x86) ]
           │
           ▼
 [ DirectDraw Wrapper: cnc-ddraw (ddraw.dll x86) ]
@@ -39,7 +39,7 @@ Gra jest 32-bitową aplikacją Windows x86. Nie ma możliwości skompilowania je
           │
     ┌─────┴─────────────────────────┐
     ▼                               ▼
-[ Grafika ]                     [ Audio ]
+[ Graphics ]                    [ Audio ]
 Wine X11 Window                 winealsa.drv
     │                               │
 Xwayland (DISPLAY=:0)           compat/alsa-legacy-armhf
@@ -49,143 +49,162 @@ Weston (wp_weston kiosk)            │
     │
 Mali-G31 GPU / KMS DRM
     │
-[ Matryca LCD 640x480 ]
+[ 640x480 LCD Panel ]
 ```
 
 ---
 
-## 3. Podsystem graficzny i reguły wyświetlania
+## 3. Graphics Subsystem and Display Rules
 
-### A. Dlaczego profil GDI jest oficjalnym trybem produkcyjnym?
-- W trybie **GDI** ([`Project Diablo 2.sh`](file:///C:/AI%20fast/R36S/github/sdcard/ports/Project%20Diablo%202.sh)):
-  1. `weston-session.sh` startuje kompozytor z flagami:
+### A. Why the GDI Profile is the Official Production Mode
+- In **GDI** mode ([`Project Diablo 2.sh`](sdcard/ports/Project%20Diablo%202.sh)):
+  1. `weston-session.sh` launches the compositor with flags:
      `-B drm --drm-device card0 --renderer=gl`
-     oraz preinstalowaną biblioteką `crusty_gbm`.
-  2. Kompozytor Weston przejmuje rolę **DRM Master** na `/dev/dri/card0` i używa 64-bitowego sterownika GPU Mali do wyświetlania obrazu na LCD.
-  3. Gra i `cnc-ddraw` rysują klatkę programowo do bufora DIB (GDI), który przez X11/Xwayland trafia do Westona. Weston sprzętowo skaluje bufor do 640×480 i wyświetla na matrycy.
-  4. **Ten tryb ZAWSZE gwarantuje stabilny obraz.**
+     along with the pre-installed `crusty_gbm` library.
+  2. The Weston compositor assumes the role of **DRM Master** on `/dev/dri/card0` and utilizes the 64-bit Mali GPU driver to display the image on the LCD panel.
+  3. The game and `cnc-ddraw` render frames in software into a DIB buffer (GDI), which is passed through X11/Xwayland to Weston. Weston scales the buffer in hardware to 640×480 and outputs it to the display.
+  4. **This mode ALWAYS guarantees a stable, tear-free image.**
 
-### B. Krytyczny błąd: Czarny ekran przy profilu OpenGL
-- **Co się działo:** Po wybraniu profilu `opengl` gra uruchamiała się, grało audio, ale ekran był czarny.
-- **Przyczyna w kodzie:** W `weston-session.sh` profil `opengl` wymuszał:
+### B. Critical Bug: Black Screen with OpenGL Profile
+- **Observed Behavior:** Selecting the `opengl` profile resulted in the game starting and audio playing normally, but the screen stayed completely black.
+- **Root Cause in Code:** In `weston-session.sh`, the `opengl` profile enforced:
   `weston_args=(-B headless --renderer=noop);preload=;backendlib=`
-  Tryb `headless` z rendererem `noop` **nie otwiera wyjścia DRM i porzuca wszystkie ramki**.
-- **Wniosek architektoniczny:** Na konsoli R36S kompozytor Weston **nigdy nie może działać w trybie headless/noop**, chyba że istnieje weryfikowalny natywny renderer KMS scanout. Ponieważ ArkOS nie posiada 32-bitowych sterowników GLX dla Mali, standardowy profil OpenGL z cnc-ddraw nie może wyświetlać obrazu bez aktywnego kompozytora DRM.
+  The `headless` mode with a `noop` renderer **does not open the DRM display device and drops all presented frames**.
+- **Architectural Takeaway:** On the R36S console, the Weston compositor **must never run in headless/noop mode**, unless a verified native KMS scanout renderer exists. Because ArkOS lacks 32-bit GLX drivers for the Mali GPU, standard OpenGL in cnc-ddraw cannot render to the screen without an active DRM compositor.
 
-### C. Zaawansowany wariant GPU (GLES2)
-- W folderze `compat/gles2-renderer/` znajduje się eksperymentalny build `ddraw.dll` zoptymalizowany pod kątem shaderów GLES2 / GLSL 1.10 (uruchamiany przez [`Project Diablo 2 - GPU.sh`](file:///C:/AI%20fast/R36S/github/sdcard/ports/Project%20Diablo%202%20-%20GPU.sh)).
-- Przenosi on konwersję palety kolorów 8-bit na GPU, odciążając CPU z ręcznego przeliczania barw dla każdej klatki.
+### C. Advanced GPU Variant (GLES2)
+- The `compat/gles2-renderer/` directory contains an experimental `ddraw.dll` build optimized for GLES2 / GLSL 1.10 shaders (launched via [`Project Diablo 2 - GPU.sh`](sdcard/ports/Project%20Diablo%202%20-%20GPU.sh)).
+- It offloads 8-bit palette color conversion to the GPU, relieving the CPU from calculating color transforms per-frame in software.
 
 ---
 
-## 4. Podsystem dźwięku (ALSA / DirectSound)
+## 4. Audio Subsystem (ALSA / DirectSound)
 
-### A. Problem jądra 64-bit vs biblioteka 32-bit (Błąd ENOTTY)
-- Sterownik audio jądra RK3326 oczekuje 32-bitowego `time_t` w strukturze `snd_pcm_sync_ptr` dla 32-bitowych procesów (`ioctl 0xC0844123`).
-- Nowoczesne dystrybucyjne wersje `libasound.so.2` kompilowane są z 64-bitowym `time_t` (time64, `ioctl 0xC0884123`), co jądro odrzucało błędem `-25 ENOTTY`.
-- **Rozwiązanie:** W `compat/alsa-legacy-armhf/libasound.so.2` dostarczana jest wersja `alsa-lib 1.2.8` skompilowana bez flag time64, preładowana w locie do RAM (`$PD2_WORK/.alsa-legacy-armhf`).
+### A. 64-bit Kernel vs 32-bit Userland Library (ENOTTY Error)
+- The RK3326 kernel audio driver expects a 32-bit `time_t` in the `snd_pcm_sync_ptr` structure for 32-bit processes (`ioctl 0xC0844123`).
+- Modern Linux distribution builds of `libasound.so.2` are compiled with 64-bit `time_t` (time64, `ioctl 0xC0884123`), which the kernel rejected with error `-25 ENOTTY`.
+- **Solution:** A dedicated build of `alsa-lib 1.2.8` compiled without time64 flags is provided in `compat/alsa-legacy-armhf/libasound.so.2`, preloaded on the fly into RAM (`$PD2_WORK/.alsa-legacy-armhf`).
 
-### B. Problem zacinania dźwięku (Audio Stutter / Underruns) i jego rozwiązanie
-- Workaround kierował wyjście ALSA bezpośrednio do surowego urządzenia sprzętowego:
+### B. Audio Stutter / Underruns Issue and Its Solution
+- Initial workarounds routed ALSA directly to the raw hardware node:
   `slave.pcm "hw:CARD=rk817...,DEV=0"`
-- Surowe `hw:` ma mały bufor sprzętowy (~20 ms). Podczas obciążenia emulacji Box86 bufor opróżniał się, powodując trzaski i rwanie dźwięku.
-- **Kluczowe poprawki wdrożone w `run-game.sh`:**
-  1. `export SDL_AUDIODRIVER=dummy` — uniemożliwia bibliotekom SDL2 blokowanie węzła ALSA przed Wine.
-  2. Strojenie rejestru Wine DirectSound:
-     - `HelBuflen = 8192` (bufor emulacji DirectSound powiększony do ~90 ms zapasu).
-     - `MaxHardwareChannels = 16` (ograniczenie liczby miksowanych kanałów z 32/64 do 16, oszczędzające do 40% mocy CPU).
-     - `DefaultSampleRate = 44100` (dopasowanie częstotliwości próbkowania, brak programowego resamplingu w locie).
-  3. W samej grze opcja **Environmental Effects (EAX 3D)** musi pozostać **WYŁĄCZONA**.
+- The raw `hw:` node has a tiny hardware buffer (~20 ms). Under high Box86 emulation load, the buffer ran dry, causing crackling, stutter, and underruns.
+- **Key fixes implemented in `run-game.sh`:**
+  1. `export SDL_AUDIODRIVER=dummy` — prevents SDL2 companion libraries from locking the ALSA node away from Wine.
+  2. Wine DirectSound registry tuning:
+     - `HelBuflen = 8192` (DirectSound emulation buffer increased to ~90 ms headroom).
+     - `MaxHardwareChannels = 16` (capped mixed software channels from 32/64 down to 16, saving up to 40% CPU load).
+     - `DefaultSampleRate = 44100` (matches native sample rate, eliminating on-the-fly software resampling).
+  3. Inside the game options, **Environmental Effects (EAX 3D)** must remain **DISABLED**.
 
 ---
 
-## 5. Optymalizacja wydajności CPU (Box86 Dynarec)
+## 5. CPU Performance Optimization (Box86 Dynarec)
 
-Procesor Cortex-A35 jest wąskim gardłem. Aby uzyskać płynną rozgrywkę w Diablo II (zamiast początkowych 10–15 FPS), launcher produkcyjny ustawia:
+The Cortex-A35 processor is the primary bottleneck. To achieve smooth gameplay in Diablo II (improving over the baseline 10–15 FPS), the production launcher sets:
 
 ```bash
 export BOX86_DYNAREC=1
-export BOX86_DYNAREC_BIGBLOCK=2     # Duże bloki podstawowe translacji JIT
-export BOX86_DYNAREC_FORWARD=256    # Głębokie skanowanie skoków w przód
-export BOX86_DYNAREC_FASTROUND=1    # Sprzętowe instrukcje zaokrąglania ARM
-export BOX86_DYNAREC_FASTNAN=1      # Szybka obsługa IEEE NaN
-export BOX86_DYNAREC_SAFEFLAGS=1    # Bezpieczne flagi procesora (nie wyłączać dla Diablo!)
-export BOX86_DYNAREC_STRONGMEM=0    # Luźny model pamięci (brak niepotrzebnych barier)
-export BOX86_DYNAREC_X87DOUBLE=0    # Użycie sprzętowego NEON zamiast emulacji 80-bit x87
+export BOX86_DYNAREC_BIGBLOCK=2     # Large JIT translation basic blocks
+export BOX86_DYNAREC_FORWARD=256    # Deep forward jump lookahead
+export BOX86_DYNAREC_FASTROUND=1    # Hardware ARM rounding instructions
+export BOX86_DYNAREC_FASTNAN=1      # Fast IEEE NaN handling
+export BOX86_DYNAREC_SAFEFLAGS=1    # Safe processor flags (do not disable for Diablo!)
+export BOX86_DYNAREC_STRONGMEM=0    # Relaxed memory ordering model (no unnecessary barriers)
+export BOX86_DYNAREC_X87DOUBLE=0    # Hardware NEON usage instead of 80-bit x87 emulation
 ```
 
-Dodatkowo przed uruchomieniem gry obniżany jest współczynnik swapowania:
+Additionally, memory swappiness is lowered before launching the game:
 ```bash
 sysctl -w vm.swappiness=10
 sync; echo 3 > /proc/sys/vm/drop_caches
 ```
-Zapobiega to dławieniu systemu przez zrzucanie stron pamięci RAM na kartę microSD.
+This prevents the operating system from stalling due to swapping RAM pages out to the slow microSD card.
 
 ---
 
-## 6. Struktura plików w repozytorium
+## 6. Repository File Structure
 
 ```
-github/
-├── AGENTS.md                  # Niniejszy dokument
-├── MEMORY.md                  # Chronologiczna historia debugowania i testów
-├── README.md                  # Główny opis projektu
-├── runtime-manifest.json      # Przypięte hashe i rozmiary pobieranych runtime'ów
-├── runtime-lock.json          # Integralność plików binarnych
-├── release-files.json         # Wykaz plików dystrybucyjnych
+.
+├── .agents/                   # Custom agent configurations and skills
+│   └── skills/
+│       └── caveman/           # Mandatory caveman token efficiency skill (SKILL.md)
+├── AGENTS.md                  # This architectural guide and AI operational contract
+├── docs/                      # Central documentation directory (no loose .md in sdcard/ports)
+│   ├── README.md              # Documentation index and overview
+│   ├── PORT-README.md         # Detailed port manual and historical changelog
+│   ├── DIAGNOSTICS-1.md       # Diagnostic test suite procedures (tests A–F)
+│   └── GPU-RUNTIME-1.md       # GPU GLES2 runtime test documentation
+├── MEMORY.md                  # Chronological debugging history and test records
+├── README.md                  # Project overview and setup documentation
+├── runtime-manifest.json      # Pinned hashes and sizes of downloaded runtimes
+├── runtime-lock.json          # Binary file integrity manifest
+├── release-files.json         # Distribution files specification
 ├── sdcard/
-│   └── ports/
-│       ├── Project Diablo 2.sh              # GŁÓWNY LAUNCHER PRODUKCYJNY (GDI + Dynarec)
+│   └── ports/                 # Clean distribution payload for handheld microSD
+│       ├── Project Diablo 2.sh              # MAIN PRODUCTION LAUNCHER (GDI + Dynarec)
 │       ├── Project Diablo 2 - Performance GDI.sh
-│       ├── Project Diablo 2 - GPU.sh        # Alternatywny launcher GLES2 shader
+│       ├── Project Diablo 2 - GPU.sh        # Alternative GLES2 shader launcher
 │       ├── Project Diablo 2 - Performance OpenGL.sh
 │       └── projectdiablo2/
-│           ├── port.json                    # Metadane PortMaster
-│           ├── gameinfo.xml                 # Opis i grafika EmulationStation
-│           ├── scripts/                     # Skrypty orkiestracji (Bash, Python)
-│           │   ├── run-game.sh              # Przygotowanie Wine, rejestru i start gry
-│           │   ├── weston-session.sh        # Kompozytor Wayland/Weston
-│           │   ├── layout.py                # Walidacja ścieżek, prefiksu i INI
-│           │   ├── audio_config.py          # Konfiguracja routingu ALSA
+│           ├── port.json                    # PortMaster package metadata
+│           ├── gameinfo.xml                 # EmulationStation metadata and description
+│           ├── scripts/                     # Orchestration scripts (Bash, Python)
+│           │   ├── run-game.sh              # Wine, registry preparation and game execution
+│           │   ├── weston-session.sh        # Wayland/Weston compositor orchestration
+│           │   ├── layout.py                # Path validation, prefix and INI verification
+│           │   ├── audio_config.py          # ALSA routing configuration
 │           │   └── ...
-│           ├── compat/                      # Binaria i biblioteki pomocnicze
+│           ├── compat/                      # Compatibility binaries and helper libraries
 │           │   ├── alsa-legacy-armhf/       # libasound.so.2 (time32)
-│           │   ├── box86-a35/               # Box86 zoptymalizowany pod Cortex-A35
-│           │   ├── cnc-ddraw/               # ddraw.dll z usuniętym glGetTexImage
-│           │   ├── gles2-renderer/          # ddraw.dll z paletą na GPU
+│           │   ├── box86-a35/               # Cortex-A35 tuned Box86 build
+│           │   ├── cnc-ddraw/               # ddraw.dll with glGetTexImage removed
+│           │   ├── gles2-renderer/          # ddraw.dll with GPU palette offloading
 │           │   └── ...
-│           └── defaults/                    # Pliki konfiguracyjne gry i padów
-├── tools/                                   # Narzędzia kompilacji i pakowania
-│   ├── prepare.py                           # Budowanie paczek aktualizacji
-│   ├── build_cnc_ddraw_ogl.py               # Kompilacja ddraw.dll (MSVC)
-│   ├── build_box86_a35.py                   # Kompilacja Box86 A35
+│           └── defaults/                    # Default game configs and gamepad mappings
+├── tools/                                   # Compilation, packaging, and diagnostic tools
+│   ├── prepare.py                           # Update package builder
+│   ├── build_cnc_ddraw_ogl.py               # ddraw.dll build script (MSVC)
+│   ├── build_box86_a35.py                   # Box86 A35 build script
 │   └── ...
-└── tests/                                   # Zestaw 53 testów regresji i logiki
+└── tests/                                   # Regression and validation test suite
 ```
 
 ---
 
-## 7. Instrukcje operacyjne dla deweloperów i agentów
+## 7. Operational Instructions for Developers and Agents
 
-### Uruchomienie testów lokalnych:
+### Mandatory AI Agent Protocol: Caveman Skill Usage
+**All AI agent sessions operating in this repository MUST activate and strictly adhere to the `caveman` skill (`.agents/skills/caveman/SKILL.md`).**
+- **Token Efficiency & Brevity:** Eliminate conversational filler, pleasantries, hedging, and unnecessary verbiage. Deliver terse, dense, technically sound communication.
+- **Accuracy & Integrity:** Retain 100% technical accuracy, code syntax, exact error strings, command arguments, and markdown links. Code blocks and commit messages are never mangled.
+- **Persistence:** The caveman mode remains continuously active across all turns within the agent session unless the user explicitly requests normal mode.
+
+### Documentation Location Standard:
+- **No loose `.md` files in `sdcard/ports/`:** Handheld ROM partitions must contain only execution payloads, scripts, runtimes, and configs. All user-facing guides, diagnostic protocols, and changelogs must reside strictly within the root [`docs/`](docs/) directory.
+
+### Running Local Tests:
 ```bash
-# Testy konfiguracji i ścieżek:
+# Configuration and layout tests:
 python tests/test_layout.py
 
-# Testy launchera i menu:
+# Launcher and menu tests:
 python tests/test_opengl_entry_fix.py
 
-# Testy profilu GPU:
+# GPU profile tests:
 python tests/test_gpu_runtime.py
 ```
 
-### Zbudowanie paczki aktualizacyjnej:
+### Building the Update Package:
 ```bash
 python tools/prepare.py build-update
 ```
-Wynikowy plik ZIP tworzony jest w katalogu `dist/projectdiablo2-port-update.zip`.
+The resulting ZIP package is generated in `dist/projectdiablo2-port-update.zip`.
 
-### Zasady nienaruszalności kodu:
-1. **Nie zmieniaj `SAFEFLAGS=1` na `0` ani nie włączaj `CALLRET=1` w Box86** — Diablo II zawiera samomodyfikujący się kod (JIT wewnątrz silnika gry); agresywne flagi Box86 powodują natychmiastowe crashe podczas rzucania czarów.
-2. **Nigdy nie instaluj Wine jako root** i nie uruchamiaj gier z uprawnieniami roota — Westonpack wymaga separacji przestrzeni nazw użytkownika (`runuser`).
-3. **Plik `Project Diablo 2.sh` musi zawsze pozostać sprawdzoną wersją produkcyjną.** Eksperymenty należy wdrażać wyłącznie w osobnych plikach launcherów.
+### Rules of Code Integrity:
+1. **Never change `SAFEFLAGS=1` to `0` or enable `CALLRET=1` in Box86** — Diablo II contains self-modifying code (in-engine JIT); aggressive Box86 flags lead to immediate crashes during spell casting.
+2. **Never install Wine as root** or execute games with root privileges — Westonpack requires user namespace separation (`runuser`).
+3. **The file `Project Diablo 2.sh` must always remain the verified, stable production release.** Experimental tweaks must only be implemented in separate launcher files.
+4. **Mandatory Caveman Skill in AI Sessions:** Agents must strictly employ the `caveman` skill (`.agents/skills/caveman/SKILL.md`) to conserve context window tokens and maximize operational reasoning capacity.
+5. **Preserve Clean SD Card Payload:** Do not add loose `.md` files to `sdcard/ports/` or `sdcard/ports/projectdiablo2/`. Keep all documentation in [`docs/`](docs/).

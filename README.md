@@ -1,44 +1,45 @@
 # Project Diablo 2 — R36S Port (ArkOS / PortMaster)
 
-Prywatny, zoptymalizowany port gry **Project Diablo 2 (Diablo II: Lord of Destruction)** przygotowany dla konsoli przenośnej **R36S** (SoC Rockchip RK3326, 4x Cortex-A35, 1 GB RAM, ArkOS).
+Private, optimized port of **Project Diablo 2 (Diablo II: Lord of Destruction)** tailored for the **R36S** handheld retro gaming console (Rockchip RK3326 SoC, 4x Cortex-A35, 1 GB RAM, ArkOS).
 
-Projekt łączy środowisko **PortMaster**, kompozytor **Westonpack Wayland/X11**, translator instrukcji **Box86 JIT Dynarec**, warstwę **Wine 8.0 x86** oraz zmodyfikowany wrapper DirectDraw **cnc-ddraw**.
-
----
-
-## 🚀 Główne cechy wydania produkcyjnego
-
-- **Stabilny obraz na ekranie LCD 640×480:** Kompozytor Weston zoptymalizowany pod kątem DRM/KMS z akceleracją Mali-G31 GPU i bezpiecznym renderowaniem GDI / DirectDraw.
-- **Czysty dźwięk bez zacinania:** Dedykowana biblioteka ALSA time32 (`compat/alsa-legacy-armhf/libasound.so.2`) eliminująca błąd `ENOTTY` na 64-bitowym jądrze oraz powiększony bufor DirectSound (`HelBuflen=8192`, limit kanałów do 16) eliminujący underruny ALSA.
-- **Optymalizacja wydajności CPU (Box86 Cortex-A35):** Włączone zaawansowane flagi kompilacji JIT (`BIGBLOCK=2`, `FORWARD=256`, `FASTROUND=1`, `FASTNAN=1`, `X87DOUBLE=0`).
-- **Ochrona pamięci RAM:** Obniżony współczynnik swapowania (`vm.swappiness=10`) i zwalnianie buforów systemowych zapobiegające zrzucaniu pamięci gry na wolną kartę microSD.
-- **Pełne sterowanie kontrolerem:** Zintegrowany translator wirtualnego kontrolera Xbox 360 z obsługą wszystkich 17 przycisków i analogów R36S (w tym L3, R3, Select, Start i FN/Menu).
-- **Klimatyczne menu startowe:** Stylizowane menu w klimacie Diablo II z wyborem rozdzielczości (domyślnie 800×600 skalowane sprzętowo do 640×480) i licznika FPS.
-- **Eksperymentalny profil GPU (GLES2):** Osobny launcher [`Project Diablo 2 - GPU.sh`](file:///C:/AI%20fast/R36S/github/sdcard/ports/Project%20Diablo%202%20-%20GPU.sh) z dedykowanym shaderem palety 8-bit na GPU Mali.
+The project combines **PortMaster**, the **Westonpack Wayland/X11** compositor, the **Box86 JIT Dynarec** instruction translator, a **Wine 8.0 x86** layer, and a modified **cnc-ddraw** DirectDraw wrapper.
 
 ---
 
-## 📂 Struktura repozytorium
+## 🚀 Key Production Features
 
-- **[`AGENTS.md`](file:///C:/AI%20fast/R36S/github/AGENTS.md):** Kompendium wiedzy technicznej dla agentów AI i deweloperów (specyfikacja SoC RK3326, architektura stosu, zasady nienaruszalności kodu).
-- **[`MEMORY.md`](file:///C:/AI%20fast/R36S/github/MEMORY.md):** Pełna chronologiczna pamięć procesu badawczego i rozwiązywania problemów (brak dźwięku, czarny ekran, underruny audio, optymalizacja FPS).
-- **[`sdcard/ports/`](file:///C:/AI%20fast/R36S/github/sdcard/ports/):** Pliki przeznaczone do skopiowania na kartę SD konsoli:
-  - `Project Diablo 2.sh` — **Oficjalny launcher produkcyjny** (przetestowany na konsoli).
-  - `Project Diablo 2 - GPU.sh` — Alternatywny wariant ze sprzętowym shaderem GLES2.
-  - `Project Diablo 2 - Performance GDI.sh` — Bezpośredni start GDI z pominięciem menu.
-  - `projectdiablo2/` — Całe środowisko skryptowe, biblioteki kompatybilności i konfiguracje.
-- **[`tools/`](file:///C:/AI%20fast/R36S/github/tools/):** Skrypty budowania, kompilatory bibliotek (MSVC/GCC), narzędzia diagnostyczne i generator paczek aktualizacyjnych (`prepare.py`).
-- **[`tests/`](file:///C:/AI%20fast/R36S/github/tests/):** Oczyszczony zestaw 53 testów jednostkowych i integracyjnych (bez zbędnych plików tymczasowych).
+- **Stable Display on 640×480 LCD:** Weston compositor optimized for DRM/KMS with Mali-G31 GPU acceleration and safe GDI / DirectDraw rendering.
+- **Clean Audio Without Stuttering:** Dedicated ALSA time32 library (`compat/alsa-legacy-armhf/libasound.so.2`) eliminating the `ENOTTY` error on the 64-bit kernel, combined with an expanded DirectSound buffer (`HelBuflen=8192`, channel limit set to 16) preventing ALSA underruns.
+- **CPU Performance Optimization (Box86 Cortex-A35):** Enabled advanced JIT Dynarec compilation flags (`BIGBLOCK=2`, `FORWARD=256`, `FASTROUND=1`, `FASTNAN=1`, `X87DOUBLE=0`).
+- **RAM Protection:** Reduced swappiness (`vm.swappiness=10`) and system buffer cache flushing to prevent memory thrashing on slow microSD storage.
+- **Full Gamepad Controls:** Integrated virtual Xbox 360 controller translator supporting all 17 physical R36S buttons and analog sticks (including L3, R3, Select, Start, and FN/Menu).
+- **Themed Start Menu:** Diablo II styled start menu with resolution selection (default 800×600 hardware-scaled to 640×480) and optional FPS counter toggle.
+- **Experimental GPU Profile (GLES2):** Standalone launcher [`Project Diablo 2 - GPU.sh`](sdcard/ports/Project%20Diablo%202%20-%20GPU.sh) with a dedicated 8-bit palette shader executed directly on the Mali GPU.
 
 ---
 
-## 🛠️ Instalacja na konsoli R36S
+## 📂 Repository Structure
 
-### Wymagane pliki gry:
-Port wymaga oryginalnych plików gry **Diablo II: Lord of Destruction** (wersja 1.13c lub 1.14) z zainstalowanym modem **Project Diablo 2**.
+- **[`AGENTS.md`](AGENTS.md):** Architectural, technical, and operational knowledge base for AI agents and developers (RK3326 SoC specs, runtime stack architecture, rules of code integrity).
+- **[`MEMORY.md`](MEMORY.md):** Chronological log of research, diagnostics, and problem-solving (audio missing, black screen, audio underruns, FPS optimizations).
+- **[`docs/`](docs/):** Central documentation directory (diagnostic procedures, GPU runtime manuals, and full port documentation).
+- **[`sdcard/ports/`](sdcard/ports/):** Clean distribution files intended to be copied to the console's SD card:
+  - `Project Diablo 2.sh` — **Official production launcher** (tested on hardware).
+  - `Project Diablo 2 - GPU.sh` — Alternative variant with GLES2 hardware palette shader.
+  - `Project Diablo 2 - Performance GDI.sh` — Direct GDI launch bypassing the start menu.
+  - `projectdiablo2/` — Complete script runtime, compatibility libraries, and configuration files.
+- **[`tools/`](tools/):** Build scripts, library compilers (MSVC/GCC), diagnostic tools, and update package generator (`prepare.py`).
+- **[`tests/`](tests/):** Clean test suite of unit and integration tests.
 
-### Krok po kroku:
-1. Skopiuj zawartość folderu `sdcard/ports/` do katalogu `ports/` na karcie SD konsoli (partycja `EASYROMS` lub druga karta SD):
+---
+
+## 🛠️ Installation on R36S Console
+
+### Required Game Files:
+This port requires original game files from **Diablo II: Lord of Destruction** (version 1.13c or 1.14) with the **Project Diablo 2** mod installed.
+
+### Step by Step:
+1. Copy the contents of the `sdcard/ports/` directory to the `ports/` directory on your console SD card (`EASYROMS` partition or secondary SD card):
    ```
    roms/ports/
    ├── Project Diablo 2.sh
@@ -46,52 +47,52 @@ Port wymaga oryginalnych plików gry **Diablo II: Lord of Destruction** (wersja 
    ├── Project Diablo 2 - Performance GDI.sh
    └── projectdiablo2/
    ```
-2. Umieść pliki gry Diablo II oraz folder `ProjectD2` w katalogu:
+2. Place your Diablo II game files and the `ProjectD2` folder into:
    ```
    ports/projectdiablo2/gamedata/Diablo II/
    ```
-   *(upewnij się, że w środku znajdują się `Game.exe`, pliki `.mpq` oraz podfolder `ProjectD2`).*
-3. Włóż kartę do konsoli R36S, uruchom konsolę i wejdź do menu **Ports** w EmulationStation.
-4. Wybierz **Project Diablo 2**.
+   *(ensure that `Game.exe`, `.mpq` files, and the `ProjectD2` subfolder are present).*
+3. Insert the SD card into your R36S, power on the console, and navigate to the **Ports** section in EmulationStation.
+4. Launch **Project Diablo 2**.
 
 ---
 
-## 🎮 Sterowanie (R36S Gamepad)
+## 🎮 Controls (R36S Gamepad)
 
-| Przycisk R36S | Działanie w Diablo II / PD2 |
+| R36S Button | Diablo II / PD2 Function |
 |---|---|
-| **Lewy Analog** | Ruch kursorem myszy / postać |
-| **Prawy Analog** | Swobodne przesuwanie kursora |
-| **A** | Lewy przycisk myszy (atak podstawowy / podnoszenie przedmiotu) |
-| **X** | Prawy przycisk myszy (czar / atak dodatkowy) |
-| **B** | Zamknięcie okien / Anuluj / ESC |
-| **Y** | Bieg / Chód (Toggle Run) |
-| **D-Pad Lewo / Prawo** | Przełączanie pasów mikstur (1, 2, 3, 4) |
-| **D-Pad Góra / Dół** | Ekwipunek (I) / Karta postaci (C) |
-| **L1 / R1** | Przypisane czary funkcyjne (F1, F2...) / Przełączanie kart |
-| **L2 / R2** | Pokazywanie przedmiotów na ziemi (ALT) / Mapa (TAB) |
-| **Start** | Menu główne gry (ESC) / Zatwierdzenie |
-| **Select** | Przełączanie minimapy / Dodatkowe menu |
-| **L3 / R3** | Szybkie leczenie / Pomocnik FPS |
-| **FN / Menu** | Klawisz specjalny portu |
+| **Left Analog** | Mouse cursor movement / character |
+| **Right Analog** | Free mouse cursor movement |
+| **A** | Left Mouse Button (primary attack / pick up item) |
+| **X** | Right Mouse Button (spell / secondary attack) |
+| **B** | Close windows / Cancel / ESC |
+| **Y** | Run / Walk toggle |
+| **D-Pad Left / Right** | Potion belt slots (1, 2, 3, 4) |
+| **D-Pad Up / Down** | Inventory (I) / Character screen (C) |
+| **L1 / R1** | Assigned skill hotkeys (F1, F2...) / Tab switching |
+| **L2 / R2** | Show items on ground (ALT) / Map (TAB) |
+| **Start** | In-game menu (ESC) / Confirm |
+| **Select** | Toggle automap / Additional menu |
+| **L3 / R3** | Quick heal / FPS helper |
+| **FN / Menu** | Special port key |
 
 ---
 
-## 💡 Porady wydajnościowe w samej grze
+## 💡 In-Game Performance Tips
 
-1. **Efekty dźwiękowe 3D (Environmental Effects):**
-   - W menu gry wejdź w: **Options -> Sound Options**.
-   - Upewnij się, że opcja **Environmental Effects jest ODZNACZONA (wyłączona)**. Emulacja efektów EAX 3D na procesorach ARM powoduje gwałtowny spadek płynności.
-2. **Rozdzielczość:**
-   - Domyślna rozdzielczość 800×600 zapewnia najlepszy kompromis pomiędzy czytelnością interfejsu Project Diablo 2 a wydajnością sprzętowego skalera Mali na ekranie 640×480.
+1. **Environmental Effects (3D Audio):**
+   - In the game options, open **Options -> Sound Options**.
+   - Make sure **Environmental Effects is UNCHECKED (disabled)**. Emulating 3D EAX sound effects on ARM CPUs causes severe performance drops.
+2. **Resolution:**
+   - Default 800×600 resolution offers the optimal balance between Project Diablo 2 UI readability and hardware scaling performance of the Mali GPU on the 640×480 screen.
 
 ---
 
-## 📜 Licencje i podziękowania
+## 📜 Licenses and Credits
 
-Projekt korzysta z komponentów Open Source:
+This project utilizes Open Source components:
 - **Westonpack** (Wayland / Xwayland) — MIT License
-- **Box86** autorstwa Sébastien Chevalier (ptitSeb) — MIT License
+- **Box86** by Sébastien Chevalier (ptitSeb) — MIT License
 - **Wine** — LGPL v2.1+
-- **cnc-ddraw** autorstwa FunkyFr3sh — GNU General Public License v3.0
+- **cnc-ddraw** by FunkyFr3sh — GNU General Public License v3.0
 - **ALSA Library (alsa-lib)** — LGPL v2.1

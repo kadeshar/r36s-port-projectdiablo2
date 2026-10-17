@@ -1,6 +1,5 @@
 [
   "Project Diablo 2.sh",
-  "projectdiablo2/DIAGNOSTICS-1.md",
   "Project Diablo 2 - Performance GDI.sh",
   "Project Diablo 2 - Performance OpenGL.sh",
   "Project Diablo 2 - Test 1 GDI Baseline.sh",
@@ -63,7 +62,6 @@
   "projectdiablo2/scripts/xinput_result.py",
   "projectdiablo2/compat/xinput-probe/xinput-probe.exe",
   "projectdiablo2/defaults/controls-native.gptk",
-  "projectdiablo2/README.md",
   "projectdiablo2/port.json",
   "projectdiablo2/gameinfo.xml",
   "projectdiablo2/runtime-manifest.json",

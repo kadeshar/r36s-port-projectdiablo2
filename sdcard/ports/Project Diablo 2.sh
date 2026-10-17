@@ -26,15 +26,15 @@ case "$PD2_BIGBLOCK" in 1|2) ;; *) exit 1;; esac
 if [[ -n ${PD2_GAME_RESOLUTION:-} ]]; then export PD2_GAME_RESOLUTION; else unset PD2_GAME_RESOLUTION; fi
 fixed_message() { printf '%s\n' "$1" > /dev/tty0 2>/dev/null || printf '%s\n' "$1" >&2; }
 for cmd in python3 timeout setsid unshare flock mount umount mountpoint mkfifo ps readlink stat chgrp runuser; do
- command -v "$cmd" >/dev/null || { fixed_message 'PD2: brak wymaganego narzedzia systemowego.'; exit 1; }
+ command -v "$cmd" >/dev/null || { fixed_message 'PD2: missing required system tool.'; exit 1; }
 done
-[[ -f "$PD2_PORT/scripts/safe_log.py" ]] || { fixed_message 'PD2: niekompletna instalacja portu.'; exit 1; }
+[[ -f "$PD2_PORT/scripts/safe_log.py" ]] || { fixed_message 'PD2: incomplete port installation.'; exit 1; }
 export PD2_HOME="$HOME" PD2_USER="$(id -un)" PD2_STATE="$HOME/.local/share/pd2-r36s"
 # Never execute Wine as root; Options/Tools root explorers are not a game launcher.
-[[ $(id -u) != 0 ]] || { fixed_message 'PD2: uruchom z menu Ports jako zwykly uzytkownik, nie root.'; exit 1; }
+[[ $(id -u) != 0 ]] || { fixed_message 'PD2: launch from Ports menu as regular user, not root.'; exit 1; }
 mkdir -p "$PD2_STATE" || exit 1
 exec 9>"$PD2_STATE/session.lock"
-flock -n 9 || { fixed_message 'PD2: inna sesja portu juz dziala.'; exit 1; }
+flock -n 9 || { fixed_message 'PD2: another port session is already running.'; exit 1; }
 export PD2_RUN=$(mktemp -d /tmp/pd2-r36s.XXXXXXXX) || exit 1
 [[ "$PD2_RUN" == /tmp/pd2-r36s.* && -d "$PD2_RUN" && ! -L "$PD2_RUN" ]] || exit 1
 mkfifo -m600 "$PD2_RUN/log.pipe" || exit 1
@@ -77,12 +77,12 @@ pd2_port_cleanup() {
  exec 1>&3 2>&4
  for ((i=0;i<100;i++)); do kill -0 "$log_pid" 2>/dev/null || break; sleep 0.1; done
  kill -TERM "$log_pid" 2>/dev/null || true
- wait "$log_pid" || fixed_message 'PD2: zapis diagnostyki nie powiodl sie.'
+ wait "$log_pid" || fixed_message 'PD2: failed to write diagnostics.'
  # Leave only if an unmount failed. Never recurse into mounts during cleanup.
  if ! mountpoint -q "$PD2_RUN/weston" && ! mountpoint -q "$PD2_RUN/gamedata"; then
   [[ "$PD2_RUN" == /tmp/pd2-r36s.* && ! -L "$PD2_RUN" ]] && "${SUDO[@]}" rm -rf -- "$PD2_RUN"
  fi
- if [[ "$rc" != 0 ]]; then fixed_message 'PD2: start nieudany. Sprawdz projectdiablo2/logs; nie usuwaj danych ani zapisow.'; fi
+ if [[ "$rc" != 0 ]]; then fixed_message 'PD2: launch failed. Check projectdiablo2/logs; do not delete game data or saves.'; fi
  exit "$rc"
 }
 trap pd2_port_cleanup EXIT
