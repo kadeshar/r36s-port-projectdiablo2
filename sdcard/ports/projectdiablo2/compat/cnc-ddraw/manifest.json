@@ -1,0 +1,9 @@
+{
+  "version": "7.1.0.0",
+  "file": "ddraw.dll",
+  "size": 411648,
+  "sha256": "85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9",
+  "archive_sha256": "0b13ab89a64c9918189b1dadd449ef6ed3cb3b7b19cabd96d8adbd95505bb908",
+  "source_url": "https://github.com/FunkyFr3sh/cnc-ddraw/releases/download/v7.1.0.0/cnc-ddraw.zip",
+  "license": "MIT"
+}

@@ -1,0 +1,382 @@
+{
+  "wine-8.0-x86/bin/wmc": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/bin/widl": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/bin/wineserver": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/bin/wine-preloader": {
+    "machine": 3,
+    "bits": 32,
+    "needed": []
+  },
+  "wine-8.0-x86/bin/wine": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libpthread.so.0",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/bin/winedump": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/bin/wrc": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/bin/winegcc": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/bin/winebuild": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/winegstreamer.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libgstvideo-1.0.so.0",
+      "libgstaudio-1.0.so.0",
+      "libgstreamer-1.0.so.0",
+      "libgobject-2.0.so.0",
+      "libglib-2.0.so.0",
+      "libpthread.so.0",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/bcrypt.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/ntdll.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libpthread.so.0",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/nsiproxy.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/opengl32.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "win32u.so",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/win32u.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libpthread.so.0",
+      "libm.so.6",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/winealsa.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libasound.so.2",
+      "libpthread.so.0",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/dwrite.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/msv1_0.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/avicap32.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/wineusb.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libusb-1.0.so.0",
+      "libpthread.so.0",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/kerberos.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/localspl.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/dnsapi.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libresolv.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/ctapi32.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libdl.so.2"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/opencl.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libOpenCL.so.1",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/winex11.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "win32u.so",
+      "libXext.so.6",
+      "libX11.so.6",
+      "libpthread.so.0",
+      "libm.so.6",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/wpcap.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libpcap.so.0.8",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/winebus.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libudev.so.1",
+      "libpthread.so.0",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/crypt32.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/netapi32.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/winepulse.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libpulse.so.0",
+      "libpthread.so.0",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/mountmgr.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/ws2_32.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/secur32.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/qcap.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/libwine.so.1.0": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/winspool.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/capi2032.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "libcapi20.so.3"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/gphoto2.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libgphoto2.so.6",
+      "libgphoto2_port.so.12",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/odbc32.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libdl.so.2",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/sane.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "libsane.so.1",
+      "libc.so.6"
+    ]
+  },
+  "wine-8.0-x86/lib/wine/i386-unix/winevulkan.so": {
+    "machine": 3,
+    "bits": 32,
+    "needed": [
+      "ntdll.so",
+      "win32u.so",
+      "libpthread.so.0",
+      "libc.so.6"
+    ]
+  },
+  "box86": {
+    "machine": 40,
+    "bits": 32,
+    "needed": [
+      "libc.so.6",
+      "libm.so.6",
+      "libdl.so.2",
+      "librt.so.1",
+      "libpthread.so.0",
+      "libresolv.so.2",
+      "libgcc_s.so.1",
+      "ld-linux-armhf.so.3"
+    ]
+  }
+}

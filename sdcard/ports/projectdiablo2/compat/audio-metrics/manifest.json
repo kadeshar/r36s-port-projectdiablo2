@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "file": "libasound.so.2",
+  "size": 594668,
+  "sha256": "cbf5cb0457594b7c7a6ab5df598b5aa77bb891a9dfc3f8b197841a36be9266f8",
+  "upstream": {
+    "project": "alsa-lib",
+    "version": "1.2.8",
+    "source_sha256": "1ab01b74e33425ca99c2e36c0844fd6888273193bd898240fe8f93accbcbf347",
+    "source_url": "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.8.tar.bz2",
+    "license": "LGPL-2.1-or-later"
+  },
+  "base_provider": {
+    "file": "compat/alsa-legacy-armhf/libasound.so.2",
+    "sha256": "899e6f5164ab24fe2863aa22f102f3baa60dc4a0f9978e79ed4588fab57b78f8",
+    "relationship": "Same pinned ALSA source and configure/time32 ABI, source-instrumented derivative; stock binary unchanged"
+  },
+  "build": {
+    "command": "python -B tools/audio_metrics_build.py --prepare; docker run --rm -v ROOT:/src pd2-alsa-native-builder sh /src/tools/audio_metrics_build.sh; python -B tools/audio_metrics_build.py --finalize",
+    "inputs_sha256": {
+      "audio_metrics_build.py": "d07472877af6dfddcf58ad060648af2f2f71c74f25ff26a1c2b02497de7cf70e",
+      "audio_metrics_build.sh": "fd796bbfc2df0c53686665ecbb631dd7fe3c9f262f792b107b6112816ecac5ec",
+      "audio_metrics_core.h": "e3674747b87b0ee01f4b58aa5db88fe3cc60c3d211f3996d8c643c2e7d312f25",
+      "audio_metrics_api.h": "5b7ff326300e8c50b1362f5277cd8e5718070cfffcf15ece215dd2cb9938b9c3",
+      "audio_metrics_test.c": "f56fb7ef01b8cbb1f2411e0677c66f0b72f2a2f191ac37b15b88409dd9c8017e",
+      "audio_metrics_abi_test.c": "883a91f78d3242086da6da8dd85eeee7b3b6e5796bc0dc0ca199c6eb20f50d8c"
+    },
+    "prepared_inputs_sha256": "e2bb05ef48e3208d76455237cae511312d0cb60ae6f33e677692c009fb3a059b",
+    "cflags": "-Os -fno-ident (identical to stock compatibility provider)",
+    "source_patch_sha256": "267e289a0cdcf833f16cb005570af0e21d1fd154ccbec857e8cbc60e750be361",
+    "abi": "ELF32 ARM hard-float; time_t=4; sync_ptr=132; ioctl=0xc0844123",
+    "reproducibility": "Sources/options pinned; existing builder apt toolchain packages are not bit-reproducibly pinned"
+  },
+  "capture": {
+    "version": 1,
+    "slots_per_process": 8,
+    "bytes_per_process": 262144,
+    "interval_ms": 1000,
+    "transport": "Inherited O_NONBLOCK write-only anonymous pipe; dedicated writer thread",
+    "scope": "Top-level public ALSA playback PCM APIs in processes loading this library; nested plugin calls suppressed; first 8 successful opens per process",
+    "caveats": [
+      "Client-side negotiated PCM parameters, not necessarily hardware-slave parameters",
+      "EPIPE results and recover(-EPIPE) calls are observations, not unique underrun episodes",
+      "No audio samples, audible-quality verdict, or missing-data inference",
+      "Non-exec fork children disabled; exec loads initialize independently",
+      "Skipped try-lock updates/capacity tracked; abrupt termination can omit last snapshot"
+    ]
+  },
+  "tests": {
+    "arm_abi": "passed",
+    "versioned_exports": "identical to stock",
+    "r36s": "not run"
+  }
+}

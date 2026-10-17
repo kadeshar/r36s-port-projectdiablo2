@@ -1,0 +1,2775 @@
+--- a/src/render_ogl.c
++++ b/src/render_ogl.c
+@@ -1,1673 +1,150 @@
++/* SPDX-License-Identifier: MIT
++ * Opt-in cnc-ddraw GL2 backend. No GL3, core contexts, FBO, multipass or GDI
++ * fallback. Compatibility logic is separate from passive presentation metrics.
++ */
+ #include <windows.h>
+-#include <stdio.h>
++#include <stdint.h>
+ #include "config.h"
+-#include "fps_limiter.h"
+-#include "opengl_utils.h"
+ #include "dd.h"
+ #include "ddsurface.h"
+-#include "openglshader.h"
+-#include "render_gdi.h"
+ #include "render_ogl.h"
+-#include "utils.h"
+-#include "debug.h"
++#include "fps_limiter.h"
++#include "hook.h"
++#include "gles2_pipeline.h"
++#include "gles2_events.h"
++#include "gles2_palette.h"
++SRWLOCK pd2_gles2_palette_gate=SRWLOCK_INIT;
++#define PD2_PRESENT_IMPLEMENTATION
++#include "present_metrics.h"
+ 
+-
+-static HGLRC ogl_create_core_context(HDC hdc);
+-static void ogl_build_programs();
+-static void ogl_create_textures(int width, int height);
+-static void ogl_init_main_program();
+-static void ogl_init_shader1_program();
+-static void ogl_init_shader2_program();
+-static void ogl_render();
+-static BOOL ogl_release_resources();
+-static BOOL ogl_texture_upload_test();
+-static BOOL ogl_shader_test();
+-static void ogl_check_error(const char* stmt);
+-
+-static OGLRENDERER g_ogl;
+-
+-BOOL ogl_create()
+-{
+-    if (g_ogl.hwnd == g_ddraw.hwnd && g_ogl.hdc == g_ddraw.render.hdc && g_ogl.context)
+-    {
+-        return TRUE;
+-    }
+-
+-    ogl_release();
+-
+-    g_ogl.context = xwglCreateContext(g_ddraw.render.hdc);
+-    if (g_ogl.context)
+-    {
+-        g_ogl.hwnd = g_ddraw.hwnd;
+-        g_ogl.hdc = g_ddraw.render.hdc;
+-
+-        GLenum err = GL_NO_ERROR;
+-        BOOL made_current = FALSE;
+-
+-        for (int i = 0; i < 5; i++)
+-        {
+-            if ((made_current = xwglMakeCurrent(g_ogl.hdc, g_ogl.context)))
+-                break;
+-
+-            Sleep(50);
+-        }
+-
+-        if (made_current && (err = glGetError()) == GL_NO_ERROR)
+-        {
+-            GL_CHECK(oglu_init());
+-
+-            TRACE("+--OpenGL-----------------------------------------\n");
+-            TRACE("| GL_VERSION:                  %s\n", glGetString(GL_VERSION));
+-            TRACE("| GL_VENDOR:                   %s\n", glGetString(GL_VENDOR));
+-            TRACE("| GL_RENDERER:                 %s\n", glGetString(GL_RENDERER));
+-            TRACE("| GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
+-            TRACE("+------------------------------------------------\n");
+-
+-#ifdef _DEBUG
+-            while (glGetError() != GL_NO_ERROR); /* Ignore errors from glGetString */
+-#endif
+-
+-            GL_CHECK(g_ogl.context = ogl_create_core_context(g_ogl.hdc));
+-        }
+-        else
+-        {
+-            TRACE("OpenGL error %08x, GetLastError %lu (xwglMakeCurrent())\n", err, GetLastError());
+-            ogl_check_error("xwglMakeCurrent()");
+-        }
+-
+-        for (int i = 0; i < 5; i++)
+-        {
+-            if (xwglMakeCurrent(NULL, NULL))
+-                break;
+-
+-            Sleep(50);
+-        }
+-
+-        return TRUE;
+-    }
+-
+-    g_ogl.hwnd = NULL;
+-    g_ogl.hdc = NULL;
+-
+-    return FALSE;
++static HGLRC pd2_context;
++static HDC pd2_hdc;
++static HWND pd2_hwnd;
++static pd2_gl_api pd2_api;
++static unsigned pd2_dimension(int n) { return n>0 && n<=16384 ? (unsigned)n:0; }
++static void pd2_status(unsigned stage,unsigned code) {
++ unsigned bpp=(g_ddraw.bpp==8 || g_ddraw.bpp==16 || g_ddraw.bpp==32) ? g_ddraw.bpp:0;
++ pd2_gl_event(stage,code,bpp,pd2_dimension(g_ddraw.width),pd2_dimension(g_ddraw.height),pd2_dimension(g_ddraw.render.width),pd2_dimension(g_ddraw.render.height));
+ }
+-
+-DWORD WINAPI ogl_render_main(void)
+-{
+-    Sleep(250);
+-    g_ogl.got_error = g_ogl.use_opengl = FALSE;
+-    GLenum err = GL_NO_ERROR;
+-    BOOL made_current = FALSE;
+-
+-    for (int i = 0; i < 5; i++)
+-    {
+-        if ((made_current = xwglMakeCurrent(g_ogl.hdc, g_ogl.context)))
+-            break;
+-
+-        Sleep(50);
+-    }
+-
+-    if (made_current && (err = glGetError()) == GL_NO_ERROR)
+-    {
+-        GL_CHECK(oglu_init());
+-
+-        g_ogl.got_error = g_ogl.got_error || (err = glGetError()) != GL_NO_ERROR;
+-
+-        BOOL got_swap_ctrl;
+-        GL_CHECK(got_swap_ctrl = oglu_ext_exists("WGL_EXT_swap_control", g_ogl.hdc));
+-
+-        if (got_swap_ctrl && wglSwapIntervalEXT)
+-            wglSwapIntervalEXT(g_config.vsync ? 1 : 0);
+-
+-        fpsl_init();
+-        GL_CHECK(ogl_build_programs());
+-        GL_CHECK(ogl_create_textures(g_ddraw.width, g_ddraw.height));
+-        GL_CHECK(ogl_init_main_program());
+-        GL_CHECK(ogl_init_shader1_program());
+-        GL_CHECK(ogl_init_shader2_program());
+-
+-        g_ogl.got_error = g_ogl.got_error || (err = glGetError()) != GL_NO_ERROR;
+-        GL_CHECK(g_ogl.got_error = g_ogl.got_error || !ogl_texture_upload_test());
+-        GL_CHECK(g_ogl.got_error = g_ogl.got_error || !ogl_shader_test());
+-        g_ogl.got_error = g_ogl.got_error || (err = glGetError()) != GL_NO_ERROR;
+-
+-        g_ogl.use_opengl = (g_ogl.main_program || g_ddraw.bpp == 16 || g_ddraw.bpp == 32) && !g_ogl.got_error;
+-
+-        GL_CHECK(ogl_render());
+-
+-        GL_CHECK(ogl_release_resources());
+-
+-        while (glGetError() != GL_NO_ERROR);
+-    }
+-    else
+-    {
+-        TRACE("OpenGL error %08x, GetLastError %lu (xwglMakeCurrent())\n", err, GetLastError());
+-        ogl_check_error("xwglMakeCurrent()");
+-    }
+-
+-    for (int i = 0; i < 5; i++)
+-    {
+-        if (xwglMakeCurrent(NULL, NULL))
+-            break;
+-
+-        Sleep(50);
+-    }
+-    
+-    if (!g_ogl.use_opengl)
+-    {
+-        g_ddraw.show_driver_warning = TRUE;
+-        g_ddraw.renderer = gdi_render_main;
+-        gdi_render_main();
+-    }
+-
+-    return 0;
++/* ExitProcess terminates ONLY this DLL's host, never other Wine sessions or
++ * arbitrary PIDs. Normal teardown never calls this path. */
++__declspec(noreturn) void pd2_gles2_fatal(unsigned stage,unsigned code) {
++ pd2_status(stage,code);
++ ExitProcess(PD2_GL_EXIT_CODE);
+ }
+-
+-
+-static void ogl_check_error(const char* stmt)
+-{
+-#ifdef _DEBUG
+-    GLenum err;
+-    while ((err = glGetError()) != GL_NO_ERROR)
+-    {
+-        g_ogl.got_error = TRUE;
+-        TRACE("OpenGL error %08x (%s)\n", err, stmt);
+-    }
+-#endif
++static FARPROC pd2_proc(const char *name) {
++ PROC p=xwglGetProcAddress(name);
++ if (!p || p==(PROC)1 || p==(PROC)2 || p==(PROC)3 || p==(PROC)-1)
++ p=real_GetProcAddress(g_oglu_hmodule,name);
++ return p;
+ }
+-
+-static HGLRC ogl_create_core_context(HDC hdc)
+-{
+-    if (!wglCreateContextAttribsARB)
+-        return g_ogl.context;
+-
+-    int attribs[] = {
+-        WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+-        WGL_CONTEXT_MINOR_VERSION_ARB, 2,
+-        WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
+-        WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+-        0 };
+-
+-    HGLRC context = wglCreateContextAttribsARB(hdc, 0, attribs);
+-    BOOL made_current = context && xwglMakeCurrent(hdc, context);
+-
+-    if (made_current)
+-    {
+-        xwglDeleteContext(g_ogl.context);
+-        oglu_init();
+-
+-        TRACE("+--OpenGL Core-----------------------------------\n");
+-        TRACE("| GL_VERSION:                  %s\n", glGetString(GL_VERSION));
+-        TRACE("| GL_VENDOR:                   %s\n", glGetString(GL_VENDOR));
+-        TRACE("| GL_RENDERER:                 %s\n", glGetString(GL_RENDERER));
+-        TRACE("| GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
+-        TRACE("+------------------------------------------------\n");
+-
+-        return context;
+-    }
+-    else if (context)
+-    {
+-        xwglDeleteContext(context);
+-    }
+-
+-    return g_ogl.context;
++static void pd2_load_api(void) {
++#define PD2_LOAD(t,n) pd2_api.n=(t)pd2_proc("gl" #n);
++ PD2_GL_API(PD2_LOAD)
++#undef PD2_LOAD
++ if (!pd2_gl_api_complete(&pd2_api)) pd2_gles2_fatal(2,PD2_GL_API_MISSING);
++ /* Parse only major/minor numeric prefix; never persist driver strings. */
++ { const unsigned char *v=pd2_api.GetString(GL_VERSION);
++ if (!v || v[0]<'2' || v[0]>'9' || v[1]!='.' || v[2]<'0' || v[2]>'9') pd2_gles2_fatal(2,PD2_GL_VERSION);
++ pd2_gl_major=v[0]-'0';pd2_gl_minor=v[2]-'0'; }
++ if (pd2_gl_error(&pd2_api,PD2_GL_STATE)) pd2_gles2_fatal(2,PD2_GL_STATE);
++ /* Swap control is optional; when advertised, honor the selected vsync mode. */
++ { PFNWGLGETEXTENSIONSSTRINGARBPROC ext=(PFNWGLGETEXTENSIONSSTRINGARBPROC)pd2_proc("wglGetExtensionsStringARB");
++ if (ext) {
++ const char *extensions=ext(pd2_hdc);
++ if (extensions && strstr(extensions,"WGL_EXT_swap_control")) {
++ PFNWGLSWAPINTERVALEXTPROC interval=(PFNWGLSWAPINTERVALEXTPROC)pd2_proc("wglSwapIntervalEXT");
++ if (!interval || !interval(g_config.vsync ? 1:0)) pd2_gles2_fatal(2,PD2_GL_STATE);
++ }
++ } }
++ pd2_status(2,0);
+ }
+-
+-static void ogl_build_programs()
+-{
+-    g_ogl.main_program = g_ogl.shader1_program = g_ogl.shader2_program = 0;
+-
+-    g_ogl.shader2_upscale = FALSE;
+-    BOOL core_profile = wglCreateContextAttribsARB != NULL;
+-
+-    if (g_oglu_got_version3)
+-    {
+-        if (g_ddraw.bpp == 8)
+-        {
+-            g_ogl.main_program = oglu_build_program(PASSTHROUGH_VERT_SHADER, PALETTE_FRAG_SHADER, core_profile);
+-        }
+-        else if (g_ddraw.bpp == 16 && g_config.rgb555)
+-        {
+-            g_ogl.main_program = oglu_build_program(PASSTHROUGH_VERT_SHADER, RGB555_FRAG_SHADER, core_profile);
+-        }
+-        else if (g_ddraw.bpp == 16 || g_ddraw.bpp == 32)
+-        {
+-            g_ogl.main_program = oglu_build_program(PASSTHROUGH_VERT_SHADER, PASSTHROUGH_FRAG_SHADER, core_profile);
+-        }
+-
+-        BOOL bilinear = FALSE;
+-        char shader_path[MAX_PATH] = { 0 };
+-
+-        if (g_ogl.main_program)
+-        {
+-            strncpy(shader_path, g_config.shader, sizeof(shader_path));
+-            shader_path[sizeof(shader_path) - 1] = '\0'; /* strncpy fix */
+-
+-            if (GetFileAttributes(shader_path) == INVALID_FILE_ATTRIBUTES)
+-            {
+-                _snprintf(shader_path, sizeof(shader_path) - 1, "%s%s", g_config.dll_path, g_config.shader);
+-            }
+-
+-            /* Hack for Intel HD 4000 driver bug - force default shader */
+-
+-            if (_stricmp(g_oglu_version_long, "4.0.0 - Build 10.18.10.4252") == 0 ||
+-                _stricmp(g_oglu_version_long, "4.0.0 - Build 10.18.10.5161") == 0)
+-            {
+-                shader_path[0] = 0;
+-                g_config.shader[0] = 0;
+-            }
+-
+-            /* detect common upscaling shaders and disable them if no upscaling is required */
+-
+-            BOOL is_upscaler =
+-                strstr(g_config.shader, "fsr.glsl") != NULL ||
+-                strstr(g_config.shader, "catmull-rom-bilinear.glsl") != NULL ||
+-                strstr(g_config.shader, "lanczos2-sharp.glsl") != NULL ||
+-                strstr(g_config.shader, "xbr-lv2-noblend.glsl") != NULL ||
+-                strstr(g_config.shader, "xbrz-freescale-multipass.glsl") != NULL ||
+-                strstr(g_config.shader, "xbrz-freescale.glsl") != NULL;
+-
+-            if (!is_upscaler ||
+-                g_ddraw.render.viewport.width != g_ddraw.width ||
+-                g_ddraw.render.viewport.height != g_ddraw.height ||
+-                g_config.vhack)
+-            {
+-                g_ogl.shader1_program = oglu_build_program_from_file(shader_path, core_profile);
+-
+-                if (g_ogl.shader1_program && 
+-                    (strstr(g_config.shader, "xbrz-freescale-multipass.glsl") != NULL || 
+-                        strstr(g_config.shader, "-pass1scale") != NULL))
+-                {
+-                    g_ogl.shader2_upscale = TRUE;
+-                }
+-
+-                if (!g_ogl.shader1_program &&
+-                    (g_ddraw.render.viewport.width != g_ddraw.width ||
+-                        g_ddraw.render.viewport.height != g_ddraw.height ||
+-                        g_config.vhack))
+-                {
+-                    g_ogl.shader1_program = 
+-                        oglu_build_program(
+-                            _stricmp(g_config.shader, "xBR-lv2") == 0 ? XBR_LV2_VERT_SHADER :
+-                            PASSTHROUGH_VERT_SHADER, 
+-                            _stricmp(g_config.shader, "Nearest neighbor") == 0 ? PASSTHROUGH_FRAG_SHADER :
+-                            _stricmp(g_config.shader, "Bilinear") == 0 ? PASSTHROUGH_FRAG_SHADER :
+-                            _stricmp(g_config.shader, "Lanczos") == 0 ? LANCZOS2_FRAG_SHADER :
+-                            _stricmp(g_config.shader, "xBR-lv2") == 0 ? XBR_LV2_FRAG_SHADER :
+-                            CATMULL_ROM_FRAG_SHADER, 
+-                            core_profile);
+-
+-                    bilinear =
+-                        _stricmp(g_config.shader, "Nearest neighbor") != 0 && 
+-                        _stricmp(g_config.shader, "Lanczos") != 0 &&
+-                        _stricmp(g_config.shader, "xBR-lv2") != 0;
+-                }
+-            }
+-        }
+-        else
+-        {
+-            g_oglu_got_version3 = FALSE;
+-        }
+-
+-        if (g_ogl.shader1_program)
+-        {
+-            if (strlen(shader_path) <= sizeof(shader_path) - 8)
+-            {
+-                strcat(shader_path, ".pass1");
+-
+-                g_ogl.shader2_program = oglu_build_program_from_file(shader_path, core_profile);
+-            }
+-        }
+-
+-        g_ogl.filter_bilinear = strstr(g_config.shader, "bilinear.glsl") != NULL || bilinear;
+-    }
+-
+-    if (g_oglu_got_version2 && !g_ogl.main_program)
+-    {
+-        if (g_ddraw.bpp == 8)
+-        {
+-            g_ogl.main_program = oglu_build_program(PASSTHROUGH_VERT_SHADER_110, PALETTE_FRAG_SHADER_110, FALSE);
+-        }
+-        else if (g_ddraw.bpp == 16 || g_ddraw.bpp == 32)
+-        {
+-            g_ogl.main_program = oglu_build_program(PASSTHROUGH_VERT_SHADER_110, PASSTHROUGH_FRAG_SHADER_110, FALSE);
+-        }
+-    }
++BOOL ogl_release(void) {
++ if (g_ddraw.render.thread) return FALSE;
++ if (pd2_context) {
++ /* Render thread detached before the caller joined it. This thread never
++  * owned that context; an extra wglMakeCurrent(NULL,NULL) is not required. */
++ if (!xwglDeleteContext(pd2_context)) pd2_gles2_fatal(7,PD2_GL_RELEASE);
++ pd2_context=NULL;pd2_hdc=NULL;pd2_hwnd=NULL;
++ }
++ return TRUE;
+ }
+-
+-static void ogl_create_textures(int width, int height)
+-{
+-    GLenum err = GL_NO_ERROR;
+-
+-    int w = g_ogl.shader2_program ? max(width, g_ddraw.render.viewport.width) : width;
+-    int h = g_ogl.shader2_program ? max(height, g_ddraw.render.viewport.height) : height;
+-
+-    g_ogl.surface_tex_width =
+-        w <= 1024 ? 1024 : w <= 2048 ? 2048 : w <= 4096 ? 4096 : w <= 8192 ? 8192 : w;
+-
+-    g_ogl.surface_tex_height =
+-        h <= 512 ? 512 : h <= 1024 ? 1024 : h <= 2048 ? 2048 : h <= 4096 ? 4096 : h <= 8192 ? 8192 : h;
+-
+-    g_ogl.scale_w = (float)width / g_ogl.surface_tex_width;
+-    g_ogl.scale_h = (float)height / g_ogl.surface_tex_height;
+-
+-    glGenTextures(TEXTURE_COUNT, g_ogl.surface_tex_ids);
+-
+-    for (int i = 0; i < TEXTURE_COUNT; i++)
+-    {
+-        glBindTexture(GL_TEXTURE_2D, g_ogl.surface_tex_ids[i]);
+-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+-
+-        g_ogl.got_error = g_ogl.got_error || (err = glGetError()) != GL_NO_ERROR;
+-        
+-        if (err != GL_NO_ERROR)
+-        {
+-            TRACE("OpenGL error %08x (ogl_create_textures())\n", err);
+-            ogl_check_error("ogl_create_textures()");
+-        }
+-
+-        while (glGetError() != GL_NO_ERROR);
+-
+-        if (g_ddraw.bpp == 32)
+-        {
+-            glTexImage2D(
+-                GL_TEXTURE_2D,
+-                0,
+-                GL_RGBA8,
+-                g_ogl.surface_tex_width,
+-                g_ogl.surface_tex_height,
+-                0,
+-                g_ogl.surface_format = GL_BGRA,
+-                g_ogl.surface_type = GL_UNSIGNED_BYTE,
+-                0);
+-        }
+-        else if (g_ddraw.bpp == 16 && g_config.rgb555)
+-        {
+-            if (g_oglu_got_version3)
+-            {
+-                glTexImage2D(
+-                    GL_TEXTURE_2D,
+-                    0,
+-                    GL_RG8,
+-                    g_ogl.surface_tex_width,
+-                    g_ogl.surface_tex_height,
+-                    0,
+-                    g_ogl.surface_format = GL_RG,
+-                    g_ogl.surface_type = GL_UNSIGNED_BYTE,
+-                    0);
+-            }
+-            else
+-            {
+-                glTexImage2D(
+-                    GL_TEXTURE_2D,
+-                    0,
+-                    GL_RGBA8,
+-                    g_ogl.surface_tex_width,
+-                    g_ogl.surface_tex_height,
+-                    0,
+-                    g_ogl.surface_format = GL_BGRA,
+-                    g_ogl.surface_type = GL_UNSIGNED_SHORT_1_5_5_5_REV,
+-                    0);
+-            }
+-        }
+-        else if (g_ddraw.bpp == 16)
+-        {
+-            glTexImage2D(
+-                GL_TEXTURE_2D,
+-                0,
+-                GL_RGB565,
+-                g_ogl.surface_tex_width,
+-                g_ogl.surface_tex_height,
+-                0,
+-                g_ogl.surface_format = GL_RGB,
+-                g_ogl.surface_type = GL_UNSIGNED_SHORT_5_6_5,
+-                0);
+-
+-
+-            if (glGetError() != GL_NO_ERROR)
+-            {
+-                glTexImage2D(
+-                    GL_TEXTURE_2D,
+-                    0,
+-                    GL_RGB5,
+-                    g_ogl.surface_tex_width,
+-                    g_ogl.surface_tex_height,
+-                    0,
+-                    g_ogl.surface_format = GL_RGB,
+-                    g_ogl.surface_type = GL_UNSIGNED_SHORT_5_6_5,
+-                    0);
+-            }
+-        }
+-        else if (g_ddraw.bpp == 8)
+-        {
+-            glTexImage2D(
+-                GL_TEXTURE_2D,
+-                0,
+-                GL_LUMINANCE8,
+-                g_ogl.surface_tex_width,
+-                g_ogl.surface_tex_height,
+-                0,
+-                g_ogl.surface_format = GL_LUMINANCE,
+-                g_ogl.surface_type = GL_UNSIGNED_BYTE,
+-                0);
+-
+-
+-            if (glGetError() != GL_NO_ERROR)
+-            {
+-                glTexImage2D(
+-                    GL_TEXTURE_2D,
+-                    0,
+-                    GL_R8,
+-                    g_ogl.surface_tex_width,
+-                    g_ogl.surface_tex_height,
+-                    0,
+-                    g_ogl.surface_format = GL_RED,
+-                    g_ogl.surface_type = GL_UNSIGNED_BYTE,
+-                    0);
+-            }
+-
+-            if (glGetError() != GL_NO_ERROR)
+-            {
+-                glTexImage2D(
+-                    GL_TEXTURE_2D,
+-                    0,
+-                    GL_RED,
+-                    g_ogl.surface_tex_width,
+-                    g_ogl.surface_tex_height,
+-                    0,
+-                    g_ogl.surface_format = GL_RED,
+-                    g_ogl.surface_type = GL_UNSIGNED_BYTE,
+-                    0);
+-            }
+-        }
+-    }
+-
+-    if (g_ddraw.bpp == 8)
+-    {
+-        glGenTextures(TEXTURE_COUNT, g_ogl.palette_tex_ids);
+-
+-        for (int i = 0; i < TEXTURE_COUNT; i++)
+-        {
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.palette_tex_ids[i]);
+-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+-        }
+-    }
++BOOL ogl_create(void) {
++ if (pd2_context && pd2_hdc==g_ddraw.render.hdc && pd2_hwnd==g_ddraw.hwnd) return TRUE;
++ if (!ogl_release()) pd2_gles2_fatal(1,PD2_GL_CONTEXT);
++ if (!IsWindow(g_ddraw.hwnd) || !xwglCreateContext || !xwglMakeCurrent || !xwglDeleteContext || !xwglGetProcAddress) pd2_gles2_fatal(1,PD2_GL_CONTEXT);
++ pd2_context=xwglCreateContext(g_ddraw.render.hdc);
++ if (!pd2_context) pd2_gles2_fatal(1,PD2_GL_CONTEXT);
++ pd2_hdc=g_ddraw.render.hdc;pd2_hwnd=g_ddraw.hwnd;
++ pd2_status(1,0);
++ return TRUE;
+ }
+-
+-static void ogl_init_main_program()
+-{
+-    if (!g_ogl.main_program)
+-        return;
+-
+-    glUseProgram(g_ogl.main_program);
+-
+-    glUniform1i(glGetUniformLocation(g_ogl.main_program, "Texture"), 0);
+-
+-    if (g_ddraw.bpp == 8)
+-        glUniform1i(glGetUniformLocation(g_ogl.main_program, "PaletteTexture"), 1);
+-
+-    if (g_oglu_got_version3)
+-    {
+-        g_ogl.main_vertex_coord_attr_loc = glGetAttribLocation(g_ogl.main_program, "VertexCoord");
+-        g_ogl.main_tex_coord_attr_loc = glGetAttribLocation(g_ogl.main_program, "TexCoord");
+-
+-        glGenBuffers(3, g_ogl.main_vbos);
+-
+-        if (g_ogl.shader1_program)
+-        {
+-            glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[0]);
+-            static const GLfloat vertex_coord[] = {
+-                -1.0f,-1.0f,
+-                -1.0f, 1.0f,
+-                 1.0f, 1.0f,
+-                 1.0f,-1.0f,
+-            };
+-            glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_coord), vertex_coord, GL_STATIC_DRAW);
+-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-            glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[1]);
+-            GLfloat tex_coord[] = {
+-                0.0f,          0.0f,
+-                0.0f,          g_ogl.scale_h,
+-                g_ogl.scale_w, g_ogl.scale_h,
+-                g_ogl.scale_w, 0.0f,
+-            };
+-            glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+-        }
+-        else
+-        {
+-            glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[0]);
+-            static const GLfloat vertex_coord[] = {
+-                -1.0f, 1.0f,
+-                 1.0f, 1.0f,
+-                 1.0f,-1.0f,
+-                -1.0f,-1.0f,
+-            };
+-            glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_coord), vertex_coord, GL_STATIC_DRAW);
+-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-            glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[1]);
+-            GLfloat tex_coord[] = {
+-                0.0f,          0.0f,
+-                g_ogl.scale_w, 0.0f,
+-                g_ogl.scale_w, g_ogl.scale_h,
+-                0.0f,          g_ogl.scale_h,
+-            };
+-            glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+-        }
+-
+-        glGenVertexArrays(1, &g_ogl.main_vao);
+-        glBindVertexArray(g_ogl.main_vao);
+-
+-        glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[0]);
+-        glVertexAttribPointer(g_ogl.main_vertex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-        glEnableVertexAttribArray(g_ogl.main_vertex_coord_attr_loc);
+-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-        glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[1]);
+-        glVertexAttribPointer(g_ogl.main_tex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-        glEnableVertexAttribArray(g_ogl.main_tex_coord_attr_loc);
+-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ogl.main_vbos[2]);
+-        static const GLushort indices[] =
+-        {
+-            0, 1, 2,
+-            0, 2, 3,
+-        };
+-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+-
+-        glBindVertexArray(0);
+-
+-        const float mvp_matrix[16] = {
+-            1,0,0,0,
+-            0,1,0,0,
+-            0,0,1,0,
+-            0,0,0,1,
+-        };
+-        glUniformMatrix4fv(glGetUniformLocation(g_ogl.main_program, "MVPMatrix"), 1, GL_FALSE, mvp_matrix);
+-
+-    }
++static unsigned pd2_stage(int code) {
++ if (code==PD2_GL_VERTEX || code==PD2_GL_FRAGMENT || code==PD2_GL_LINK) return 3;
++ if (code==PD2_GL_TEXTURE || code==PD2_GL_FORMAT) return 4;
++ return 5;
+ }
+-
+-static void ogl_init_shader1_program()
+-{
+-    if (!g_ogl.shader1_program)
+-        return;
+-
+-    glUseProgram(g_ogl.shader1_program);
+-
+-    GLint vertex_coord_attr_loc = glGetAttribLocation(g_ogl.shader1_program, "VertexCoord");
+-    if (vertex_coord_attr_loc == -1) // dosbox staging
+-        vertex_coord_attr_loc = glGetAttribLocation(g_ogl.shader1_program, "a_position");
+-
+-    g_ogl.shader1_tex_coord_attr_loc = glGetAttribLocation(g_ogl.shader1_program, "TexCoord");
+-
+-    glGenBuffers(3, g_ogl.shader1_vbos);
+-
+-    if (g_ogl.shader2_program)
+-    {
+-        glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader1_vbos[0]);
+-        static const GLfloat vertext_coord[] = {
+-            -1.0f,-1.0f,
+-            -1.0f, 1.0f,
+-             1.0f, 1.0f,
+-             1.0f,-1.0f,
+-        };
+-        glBufferData(GL_ARRAY_BUFFER, sizeof(vertext_coord), vertext_coord, GL_STATIC_DRAW);
+-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-        glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader1_vbos[1]);
+-        GLfloat tex_coord[] = {
+-            0.0f,          0.0f,
+-            0.0f,          g_ogl.scale_h,
+-            g_ogl.scale_w, g_ogl.scale_h,
+-            g_ogl.scale_w, 0.0f,
+-        };
+-        glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+-    }
+-    else
+-    {
+-        glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader1_vbos[0]);
+-        static const GLfloat vertext_coord[] = {
+-            -1.0f, 1.0f,
+-             1.0f, 1.0f,
+-             1.0f,-1.0f,
+-            -1.0f,-1.0f,
+-        };
+-        glBufferData(GL_ARRAY_BUFFER, sizeof(vertext_coord), vertext_coord, GL_STATIC_DRAW);
+-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-        glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader1_vbos[1]);
+-        GLfloat tex_coord[] = {
+-            0.0f,           0.0f,
+-            g_ogl.scale_w,  0.0f,
+-            g_ogl.scale_w,  g_ogl.scale_h,
+-            0.0f,           g_ogl.scale_h,
+-        };
+-        glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+-    }
+-
+-    glGenVertexArrays(1, &g_ogl.shader1_vao);
+-    glBindVertexArray(g_ogl.shader1_vao);
+-
+-    glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader1_vbos[0]);
+-    glVertexAttribPointer(vertex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-    glEnableVertexAttribArray(vertex_coord_attr_loc);
+-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-    if (g_ogl.shader1_tex_coord_attr_loc != -1)
+-    {
+-        glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader1_vbos[1]);
+-        glVertexAttribPointer(g_ogl.shader1_tex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-        glEnableVertexAttribArray(g_ogl.shader1_tex_coord_attr_loc);
+-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+-    }
+-
+-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ogl.shader1_vbos[2]);
+-    static const GLushort indices[] =
+-    {
+-        0, 1, 2,
+-        0, 2, 3,
+-    };
+-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+-
+-    glBindVertexArray(0);
+-
+-    float input_size[2] = { 0 }, output_size[2] = { 0 }, texture_size[2] = { 0 };
+-
+-    input_size[0] = (float)g_ddraw.width;
+-    input_size[1] = (float)g_ddraw.height;
+-    texture_size[0] = (float)g_ogl.surface_tex_width;
+-    texture_size[1] = (float)g_ogl.surface_tex_height;
+-    output_size[0] = (float)g_ddraw.render.viewport.width;
+-    output_size[1] = (float)g_ddraw.render.viewport.height;
+-
+-    GLint loc = glGetUniformLocation(g_ogl.shader1_program, "OutputSize");
+-    if (loc == -1)
+-        loc = glGetUniformLocation(g_ogl.shader1_program, "rubyOutputSize");
+-
+-    if (loc != -1) 
+-        glUniform2fv(loc, 1, output_size);
+-
+-
+-    loc = glGetUniformLocation(g_ogl.shader1_program, "TextureSize");
+-    if (loc == -1)
+-        loc = glGetUniformLocation(g_ogl.shader1_program, "rubyTextureSize");
+-
+-    if (loc != -1) 
+-        glUniform2fv(loc, 1, texture_size);
+-
+-
+-    loc = glGetUniformLocation(g_ogl.shader1_program, "InputSize");
+-    if (loc == -1)
+-        loc = glGetUniformLocation(g_ogl.shader1_program, "rubyInputSize");
+-
+-    if (loc != -1) 
+-        glUniform2fv(loc, 1, input_size);
+-
+-
+-    loc = glGetUniformLocation(g_ogl.shader1_program, "Texture");
+-    if (loc == -1)
+-        loc = glGetUniformLocation(g_ogl.shader1_program, "rubyTexture");
+-
+-    if (loc != -1)
+-        glUniform1i(loc, 0);
+-
+-
+-    loc = glGetUniformLocation(g_ogl.shader1_program, "FrameDirection");
+-    if (loc != -1) 
+-        glUniform1i(loc, 1);
+-
+-    g_ogl.shader1_frame_count_uni_loc = glGetUniformLocation(g_ogl.shader1_program, "FrameCount");
+-    if (g_ogl.shader1_frame_count_uni_loc == -1)
+-        g_ogl.shader1_frame_count_uni_loc = glGetUniformLocation(g_ogl.shader1_program, "rubyFrameCount");
+-
+-    const float mvp_matrix[16] = {
+-        1,0,0,0,
+-        0,1,0,0,
+-        0,0,1,0,
+-        0,0,0,1,
+-    };
+-
+-    loc = glGetUniformLocation(g_ogl.shader1_program, "MVPMatrix");
+-    if (loc != -1)
+-        glUniformMatrix4fv(loc, 1, GL_FALSE, mvp_matrix);
+-
+-    glGenFramebuffers(FBO_COUNT, g_ogl.frame_buffer_id);
+-    glGenTextures(FBO_COUNT, g_ogl.frame_buffer_tex_id);
+-
+-    int fbo_count = g_ogl.shader2_program ? 2 : 1;
+-
+-    for (int i = 0; i < fbo_count; i++)
+-    {
+-        glBindFramebuffer(GL_FRAMEBUFFER, g_ogl.frame_buffer_id[i]);
+-
+-        glBindTexture(GL_TEXTURE_2D, g_ogl.frame_buffer_tex_id[i]);
+-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, g_ogl.filter_bilinear ? GL_LINEAR : GL_NEAREST);
+-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, g_ogl.filter_bilinear ? GL_LINEAR : GL_NEAREST);
+-        glTexImage2D(
+-            GL_TEXTURE_2D,
+-            0,
+-            GL_RGBA8,
+-            g_ogl.surface_tex_width,
+-            g_ogl.surface_tex_height,
+-            0,
+-            GL_RGBA,
+-            GL_UNSIGNED_BYTE,
+-            0);
+-
+-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_ogl.frame_buffer_tex_id[i], 0);
+-
+-        GLenum draw_buffers[1] = { GL_COLOR_ATTACHMENT0 };
+-        glDrawBuffers(1, draw_buffers);
+-
+-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+-        {
+-            glDeleteTextures(FBO_COUNT, g_ogl.frame_buffer_tex_id);
+-
+-            if (glDeleteFramebuffers)
+-                glDeleteFramebuffers(FBO_COUNT, g_ogl.frame_buffer_id);
+-
+-            glUseProgram(0);
+-
+-            if (glDeleteProgram)
+-            {
+-                glDeleteProgram(g_ogl.shader1_program);
+-
+-                if (g_ogl.shader2_program)
+-                    glDeleteProgram(g_ogl.shader2_program);
+-            }  
+-
+-            g_ogl.shader1_program = 0;
+-            g_ogl.shader2_program = 0;
+-
+-            if (glDeleteBuffers)
+-                glDeleteBuffers(3, g_ogl.shader1_vbos);
+-
+-            if (glDeleteVertexArrays)
+-                glDeleteVertexArrays(1, &g_ogl.shader1_vao);
+-
+-            if (g_ogl.main_program)
+-            {
+-                glBindVertexArray(g_ogl.main_vao);
+-                glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[0]);
+-                static const GLfloat vertex_coord_pal[] = {
+-                    -1.0f, 1.0f,
+-                     1.0f, 1.0f,
+-                     1.0f,-1.0f,
+-                    -1.0f,-1.0f,
+-                };
+-                glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_coord_pal), vertex_coord_pal, GL_STATIC_DRAW);
+-                glVertexAttribPointer(g_ogl.main_vertex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-                glEnableVertexAttribArray(g_ogl.main_vertex_coord_attr_loc);
+-                glBindBuffer(GL_ARRAY_BUFFER, 0);
+-                glBindVertexArray(0);
+-
+-                glBindVertexArray(g_ogl.main_vao);
+-                glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[1]);
+-                GLfloat tex_coord_pal[] = {
+-                    0.0f,          0.0f,
+-                    g_ogl.scale_w, 0.0f,
+-                    g_ogl.scale_w, g_ogl.scale_h,
+-                    0.0f,          g_ogl.scale_h,
+-                };
+-                glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord_pal), tex_coord_pal, GL_STATIC_DRAW);
+-                glVertexAttribPointer(g_ogl.main_tex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-                glEnableVertexAttribArray(g_ogl.main_tex_coord_attr_loc);
+-                glBindBuffer(GL_ARRAY_BUFFER, 0);
+-                glBindVertexArray(0);
+-            }
+-
+-            break;
+-        }
+-        else
+-        {
+-            glClear(GL_COLOR_BUFFER_BIT);
+-        }
+-    }
+-
+-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
++DWORD WINAPI ogl_render_main(void) {
++ pd2_gl_pipeline pipeline; unsigned palette_snapshot[256]; int code,ready=0,first_frame=1; DWORD wait_result;
++ if (!pd2_context || !xwglMakeCurrent(pd2_hdc,pd2_context)) pd2_gles2_fatal(1,PD2_GL_CONTEXT);
++ pd2_load_api();
++ /* Startup-only synthetic shader validation of the active 8/16/32-bit mode.
++  * Native harness also exercises every mode. Never reads game surfaces. */
++ code=pd2_gl_validate(&pd2_api,g_ddraw.bpp,g_config.rgb555);
++ if (code) pd2_gles2_fatal(pd2_stage(code),code);
++ pd2_status(5,0);
++ code=pd2_gl_init(&pd2_api,&pipeline,g_ddraw.width,g_ddraw.height,g_ddraw.bpp,g_config.rgb555);
++ if (code) pd2_gles2_fatal(pd2_stage(code),code);
++ pd2_status(3,0);pd2_status(4,0);
++ pd2_api.ClearColor(0,0,0,1);pd2_api.Clear(GL_COLOR_BUFFER_BIT);
++ if (pd2_gl_error(&pd2_api,PD2_GL_STATE)) pd2_gles2_fatal(6,PD2_GL_STATE);
++ pd2_present_start(2,g_ddraw.render.width,g_ddraw.render.height);
++ fpsl_init();
++ while (g_ddraw.render.run) {
++ int changed=0,palette_dirty=0,surface_dirty=0,clear=0;
++ wait_result=WaitForSingleObject(g_ddraw.render.sem,100);
++ if (wait_result==WAIT_FAILED || wait_result==WAIT_ABANDONED) pd2_gles2_fatal(6,PD2_GL_WAIT);
++ if (!g_ddraw.render.run) break;
++ /* Timeouts only permit teardown checks, never force redraw. */
++ if (wait_result==WAIT_TIMEOUT && ready) continue;
++ fpsl_frame_start();
++ EnterCriticalSection(&g_ddraw.cs);
++ if (g_ddraw.primary && g_ddraw.primary->bpp==g_ddraw.bpp && g_ddraw.primary->width==pipeline.width && g_ddraw.primary->height==pipeline.height && (pipeline.bpp!=8 || g_ddraw.primary->palette)) {
++ if (g_config.lock_surfaces) EnterCriticalSection(&g_ddraw.primary->cs);
++ palette_dirty=InterlockedExchange(&g_ddraw.render.palette_updated,FALSE) || !ready;
++ surface_dirty=InterlockedExchange(&g_ddraw.render.surface_updated,FALSE) || !ready;
++ if (pipeline.bpp==8 && (surface_dirty || palette_dirty)) {
++ AcquireSRWLockShared(&pd2_gles2_palette_gate);
++ memcpy(palette_snapshot,g_ddraw.primary->palette->data_bgr,sizeof(palette_snapshot));
++ ReleaseSRWLockShared(&pd2_gles2_palette_gate);
++ }
++ if (surface_dirty) {
++ int pitch=g_ddraw.primary->pitch ? g_ddraw.primary->pitch:pipeline.width*(pipeline.bpp/8);
++ code=pd2_gl_upload(&pd2_api,&pipeline,g_ddraw.primary->surface,pitch,pipeline.bpp==8 ? palette_snapshot:NULL);
++ if (code) pd2_gles2_fatal(6,code);
++ } else if (palette_dirty && pipeline.bpp==8) {
++ code=pd2_gl_upload_palette(&pd2_api,&pipeline,palette_snapshot);
++ if (code) pd2_gles2_fatal(6,code);
++ }
++ changed=surface_dirty || (palette_dirty && pipeline.bpp==8);ready=1;
++ if (g_config.lock_surfaces) LeaveCriticalSection(&g_ddraw.primary->cs);
++ }
++ clear=InterlockedExchange(&g_ddraw.render.clear_screen,FALSE);
++ LeaveCriticalSection(&g_ddraw.cs);
++ if (!ready || (!changed && !clear && wait_result==WAIT_TIMEOUT)) continue;
++ pd2_api.Clear(GL_COLOR_BUFFER_BIT);
++ code=pd2_gl_draw(&pd2_api,&pipeline,g_ddraw.render.viewport.x,g_ddraw.render.viewport.y+g_ddraw.render.opengl_y_align,g_ddraw.render.viewport.width,g_ddraw.render.viewport.height);
++ if (code) pd2_gles2_fatal(6,code);
++ if (g_ddraw.bnet_active) pd2_api.Clear(GL_COLOR_BUFFER_BIT);
++ if (pd2_gl_error(&pd2_api,PD2_GL_DRAW)) pd2_gles2_fatal(6,PD2_GL_DRAW);
++ if (!SwapBuffers(pd2_hdc)) pd2_gles2_fatal(6,PD2_GL_SWAP);
++ pd2_present_frame(2,1,g_ddraw.render.width,g_ddraw.render.height);
++ if (first_frame) { pd2_status(6,0);first_frame=0; }
++ fpsl_frame_end();
++ }
++ code=pd2_gl_destroy(&pd2_api,&pipeline);
++ if (code) pd2_gles2_fatal(7,code);
++ if (!xwglMakeCurrent(NULL,NULL)) pd2_gles2_fatal(7,PD2_GL_RELEASE);
++ pd2_status(7,0);
++ return 0;
+ }
+-
+-static void ogl_init_shader2_program()
+-{
+-    if (!g_ogl.shader1_program || !g_ogl.shader2_program)
+-        return;
+-
+-    glUseProgram(g_ogl.shader2_program);
+-
+-    GLint vertex_coord_attr_loc = glGetAttribLocation(g_ogl.shader2_program, "VertexCoord");
+-    if (vertex_coord_attr_loc == -1)
+-        vertex_coord_attr_loc = glGetAttribLocation(g_ogl.shader2_program, "a_position");
+-
+-    g_ogl.shader2_tex_coord_attr_loc = glGetAttribLocation(g_ogl.shader2_program, "TexCoord");
+-
+-    glGenBuffers(3, g_ogl.shader2_vbos);
+-
+-    glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader2_vbos[0]);
+-    GLfloat vertex_coord[] = {
+-        -1.0f, 1.0f,
+-         1.0f, 1.0f,
+-         1.0f,-1.0f,
+-        -1.0f,-1.0f,
+-    };
+-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_coord), vertex_coord, GL_STATIC_DRAW);
+-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-    float scale_w = g_ogl.shader2_upscale ? g_ogl.scale_w : (float)g_ddraw.render.viewport.width / g_ogl.surface_tex_width;
+-    float scale_h = g_ogl.shader2_upscale ? g_ogl.scale_h : (float)g_ddraw.render.viewport.height / g_ogl.surface_tex_height;
+-
+-    glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader2_vbos[1]);
+-    GLfloat tex_coord[] = {
+-         0.0f,     0.0f,
+-         scale_w,  0.0f,
+-         scale_w,  scale_h,
+-         0.0f,     scale_h,
+-    };
+-    glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-    glGenVertexArrays(1, &g_ogl.shader2_vao);
+-    glBindVertexArray(g_ogl.shader2_vao);
+-
+-    glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader2_vbos[0]);
+-    glVertexAttribPointer(vertex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-    glEnableVertexAttribArray(vertex_coord_attr_loc);
+-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+-
+-    if (g_ogl.shader2_tex_coord_attr_loc != -1)
+-    {
+-        glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader2_vbos[1]);
+-        glVertexAttribPointer(g_ogl.shader2_tex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-        glEnableVertexAttribArray(g_ogl.shader2_tex_coord_attr_loc);
+-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+-    }
+-
+-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ogl.shader2_vbos[2]);
+-    static const GLushort indices[] =
+-    {
+-        0, 1, 2,
+-        0, 2, 3,
+-    };
+-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+-
+-    glBindVertexArray(0);
+-
+-    float input_size[2] = { 0 }, output_size[2] = { 0 }, texture_size[2] = { 0 };
+-
+-    input_size[0] = g_ogl.shader2_upscale ? (float)g_ddraw.width : (float)g_ddraw.render.viewport.width;
+-    input_size[1] = g_ogl.shader2_upscale ? (float)g_ddraw.height : (float)g_ddraw.render.viewport.height;
+-    texture_size[0] = (float)g_ogl.surface_tex_width;
+-    texture_size[1] = (float)g_ogl.surface_tex_height;
+-    output_size[0] = (float)g_ddraw.render.viewport.width;
+-    output_size[1] = (float)g_ddraw.render.viewport.height;
+-
+-    GLint loc = glGetUniformLocation(g_ogl.shader2_program, "OutputSize");
+-    if (loc == -1)
+-        loc = glGetUniformLocation(g_ogl.shader2_program, "rubyOutputSize");
+-
+-    if (loc != -1)
+-        glUniform2fv(loc, 1, output_size);
+-
+-
+-    loc = glGetUniformLocation(g_ogl.shader2_program, "TextureSize");
+-    if (loc == -1)
+-        loc = glGetUniformLocation(g_ogl.shader2_program, "rubyTextureSize");
+-
+-    if (loc != -1)
+-        glUniform2fv(loc, 1, texture_size);
+-
+-
+-    loc = glGetUniformLocation(g_ogl.shader2_program, "InputSize");
+-    if (loc == -1)
+-        loc = glGetUniformLocation(g_ogl.shader2_program, "rubyInputSize");
+-
+-    if (loc != -1)
+-        glUniform2fv(loc, 1, input_size);
+-
+-
+-    loc = glGetUniformLocation(g_ogl.shader2_program, "Texture");
+-    if (loc == -1)
+-        loc = glGetUniformLocation(g_ogl.shader2_program, "rubyTexture");
+-
+-    if (loc != -1)
+-        glUniform1i(loc, 0);
+-
+-
+-    loc = glGetUniformLocation(g_ogl.shader2_program, "PassPrev2Texture");
+-    if (loc != -1)
+-        glUniform1i(loc, 1);
+-
+-    loc = glGetUniformLocation(g_ogl.shader2_program, "PassPrev2TextureSize");
+-    if (loc != -1)
+-        glUniform2fv(loc, 1, texture_size);
+-
+-    loc = glGetUniformLocation(g_ogl.shader2_program, "FrameDirection");
+-    if (loc != -1)
+-        glUniform1i(loc, 1);
+-
+-    g_ogl.shader2_frame_count_uni_loc = glGetUniformLocation(g_ogl.shader2_program, "FrameCount");
+-    if (g_ogl.shader2_frame_count_uni_loc == -1)
+-        g_ogl.shader2_frame_count_uni_loc = glGetUniformLocation(g_ogl.shader2_program, "rubyFrameCount");
+-
+-    const float mvp_matrix[16] = {
+-        1,0,0,0,
+-        0,1,0,0,
+-        0,0,1,0,
+-        0,0,0,1,
+-    };
+-
+-    loc = glGetUniformLocation(g_ogl.shader2_program, "MVPMatrix");
+-    if (loc != -1)
+-        glUniformMatrix4fv(loc, 1, GL_FALSE, mvp_matrix);
+-}
+-
+-static void ogl_render()
+-{
+-    BOOL needs_update = FALSE;
+-
+-    glViewport(
+-        g_ddraw.render.viewport.x, 
+-        g_ddraw.render.viewport.y + g_ddraw.render.opengl_y_align,
+-        g_ddraw.render.viewport.width, 
+-        g_ddraw.render.viewport.height);
+-
+-    if (g_ogl.main_program)
+-    {
+-        glUseProgram(g_ogl.main_program);
+-    }
+-    else if (g_ddraw.bpp == 16 || g_ddraw.bpp == 32)
+-    {
+-        glEnable(GL_TEXTURE_2D);
+-    }
+-    else // 8 bpp only works with a shader (opengl 2.0 or above)
+-    {
+-        g_ogl.use_opengl = FALSE;
+-        return;
+-    }
+-
+-    DWORD timeout = g_config.minfps > 0 ? g_ddraw.minfps_tick_len : INFINITE;
+-
+-    while (g_ogl.use_opengl && g_ddraw.render.run &&
+-        (g_config.minfps < 0 || WaitForSingleObject(g_ddraw.render.sem, timeout) != WAIT_FAILED) &&
+-        g_ddraw.render.run)
+-    {
+-#if _DEBUG
+-        dbg_draw_frame_info_start();
+-#endif
+-
+-        g_ogl.scale_w = (float)g_ddraw.width / g_ogl.surface_tex_width;
+-        g_ogl.scale_h = (float)g_ddraw.height / g_ogl.surface_tex_height;
+-
+-        static int tex_index = 0, pal_index = 0;
+-
+-        BOOL scale_changed = FALSE;
+-
+-        fpsl_frame_start();
+-
+-        EnterCriticalSection(&g_ddraw.cs);
+-
+-        if (g_ddraw.primary && 
+-            g_ddraw.primary->bpp == g_ddraw.bpp &&
+-            g_ddraw.primary->width == g_ddraw.width &&
+-            g_ddraw.primary->height == g_ddraw.height &&
+-            (g_ddraw.bpp == 16 || g_ddraw.bpp == 32 || g_ddraw.primary->palette))
+-        {
+-            if (g_config.lock_surfaces)
+-                EnterCriticalSection(&g_ddraw.primary->cs);
+-
+-            if (g_config.vhack)
+-            {
+-                if (util_detect_low_res_screen())
+-                {
+-                    g_ogl.scale_w *= (float)g_ddraw.upscale_hack_width / g_ddraw.width;
+-                    g_ogl.scale_h *= (float)g_ddraw.upscale_hack_height / g_ddraw.height;
+-
+-                    if (!InterlockedExchange(&g_ddraw.upscale_hack_active, TRUE))
+-                        scale_changed = TRUE;
+-                }
+-                else
+-                {
+-                    if (InterlockedExchange(&g_ddraw.upscale_hack_active, FALSE))
+-                        scale_changed = TRUE;
+-                }
+-            }
+-
+-            if (g_ddraw.bpp == 8 &&
+-                (InterlockedExchange(&g_ddraw.render.palette_updated, FALSE) || g_config.minfps == -2))
+-            {
+-                if (++pal_index >= TEXTURE_COUNT)
+-                    pal_index = 0;
+-
+-                glBindTexture(GL_TEXTURE_2D, g_ogl.palette_tex_ids[pal_index]);
+-
+-                glTexSubImage2D(
+-                    GL_TEXTURE_2D,
+-                    0,
+-                    0,
+-                    0,
+-                    256,
+-                    1,
+-                    GL_RGBA,
+-                    GL_UNSIGNED_BYTE,
+-                    g_ddraw.primary->palette->data_bgr);
+-            }
+-
+-            if (InterlockedExchange(&g_ddraw.render.surface_updated, FALSE) || g_config.minfps == -2)
+-            {
+-                if (++tex_index >= TEXTURE_COUNT)
+-                    tex_index = 0;
+-
+-                glBindTexture(GL_TEXTURE_2D, g_ogl.surface_tex_ids[tex_index]);
+-
+-                DWORD row_len = g_ddraw.primary->pitch ? g_ddraw.primary->pitch / g_ddraw.primary->bytes_pp : 0;
+-
+-                if (row_len != g_ddraw.primary->width)
+-                    glPixelStorei(GL_UNPACK_ROW_LENGTH, row_len);
+-
+-                glTexSubImage2D(
+-                    GL_TEXTURE_2D,
+-                    0,
+-                    0,
+-                    0,
+-                    g_ddraw.width,
+-                    g_ddraw.height,
+-                    g_ogl.surface_format,
+-                    g_ogl.surface_type,
+-                    g_ddraw.primary->surface);
+-
+-                if (row_len != g_ddraw.primary->width)
+-                    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+-            }
+-
+-            static int error_check_count = 0;
+-
+-            if (error_check_count < 10)
+-            {
+-                error_check_count++;
+-
+-                GLenum err = glGetError();
+-
+-                if (err != GL_NO_ERROR && err != GL_INVALID_FRAMEBUFFER_OPERATION)
+-                {
+-                    g_ogl.use_opengl = FALSE;
+-
+-                    TRACE("OpenGL error %08x (ogl_render())\n", err);
+-                    ogl_check_error("ogl_render()");
+-                }
+-            }
+-
+-            if (g_config.fixchilds)
+-            {
+-                g_ddraw.child_window_exists = FALSE;
+-                EnumChildWindows(g_ddraw.hwnd, util_enum_child_proc, (LPARAM)g_ddraw.primary);
+-
+-                if (g_ddraw.render.width != g_ddraw.width || g_ddraw.render.height != g_ddraw.height)
+-                {
+-                    if (g_ddraw.child_window_exists)
+-                    {
+-                        glClear(GL_COLOR_BUFFER_BIT);
+-
+-                        if (!needs_update)
+-                        {
+-                            glViewport(0, g_ddraw.render.height - g_ddraw.height, g_ddraw.width, g_ddraw.height);
+-                            needs_update = TRUE;
+-                        }
+-                    }
+-                    else if (needs_update)
+-                    {
+-                        glViewport(
+-                            g_ddraw.render.viewport.x, 
+-                            g_ddraw.render.viewport.y + g_ddraw.render.opengl_y_align,
+-                            g_ddraw.render.viewport.width, 
+-                            g_ddraw.render.viewport.height);
+-
+-                        needs_update = FALSE;
+-                    }
+-                }
+-            }
+-
+-            if (g_config.lock_surfaces)
+-                LeaveCriticalSection(&g_ddraw.primary->cs);
+-        }
+-
+-        LeaveCriticalSection(&g_ddraw.cs);
+-
+-        if (g_ddraw.render.viewport.x != 0 || g_ddraw.render.viewport.y != 0)
+-        {
+-            glClear(GL_COLOR_BUFFER_BIT);
+-        }
+-
+-        if (scale_changed)
+-        {
+-            if (g_ogl.shader2_upscale && g_ogl.shader2_program && g_ogl.shader1_program && g_ogl.main_program)
+-            {
+-                glBindVertexArray(g_ogl.shader2_vao);
+-                glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader2_vbos[1]);
+-                GLfloat tex_coord[] = {
+-                    0.0f,           0.0f,
+-                    g_ogl.scale_w,  0.0f,
+-                    g_ogl.scale_w,  g_ogl.scale_h,
+-                    0.0f,           g_ogl.scale_h,
+-                };
+-                glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-                if (g_ogl.shader2_tex_coord_attr_loc != -1)
+-                {
+-                    glVertexAttribPointer(g_ogl.shader2_tex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-                    glEnableVertexAttribArray(g_ogl.shader2_tex_coord_attr_loc);
+-                }
+-                glBindBuffer(GL_ARRAY_BUFFER, 0);
+-                glBindVertexArray(0);
+-            }
+-            else if (g_ogl.shader2_program && g_ogl.shader1_program && g_ogl.main_program)
+-            {
+-                glBindVertexArray(g_ogl.shader1_vao);
+-                glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader1_vbos[1]);
+-                GLfloat tex_coord[] = {
+-                    0.0f,          0.0f,
+-                    0.0f,          g_ogl.scale_h,
+-                    g_ogl.scale_w, g_ogl.scale_h,
+-                    g_ogl.scale_w, 0.0f,
+-                };
+-                glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-                if (g_ogl.shader1_tex_coord_attr_loc != -1)
+-                {
+-                    glVertexAttribPointer(g_ogl.shader1_tex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-                    glEnableVertexAttribArray(g_ogl.shader1_tex_coord_attr_loc);
+-                }
+-                glBindBuffer(GL_ARRAY_BUFFER, 0);
+-                glBindVertexArray(0);
+-            }
+-            else if (g_ogl.shader1_program && g_ogl.main_program)
+-            {
+-                glBindVertexArray(g_ogl.shader1_vao);
+-                glBindBuffer(GL_ARRAY_BUFFER, g_ogl.shader1_vbos[1]);
+-                GLfloat tex_coord[] = {
+-                    0.0f,           0.0f,
+-                    g_ogl.scale_w,  0.0f,
+-                    g_ogl.scale_w,  g_ogl.scale_h,
+-                    0.0f,           g_ogl.scale_h,
+-                };
+-                glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-                if (g_ogl.shader1_tex_coord_attr_loc != -1)
+-                {
+-                    glVertexAttribPointer(g_ogl.shader1_tex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-                    glEnableVertexAttribArray(g_ogl.shader1_tex_coord_attr_loc);
+-                }
+-                glBindBuffer(GL_ARRAY_BUFFER, 0);
+-                glBindVertexArray(0);
+-            }
+-            else if (g_oglu_got_version3 && g_ogl.main_program)
+-            {
+-                glBindVertexArray(g_ogl.main_vao);
+-                glBindBuffer(GL_ARRAY_BUFFER, g_ogl.main_vbos[1]);
+-                GLfloat tex_coord[] = {
+-                    0.0f,           0.0f,
+-                    g_ogl.scale_w,  0.0f,
+-                    g_ogl.scale_w,  g_ogl.scale_h,
+-                    0.0f,           g_ogl.scale_h,
+-                };
+-                glBufferData(GL_ARRAY_BUFFER, sizeof(tex_coord), tex_coord, GL_STATIC_DRAW);
+-                glVertexAttribPointer(g_ogl.main_tex_coord_attr_loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+-                glEnableVertexAttribArray(g_ogl.main_tex_coord_attr_loc);
+-                glBindBuffer(GL_ARRAY_BUFFER, 0);
+-                glBindVertexArray(0);
+-            }
+-        }
+-
+-        if (glActiveTexture)
+-            glActiveTexture(GL_TEXTURE0);
+-
+-        glBindTexture(GL_TEXTURE_2D, g_ogl.surface_tex_ids[tex_index]);
+-
+-        if (g_ddraw.bpp == 8)
+-        {
+-            glActiveTexture(GL_TEXTURE1);
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.palette_tex_ids[pal_index]);
+-
+-            glActiveTexture(GL_TEXTURE0);
+-        }
+-
+-        if (g_ogl.shader1_program && g_ogl.shader2_program && g_ogl.main_program)
+-        {
+-            static int frames = 0;
+-            frames++;
+-
+-            /* draw surface into framebuffer */
+-            glUseProgram(g_ogl.main_program);
+-
+-            glViewport(0, 0, g_ddraw.width, g_ddraw.height);
+-
+-            glBindFramebuffer(GL_FRAMEBUFFER, g_ogl.frame_buffer_id[0]);
+-
+-            glBindVertexArray(g_ogl.main_vao);
+-            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+-            glBindVertexArray(0);
+-
+-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+-
+-            glActiveTexture(GL_TEXTURE1);
+-            glBindTexture(GL_TEXTURE_2D, 0);
+-
+-            /* apply shader1 */
+-
+-            if (!g_ogl.shader2_upscale)
+-            {
+-                glViewport(0, 0, g_ddraw.render.viewport.width, g_ddraw.render.viewport.height);
+-            }
+-
+-            glUseProgram(g_ogl.shader1_program);
+-            glActiveTexture(GL_TEXTURE0);
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.frame_buffer_tex_id[0]);
+-
+-            glBindFramebuffer(GL_FRAMEBUFFER, g_ogl.frame_buffer_id[1]);
+-
+-            if (g_ogl.shader1_frame_count_uni_loc != -1)
+-                glUniform1i(g_ogl.shader1_frame_count_uni_loc, frames);
+-
+-            glBindVertexArray(g_ogl.shader1_vao);
+-            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+-            glBindVertexArray(0);
+-
+-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+-
+-            /* apply shader2 */
+-
+-            if (g_ddraw.child_window_exists)
+-            {
+-                glViewport(0, g_ddraw.render.height - g_ddraw.height, g_ddraw.width, g_ddraw.height);
+-            }
+-            else
+-            {
+-                glViewport(
+-                    g_ddraw.render.viewport.x,
+-                    g_ddraw.render.viewport.y + g_ddraw.render.opengl_y_align,
+-                    g_ddraw.render.viewport.width,
+-                    g_ddraw.render.viewport.height);
+-            }
+-
+-            glUseProgram(g_ogl.shader2_program);
+-            glActiveTexture(GL_TEXTURE0);
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.frame_buffer_tex_id[1]);
+-
+-            glActiveTexture(GL_TEXTURE1);
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.frame_buffer_tex_id[0]);
+-
+-            if (g_ogl.shader2_frame_count_uni_loc != -1)
+-                glUniform1i(g_ogl.shader2_frame_count_uni_loc, frames);
+-
+-            glBindVertexArray(g_ogl.shader2_vao);
+-            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+-            glBindVertexArray(0);
+-
+-            glActiveTexture(GL_TEXTURE1);
+-            glBindTexture(GL_TEXTURE_2D, 0);
+-        }
+-        else if (g_ogl.shader1_program && g_ogl.main_program)
+-        {
+-            /* draw surface into framebuffer */
+-            glUseProgram(g_ogl.main_program);
+-
+-            glViewport(0, 0, g_ddraw.width, g_ddraw.height);
+-
+-            glBindFramebuffer(GL_FRAMEBUFFER, g_ogl.frame_buffer_id[0]);
+-
+-            glBindVertexArray(g_ogl.main_vao);
+-            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+-            glBindVertexArray(0);
+-
+-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+-
+-            glActiveTexture(GL_TEXTURE1);
+-            glBindTexture(GL_TEXTURE_2D, 0);
+-
+-            if (g_ddraw.child_window_exists)
+-            {
+-                glViewport(0, g_ddraw.render.height - g_ddraw.height, g_ddraw.width, g_ddraw.height);
+-            }
+-            else
+-            {
+-                glViewport(
+-                    g_ddraw.render.viewport.x, 
+-                    g_ddraw.render.viewport.y + g_ddraw.render.opengl_y_align,
+-                    g_ddraw.render.viewport.width, 
+-                    g_ddraw.render.viewport.height);
+-            }
+-
+-            /* apply filter */
+-
+-            glUseProgram(g_ogl.shader1_program);
+-            glActiveTexture(GL_TEXTURE0);
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.frame_buffer_tex_id[0]);
+-
+-            static int frames = 1;
+-            if (g_ogl.shader1_frame_count_uni_loc != -1)
+-                glUniform1i(g_ogl.shader1_frame_count_uni_loc, frames++);
+-
+-            glBindVertexArray(g_ogl.shader1_vao);
+-            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+-            glBindVertexArray(0);
+-        }
+-        else if (g_oglu_got_version3 && g_ogl.main_program)
+-        {
+-            glBindVertexArray(g_ogl.main_vao);
+-            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+-            glBindVertexArray(0);
+-        }
+-        else
+-        {
+-            glBegin(GL_TRIANGLE_FAN);
+-            glTexCoord2f(0, 0);                          glVertex2f(-1, 1);
+-            glTexCoord2f(g_ogl.scale_w, 0);              glVertex2f(1, 1);
+-            glTexCoord2f(g_ogl.scale_w, g_ogl.scale_h);  glVertex2f(1, -1);
+-            glTexCoord2f(0, g_ogl.scale_h);              glVertex2f(-1, -1);
+-            glEnd();
+-        }
+-
+-        if (g_ddraw.bnet_active)
+-            glClear(GL_COLOR_BUFFER_BIT);
+-
+-        SwapBuffers(g_ogl.hdc);
+-
+-        /* Force redraw for GDI games (ClueFinders) */
+-        if (!g_ddraw.primary)
+-        {
+-            RedrawWindow(g_ddraw.hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN);
+-        }
+-
+-        if (!g_ddraw.render.run)
+-            break;
+-
+-#if _DEBUG
+-        dbg_draw_frame_info_end();
+-#endif
+-
+-        fpsl_frame_end();
+-    }
+-
+-    if (g_config.vhack)
+-        InterlockedExchange(&g_ddraw.upscale_hack_active, FALSE);
+-}
+-
+-static BOOL ogl_release_resources()
+-{
+-    glDeleteTextures(TEXTURE_COUNT, g_ogl.surface_tex_ids);
+-
+-    if (g_ddraw.bpp == 8)
+-        glDeleteTextures(TEXTURE_COUNT, g_ogl.palette_tex_ids);
+-
+-    if (glUseProgram)
+-        glUseProgram(0);
+-
+-    if (g_ogl.shader1_program)
+-    {
+-        glDeleteTextures(FBO_COUNT, g_ogl.frame_buffer_tex_id);
+-
+-        if (glDeleteBuffers)
+-            glDeleteBuffers(3, g_ogl.shader1_vbos);
+-
+-        if (glDeleteFramebuffers)
+-            glDeleteFramebuffers(FBO_COUNT, g_ogl.frame_buffer_id);
+-
+-        if (glDeleteVertexArrays)
+-            glDeleteVertexArrays(1, &g_ogl.shader1_vao);
+-    }
+-
+-    if (g_ogl.shader2_program)
+-    {
+-        if (glDeleteBuffers)
+-            glDeleteBuffers(3, g_ogl.shader2_vbos);
+-
+-        if (glDeleteVertexArrays)
+-            glDeleteVertexArrays(1, &g_ogl.shader2_vao);
+-    }
+-
+-    if (glDeleteProgram)
+-    {
+-        if (g_ogl.main_program)
+-            glDeleteProgram(g_ogl.main_program);
+-
+-        if (g_ogl.shader1_program)
+-            glDeleteProgram(g_ogl.shader1_program);
+-
+-        if (g_ogl.shader2_program)
+-            glDeleteProgram(g_ogl.shader2_program);
+-    }
+-
+-    if (g_oglu_got_version3)
+-    {
+-        if (g_ogl.main_program)
+-        {
+-            if (glDeleteBuffers)
+-                glDeleteBuffers(3, g_ogl.main_vbos);
+-
+-            if (glDeleteVertexArrays)
+-                glDeleteVertexArrays(1, &g_ogl.main_vao);
+-        }
+-    }
+-
+-    return TRUE;
+-}
+-
+-BOOL ogl_release()
+-{
+-    if (g_ddraw.render.thread)
+-        return FALSE;
+-
+-    if (g_ogl.context)
+-    {
+-        xwglMakeCurrent(NULL, NULL);
+-        xwglDeleteContext(g_ogl.context);
+-        g_ogl.context = NULL;
+-    }
+-
+-    return TRUE;
+-}
+-
+-static BOOL ogl_texture_upload_test()
+-{
+-    if (g_ogl.surface_tex_width > 4096 || g_ogl.surface_tex_height > 4096)
+-        return TRUE;
+-
+-    int* surface_tex =
+-        HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, g_ogl.surface_tex_width * g_ogl.surface_tex_height * sizeof(int));
+-
+-    if (!surface_tex)
+-        return TRUE;
+-
+-    static char test_data[] = { 0,1,2,0,0,2,3,0,0,4,5,0,0,6,7,0,0,8,9,0 };
+-
+-    int i;
+-    for (i = 0; i < TEXTURE_COUNT; i++)
+-    {
+-        memcpy(surface_tex, test_data, sizeof(test_data));
+-
+-        glBindTexture(GL_TEXTURE_2D, g_ogl.surface_tex_ids[i]);
+-
+-        glTexSubImage2D(
+-            GL_TEXTURE_2D,
+-            0,
+-            0,
+-            0,
+-            g_ddraw.width,
+-            g_ddraw.height,
+-            g_ogl.surface_format,
+-            g_ogl.surface_type,
+-            surface_tex);
+-
+-        memset(surface_tex, 0, sizeof(test_data));
+-
+-        glGetTexImage(GL_TEXTURE_2D, 0, g_ogl.surface_format, g_ogl.surface_type, surface_tex);
+-
+-        if (memcmp(surface_tex, test_data, sizeof(test_data)) != 0)
+-        {
+-            HeapFree(GetProcessHeap(), 0, surface_tex);
+-            return FALSE;
+-        }
+-    }
+-
+-    if (g_ddraw.bpp == 8)
+-    {
+-        for (i = 0; i < TEXTURE_COUNT; i++)
+-        {
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.palette_tex_ids[i]);
+-
+-            glTexSubImage2D(
+-                GL_TEXTURE_2D,
+-                0,
+-                0,
+-                0,
+-                256,
+-                1,
+-                GL_RGBA,
+-                GL_UNSIGNED_BYTE,
+-                surface_tex);
+-
+-            memset(surface_tex, 0, sizeof(test_data));
+-
+-            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, surface_tex);
+-
+-            if (memcmp(surface_tex, test_data, sizeof(test_data)) != 0)
+-            {
+-                HeapFree(GetProcessHeap(), 0, surface_tex);
+-                return FALSE;
+-            }
+-                
+-        }
+-    }
+-
+-    HeapFree(GetProcessHeap(), 0, surface_tex);
+-    return TRUE;
+-}
+-
+-static BOOL ogl_shader_test()
+-{
+-    BOOL result = TRUE;
+-
+-    if (g_ddraw.bpp != 8 || g_ogl.surface_tex_width > 4096 || g_ogl.surface_tex_height > 4096)
+-        return result;
+-
+-    int* surface_tex =
+-        HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, g_ogl.surface_tex_width * g_ogl.surface_tex_height * sizeof(int));
+-
+-    if (!surface_tex)
+-        return TRUE;
+-
+-    if (g_oglu_got_version3 && g_ogl.main_program)
+-    {
+-        memset(surface_tex, 0, g_ogl.surface_tex_height * g_ogl.surface_tex_width * sizeof(int));
+-
+-        GLuint fbo_id = 0;
+-        glGenFramebuffers(1, &fbo_id);
+-
+-        glBindFramebuffer(GL_FRAMEBUFFER, fbo_id);
+-
+-        GLuint fbo_tex_id = 0;
+-        glGenTextures(1, &fbo_tex_id);
+-        glBindTexture(GL_TEXTURE_2D, fbo_tex_id);
+-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+-        glTexImage2D(
+-            GL_TEXTURE_2D,
+-            0,
+-            GL_RGBA8,
+-            g_ogl.surface_tex_width,
+-            g_ogl.surface_tex_height,
+-            0,
+-            GL_RGBA,
+-            GL_UNSIGNED_BYTE,
+-            surface_tex);
+-
+-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_tex_id, 0);
+-
+-        GLenum draw_buffers[1] = { GL_COLOR_ATTACHMENT0 };
+-        glDrawBuffers(1, draw_buffers);
+-
+-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+-        {
+-            static char gray0pal[] = { 128,128,128,128 };
+-
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.palette_tex_ids[0]);
+-
+-            glTexSubImage2D(
+-                GL_TEXTURE_2D,
+-                0,
+-                0,
+-                0,
+-                1,
+-                1,
+-                GL_RGBA,
+-                GL_UNSIGNED_BYTE,
+-                gray0pal);
+-
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.surface_tex_ids[0]);
+-
+-            glTexSubImage2D(
+-                GL_TEXTURE_2D,
+-                0,
+-                0,
+-                0,
+-                g_ogl.surface_tex_width,
+-                g_ogl.surface_tex_height,
+-                g_ogl.surface_format,
+-                GL_UNSIGNED_BYTE,
+-                surface_tex);
+-
+-            glViewport(0, 0, g_ogl.surface_tex_width, g_ogl.surface_tex_height);
+-
+-            glUseProgram(g_ogl.main_program);
+-
+-            glActiveTexture(GL_TEXTURE1);
+-            glBindTexture(GL_TEXTURE_2D, g_ogl.palette_tex_ids[0]);
+-            glActiveTexture(GL_TEXTURE0);
+-
+-            glBindVertexArray(g_ogl.main_vao);
+-            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+-            glBindVertexArray(0);
+-
+-            glActiveTexture(GL_TEXTURE1);
+-            glBindTexture(GL_TEXTURE_2D, 0);
+-            glActiveTexture(GL_TEXTURE0);
+-
+-            glBindTexture(GL_TEXTURE_2D, fbo_tex_id);
+-            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, surface_tex);
+-
+-            if (glGetError() == GL_NO_ERROR)
+-            {
+-                int i;
+-                for (i = 0; i < g_ogl.surface_tex_height * g_ogl.surface_tex_width; i++)
+-                {
+-                    if (surface_tex[i] != 0x80808080)
+-                    {
+-                        result = FALSE;
+-                        break;
+-                    }
+-                }
+-            }
+-        }
+-
+-        glBindTexture(GL_TEXTURE_2D, 0);
+-
+-        if (glDeleteFramebuffers)
+-            glDeleteFramebuffers(1, &fbo_id);
+-
+-        glDeleteTextures(1, &fbo_tex_id);
+-
+-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+-    }
+-
+-    while (glGetError() != GL_NO_ERROR);
+-
+-    HeapFree(GetProcessHeap(), 0, surface_tex);
+-    return result;
+-}
+--- a/inc/gles2_pipeline.h
++++ b/inc/gles2_pipeline.h
+@@ -0,0 +1,205 @@
++/* SPDX-License-Identifier: MIT
++ * GL2 pipeline only. No game structs, logging, process termination or readback
++ * of game pixels. All functions return a bounded failure code to the adapter.
++ */
++#ifndef PD2_GLES2_PIPELINE_H
++#define PD2_GLES2_PIPELINE_H
++#include <string.h>
++#include "opengl_utils.h"
++#define PD2_GL_API(X) \
++ X(PFNGLGETERRORPROC, GetError) X(PFNGLGETSTRINGPROC, GetString) \
++ X(PFNGLCREATESHADERPROC, CreateShader) X(PFNGLSHADERSOURCEPROC, ShaderSource) \
++ X(PFNGLCOMPILESHADERPROC, CompileShader) X(PFNGLGETSHADERIVPROC, GetShaderiv) \
++ X(PFNGLDELETESHADERPROC, DeleteShader) X(PFNGLCREATEPROGRAMPROC, CreateProgram) \
++ X(PFNGLATTACHSHADERPROC, AttachShader) X(PFNGLLINKPROGRAMPROC, LinkProgram) \
++ X(PFNGLGETPROGRAMIVPROC, GetProgramiv) X(PFNGLDELETEPROGRAMPROC, DeleteProgram) \
++ X(PFNGLBINDATTRIBLOCATIONPROC, BindAttribLocation) X(PFNGLUSEPROGRAMPROC, UseProgram) \
++ X(PFNGLGETUNIFORMLOCATIONPROC, GetUniformLocation) X(PFNGLUNIFORM1IPROC, Uniform1i) \
++ X(PFNGLGENTEXTURESPROC, GenTextures) X(PFNGLBINDTEXTUREPROC, BindTexture) \
++ X(PFNGLTEXPARAMETERIPROC, TexParameteri) X(PFNGLTEXIMAGE2DPROC, TexImage2D) \
++ X(PFNGLTEXSUBIMAGE2DPROC, TexSubImage2D) X(PFNGLDELETETEXTURESPROC, DeleteTextures) \
++ X(PFNGLACTIVETEXTUREPROC, ActiveTexture) X(PFNGLPIXELSTOREIPROC, PixelStorei) \
++ X(PFNGLGENBUFFERSPROC, GenBuffers) X(PFNGLBINDBUFFERPROC, BindBuffer) \
++ X(PFNGLBUFFERDATAPROC, BufferData) X(PFNGLDELETEBUFFERSPROC, DeleteBuffers) \
++ X(PFNGLVERTEXATTRIBPOINTERPROC, VertexAttribPointer) \
++ X(PFNGLENABLEVERTEXATTRIBARRAYPROC, EnableVertexAttribArray) \
++ X(PFNGLDRAWELEMENTSPROC, DrawElements) X(PFNGLVIEWPORTPROC, Viewport) \
++ X(PFNGLCLEARCOLORPROC, ClearColor) X(PFNGLCLEARPROC, Clear) \
++ X(PFNGLDISABLEPROC, Disable) X(PFNGLREADPIXELSPROC, ReadPixels) \
++ X(PFNGLGETINTEGERVPROC, GetIntegerv)
++#define PD2_GL_FIELD(t,n) t n;
++typedef struct { PD2_GL_API(PD2_GL_FIELD) } pd2_gl_api;
++#undef PD2_GL_FIELD
++
++enum { PD2_GL_OK=0, PD2_GL_CONTEXT=1, PD2_GL_API_MISSING=2,
++ PD2_GL_VERSION=3, PD2_GL_VERTEX=4, PD2_GL_FRAGMENT=5, PD2_GL_LINK=6,
++ PD2_GL_TEXTURE=7, PD2_GL_VALIDATION=8, PD2_GL_UPLOAD=9, PD2_GL_DRAW=10,
++ PD2_GL_SWAP=11, PD2_GL_FORMAT=12, PD2_GL_WAIT=13, PD2_GL_RELEASE=14,
++ PD2_GL_POLICY=15, PD2_GL_STATE=16 };
++
++typedef struct {
++ GLuint program, texture, palette, vbo;
++ GLenum format, type;
++ int width, height, bpp, rgb555;
++} pd2_gl_pipeline;
++
++static int pd2_gl_api_complete(const pd2_gl_api *a) {
++#define PD2_GL_CHECK(t,n) if (!a->n) return 0;
++ PD2_GL_API(PD2_GL_CHECK)
++#undef PD2_GL_CHECK
++ return 1;
++}
++static int pd2_gl_error(pd2_gl_api *a, int failure) {
++ /* Single bounded query: no draining and no errors ignored. */
++ return a->GetError() == GL_NO_ERROR ? 0 : failure;
++}
++static int pd2_gl_format(int bpp,int rgb555,GLenum *format,GLenum *type) {
++ if (bpp==8) { *format=GL_LUMINANCE; *type=GL_UNSIGNED_BYTE; }
++ else if (bpp==16 && rgb555) { *format=GL_BGRA; *type=GL_UNSIGNED_SHORT_1_5_5_5_REV; }
++ else if (bpp==16) { *format=GL_RGB; *type=GL_UNSIGNED_SHORT_5_6_5; }
++ else if (bpp==32) { *format=GL_BGRA; *type=GL_UNSIGNED_BYTE; }
++ else return PD2_GL_FORMAT;
++ return 0;
++}
++static GLuint pd2_gl_shader(pd2_gl_api *a,GLenum type,const char *text) {
++ GLint ok=0; GLuint shader=a->CreateShader(type);
++ if (!shader) return 0;
++ a->ShaderSource(shader,1,&text,NULL); a->CompileShader(shader);
++ a->GetShaderiv(shader,GL_COMPILE_STATUS,&ok);
++ if (!ok) { a->DeleteShader(shader); return 0; }
++ return shader;
++}
++static int pd2_gl_destroy(pd2_gl_api *a,pd2_gl_pipeline *p) {
++ if (p->program) a->DeleteProgram(p->program);
++ if (p->texture) a->DeleteTextures(1,&p->texture);
++ if (p->palette) a->DeleteTextures(1,&p->palette);
++ if (p->vbo) a->DeleteBuffers(1,&p->vbo);
++ memset(p,0,sizeof(*p));
++ return pd2_gl_error(a,PD2_GL_RELEASE);
++}
++static int pd2_gl_init(pd2_gl_api *a,pd2_gl_pipeline *p,int width,int height,int bpp,int rgb555) {
++ static const char *vs="#version 110\nattribute vec2 Position; attribute vec2 TexCoord; varying vec2 UV; void main(){UV=TexCoord;gl_Position=vec4(Position,0.0,1.0);}";
++ static const char *fs_rgb="#version 110\nuniform sampler2D Surface; varying vec2 UV; void main(){gl_FragColor=vec4(texture2D(Surface,UV).rgb,1.0);}";
++ static const char *fs_pal="#version 110\nuniform sampler2D Surface; uniform sampler2D Palette; varying vec2 UV; void main(){float i=floor(texture2D(Surface,UV).r*255.0+0.5);gl_FragColor=vec4(texture2D(Palette,vec2((i+0.5)/256.0,0.5)).rgb,1.0);}";
++ GLuint v=0,f=0; GLint ok=0,location,maximum=0; int code;
++ /* Top-left surface origin, bottom-left GL viewport. Interleaved attributes. */
++ static const GLfloat vertices[]={-1,-1,0,1, 1,-1,1,1, 1,1,1,0, -1,1,0,0};
++ memset(p,0,sizeof(*p));
++ if (!pd2_gl_api_complete(a)) return PD2_GL_API_MISSING;
++ if ((code=pd2_gl_format(bpp,rgb555,&p->format,&p->type))) return code;
++ a->GetIntegerv(GL_MAX_TEXTURE_SIZE,&maximum);
++ if (width<1 || height<1 || width>maximum || height>maximum || width>16384 || height>16384) return PD2_GL_FORMAT;
++ p->width=width; p->height=height; p->bpp=bpp; p->rgb555=rgb555;
++ if ((code=pd2_gl_error(a,PD2_GL_STATE))) return code;
++ v=pd2_gl_shader(a,GL_VERTEX_SHADER,vs); if (!v) return PD2_GL_VERTEX;
++ f=pd2_gl_shader(a,GL_FRAGMENT_SHADER,bpp==8 ? fs_pal:fs_rgb);
++ if (!f) { a->DeleteShader(v); return PD2_GL_FRAGMENT; }
++ p->program=a->CreateProgram();
++ if (p->program) {
++ a->AttachShader(p->program,v); a->AttachShader(p->program,f);
++ a->BindAttribLocation(p->program,0,"Position"); a->BindAttribLocation(p->program,1,"TexCoord");
++ a->LinkProgram(p->program); a->GetProgramiv(p->program,GL_LINK_STATUS,&ok);
++ }
++ a->DeleteShader(v); a->DeleteShader(f);
++ if (!ok || pd2_gl_error(a,PD2_GL_LINK)) return PD2_GL_LINK;
++ a->UseProgram(p->program);
++ location=a->GetUniformLocation(p->program,"Surface"); if (location<0) return PD2_GL_LINK;
++ a->Uniform1i(location,0);
++ if (bpp==8) {
++ location=a->GetUniformLocation(p->program,"Palette"); if (location<0) return PD2_GL_LINK;
++ a->Uniform1i(location,1);
++ }
++ a->GenTextures(1,&p->texture);
++ a->ActiveTexture(GL_TEXTURE0); a->BindTexture(GL_TEXTURE_2D,p->texture);
++ a->TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
++ a->TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
++ a->TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
++ a->TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
++ a->PixelStorei(GL_UNPACK_ALIGNMENT,1);
++ a->TexImage2D(GL_TEXTURE_2D,0,bpp==8 ? GL_LUMINANCE : bpp==16 && !rgb555 ? GL_RGB:GL_RGBA,width,height,0,p->format,p->type,NULL);
++ if (bpp==8) {
++ a->GenTextures(1,&p->palette); a->ActiveTexture(GL_TEXTURE1); a->BindTexture(GL_TEXTURE_2D,p->palette);
++ a->TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
++ a->TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
++ a->TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
++ a->TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
++ a->TexImage2D(GL_TEXTURE_2D,0,GL_RGBA,256,1,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
++ }
++ if (!p->texture || (bpp==8 && !p->palette) || pd2_gl_error(a,PD2_GL_TEXTURE)) return PD2_GL_TEXTURE;
++ a->GenBuffers(1,&p->vbo); a->BindBuffer(GL_ARRAY_BUFFER,p->vbo);
++ a->BufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STATIC_DRAW);
++ a->VertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,4*sizeof(GLfloat),(const void *)0);
++ a->VertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,4*sizeof(GLfloat),(const void *)(2*sizeof(GLfloat)));
++ a->EnableVertexAttribArray(0); a->EnableVertexAttribArray(1);
++ a->Disable(GL_DEPTH_TEST); a->Disable(GL_BLEND); a->Disable(GL_CULL_FACE); a->Disable(GL_SCISSOR_TEST); a->Disable(GL_DITHER);
++ return !p->vbo ? PD2_GL_STATE:pd2_gl_error(a,PD2_GL_STATE);
++}
++static int pd2_gl_upload_palette(pd2_gl_api *a,pd2_gl_pipeline *p,const void *palette) {
++ if (p->bpp!=8 || !palette) return PD2_GL_UPLOAD;
++ a->ActiveTexture(GL_TEXTURE1); a->BindTexture(GL_TEXTURE_2D,p->palette);
++ a->TexSubImage2D(GL_TEXTURE_2D,0,0,0,256,1,GL_RGBA,GL_UNSIGNED_BYTE,palette);
++ return pd2_gl_error(a,PD2_GL_UPLOAD);
++}
++static int pd2_gl_upload(pd2_gl_api *a,pd2_gl_pipeline *p,const void *pixels,int pitch,const void *palette) {
++ int bytes=p->bpp/8,row;
++ if (!pixels || pitch<p->width*bytes || pitch>268435456) return PD2_GL_UPLOAD;
++ a->ActiveTexture(GL_TEXTURE0); a->BindTexture(GL_TEXTURE_2D,p->texture);
++ /* No GL_UNPACK_ROW_LENGTH (not GLES2). Tight rows upload once; unusual pitch
++  * uploads row slices directly, never converts/copies a full surface on CPU. */
++ if (pitch==p->width*bytes) a->TexSubImage2D(GL_TEXTURE_2D,0,0,0,p->width,p->height,p->format,p->type,pixels);
++ else for (row=0;row<p->height;++row) a->TexSubImage2D(GL_TEXTURE_2D,0,0,row,p->width,1,p->format,p->type,(const unsigned char *)pixels+(size_t)row*pitch);
++ if (pd2_gl_error(a,PD2_GL_UPLOAD)) return PD2_GL_UPLOAD;
++ if (p->bpp==8 && palette) return pd2_gl_upload_palette(a,p,palette);
++ return 0;
++}
++static int pd2_gl_draw(pd2_gl_api *a,pd2_gl_pipeline *p,int x,int y,int width,int height) {
++ static const GLushort indices[]={0,1,2,0,2,3};
++ a->Viewport(x,y,width,height); a->UseProgram(p->program);
++ a->ActiveTexture(GL_TEXTURE0); a->BindTexture(GL_TEXTURE_2D,p->texture);
++ if (p->bpp==8) { a->ActiveTexture(GL_TEXTURE1); a->BindTexture(GL_TEXTURE_2D,p->palette); }
++ a->DrawElements(GL_TRIANGLES,6,GL_UNSIGNED_SHORT,indices);
++ return pd2_gl_error(a,PD2_GL_DRAW);
++}
++/* Startup-only real pixel validation of every supported input path. Synthetic
++ * red/green top row, blue/white bottom row. ReadPixels is NEVER used on game data. */
++static int pd2_gl_validate(pd2_gl_api *a,int selected_bpp,int selected_rgb555) {
++ static const unsigned char indexed[]={1,2,3,4};
++ static const unsigned short rgb565[]={0xf800,0x07e0,0x001f,0xffff};
++ static const unsigned short rgb555[]={0x7c00,0x03e0,0x001f,0x7fff};
++ static const unsigned char bgra[]={0,0,255,0, 0,255,0,0, 255,0,0,0, 255,255,255,0};
++ static const unsigned char expected[]={0,0,255,255, 255,255,255,255, 255,0,0,255, 0,255,0,255};
++ unsigned char palette[1024]={0},result[16];
++ const void *pixels[]={indexed,rgb565,rgb555,bgra};
++ const int bpps[]={8,16,16,32}; int i,j,code,destroy_code; pd2_gl_pipeline p;
++ if (selected_bpp && selected_bpp!=8 && selected_bpp!=16 && selected_bpp!=32) return PD2_GL_FORMAT;
++ palette[4]=255; palette[9]=255; palette[14]=255; palette[16]=palette[17]=palette[18]=255;
++ for (i=0;i<4;++i) {
++ /* Native harness requests all formats (0); runtime validates only the active
++  * mode, so an unused driver format cannot reject otherwise valid gameplay. */
++ if (selected_bpp && (bpps[i]!=selected_bpp || (selected_bpp==16 && (i==2)!=!!selected_rgb555))) continue;
++ code=pd2_gl_init(a,&p,2,2,bpps[i],i==2);
++ if (!code) code=pd2_gl_upload(a,&p,pixels[i],2*(bpps[i]/8),palette);
++ if (!code) code=pd2_gl_draw(a,&p,0,0,2,2);
++ if (!code) {
++ memset(result,0,sizeof(result)); a->PixelStorei(GL_PACK_ALIGNMENT,1);
++ a->ReadPixels(0,0,2,2,GL_RGBA,GL_UNSIGNED_BYTE,result);
++ code=pd2_gl_error(a,PD2_GL_VALIDATION);
++ if (!code) for (j=0;j<16;++j) if ((int)result[j]-(int)expected[j]>8 || (int)expected[j]-(int)result[j]>8) { code=PD2_GL_VALIDATION; break; }
++ }
++ /* Palette-only update must recolor without a surface reupload. */
++ if (!code && i==0) {
++ palette[12]=255;palette[13]=0;palette[14]=0;
++ code=pd2_gl_upload_palette(a,&p,palette);
++ if (!code) code=pd2_gl_draw(a,&p,0,0,2,2);
++ if (!code) {
++ a->ReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,result);
++ code=pd2_gl_error(a,PD2_GL_VALIDATION);
++ if (!code && (result[0]<247 || result[1]>8 || result[2]>8 || result[3]<247)) code=PD2_GL_VALIDATION;
++ }
++ }
++ destroy_code=pd2_gl_destroy(a,&p);
++ if (code) return code; if (destroy_code) return destroy_code;
++ }
++ return 0;
++}
++#endif
+--- a/inc/gles2_events.h
++++ b/inc/gles2_events.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: MIT
++ * Fixed numeric, bounded side channel; independent of rendering decisions.
++ */
++#ifndef PD2_GLES2_EVENTS_H
++#define PD2_GLES2_EVENTS_H
++#include <windows.h>
++#include <stdio.h>
++#define PD2_GL_EVENT_LIMIT 32768u
++#define PD2_GL_EVENT_LINE 256u
++#define PD2_GL_EXIT_CODE 86u
++/* Stage:1 context,2 api,3 shader,4 texture,5 validation,6 frame,7 release,8 policy.
++ * Code: gles2_pipeline.h; zero=ready, 1..16=failed. */
++static HANDLE pd2_gl_event_file=INVALID_HANDLE_VALUE;
++static unsigned pd2_gl_event_bytes,pd2_gl_event_count;
++static int pd2_gl_event_disabled;
++static volatile LONG pd2_gl_event_gate;
++static unsigned pd2_gl_major,pd2_gl_minor;
++static void pd2_gl_event(unsigned stage,unsigned code,unsigned bpp,unsigned width,unsigned height,unsigned rw,unsigned rh) {
++ char line[PD2_GL_EVENT_LINE]; int length; DWORD written;
++ if (InterlockedCompareExchange(&pd2_gl_event_gate,1,0)) return;
++ if (pd2_gl_event_disabled || stage<1 || stage>8 || code>16 || width>16384 || height>16384 || rw>16384 || rh>16384 || (bpp!=0 && bpp!=8 && bpp!=16 && bpp!=32)) goto done;
++ /* Reserve the final record for fatal evidence after many mode restarts. */
++ if (pd2_gl_event_count >= (code ? 128u:127u)) goto done;
++ if (pd2_gl_event_file==INVALID_HANDLE_VALUE) {
++ pd2_gl_event_file=CreateFileW(L"pd2-gles2.jsonl",GENERIC_WRITE,FILE_SHARE_READ,NULL,CREATE_NEW,FILE_ATTRIBUTE_TEMPORARY|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
++ if (pd2_gl_event_file==INVALID_HANDLE_VALUE) { pd2_gl_event_disabled=1;goto done; }
++ }
++ length=snprintf(line,sizeof(line),"{\"stage\":%u,\"code\":%u,\"gl_major\":%u,\"gl_minor\":%u,\"bpp\":%u,\"width\":%u,\"height\":%u,\"render_width\":%u,\"render_height\":%u}\n",stage,code,pd2_gl_major,pd2_gl_minor,bpp,width,height,rw,rh);
++ if (length<=0 || (unsigned)length>=sizeof(line) || (unsigned)length>PD2_GL_EVENT_LIMIT-pd2_gl_event_bytes) {pd2_gl_event_disabled=1;goto done;}
++ ++pd2_gl_event_count; pd2_gl_event_bytes+=(unsigned)length;
++ if (!WriteFile(pd2_gl_event_file,line,(DWORD)length,&written,NULL) || written!=(DWORD)length) pd2_gl_event_disabled=1;
++ done:
++ if (pd2_gl_event_disabled && pd2_gl_event_file!=INVALID_HANDLE_VALUE) {CloseHandle(pd2_gl_event_file);pd2_gl_event_file=INVALID_HANDLE_VALUE;}
++ InterlockedExchange(&pd2_gl_event_gate,0);
++}
++#endif
+--- a/inc/gles2_palette.h
++++ b/inc/gles2_palette.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: MIT
++ * Independent palette-only gate. Writer releases before testing primary/signal;
++ * renderer snapshots only 256 entries, releases before driver calls. No lock
++ * acquisition by writer of dd.cs/surface.cs, so no new reverse lock ordering.
++ */
++#ifndef PD2_GLES2_PALETTE_H
++#define PD2_GLES2_PALETTE_H
++#include <windows.h>
++extern SRWLOCK pd2_gles2_palette_gate;
++#endif
+--- a/inc/present_metrics.h
++++ b/inc/present_metrics.h
+@@ -0,0 +1,176 @@
++/* SPDX-License-Identifier: MIT
++ * Presentation diagnostics only: no access to surfaces, input or game memory.
++ * Integer values: event 1=sample, 2=backend entry, 3=first successful present.
++ * Backend 1=GDI, 2=OpenGL. First-present emitted once per backend per process.
++ */
++#ifndef PD2_PRESENT_METRICS_H
++#define PD2_PRESENT_METRICS_H
++#include <stdint.h>
++#include <stdio.h>
++#define PD2_PRESENT_LIMIT 262144u
++#define PD2_PRESENT_LINE 192u
++
++typedef struct {
++    uint64_t start, frequency;
++    unsigned frames, backend;
++} pd2_metrics;
++
++static __inline void pd2_metrics_init(pd2_metrics *m, uint64_t now, uint64_t frequency, unsigned backend)
++{
++    m->start = now;
++    m->frequency = frequency <= 1000000000ULL ? frequency : 0;
++    m->frames = 0;
++    m->backend = backend;
++}
++
++/* Returns a complete bounded numeric JSON line only after one elapsed second.
++ * Failed presentations advance time but are never counted. No catch-up bursts.
++ * Width/height describe the render target, not the source surface.
++ */
++static __inline unsigned pd2_metrics_frame(pd2_metrics *m, uint64_t now, int success,
++    unsigned width, unsigned height, char *line, unsigned capacity)
++{
++    uint64_t delta, ms;
++    int n;
++    if (!m->frequency || (m->backend != 1 && m->backend != 2) || now < m->start)
++        return 0;
++    if (success && m->frames < 1000000000u) ++m->frames;
++    delta = now - m->start;
++    if (delta < m->frequency) return 0;
++    ms = delta / m->frequency;
++    if (ms > 86400 || !width || !height || width > 65535 || height > 65535) {
++        m->frames = 0;
++        m->start = now;
++        return 0;
++    }
++    ms = ms * 1000 + (delta % m->frequency) * 1000 / m->frequency;
++    n = snprintf(line, capacity,
++        "{\"event\":1,\"backend\":%u,\"frames\":%u,\"duration_ms\":%llu,\"width\":%u,\"height\":%u}\n",
++        m->backend, m->frames, (unsigned long long)ms, width, height);
++    m->frames = 0;
++    m->start = now;
++    return n > 0 && (unsigned)n < capacity ? (unsigned)n : 0;
++}
++
++static __inline unsigned pd2_metrics_status(unsigned backend, unsigned width, unsigned height,
++    char *line, unsigned capacity)
++{
++    int n;
++    if ((backend != 1 && backend != 2) || !width || !height || width > 65535 || height > 65535)
++        return 0;
++    n = snprintf(line, capacity,
++        "{\"event\":2,\"backend\":%u,\"frames\":0,\"duration_ms\":0,\"width\":%u,\"height\":%u}\n",
++        backend, width, height);
++    return n > 0 && (unsigned)n < capacity ? (unsigned)n : 0;
++}
++
++static __inline unsigned pd2_metrics_first_present(unsigned backend, unsigned width, unsigned height,
++    char *line, unsigned capacity)
++{
++    int n;
++    if ((backend != 1 && backend != 2) || !width || !height || width > 65535 || height > 65535)
++        return 0;
++    n = snprintf(line, capacity,
++        "{\"event\":3,\"backend\":%u,\"frames\":1,\"duration_ms\":0,\"width\":%u,\"height\":%u}\n",
++        backend, width, height);
++    return n > 0 && (unsigned)n < capacity ? (unsigned)n : 0;
++}
++
++#ifndef PD2_PRESENT_CORE_ONLY
++void pd2_present_start(unsigned backend, unsigned width, unsigned height);
++void pd2_present_frame(unsigned backend, int success, unsigned width, unsigned height);
++#ifdef PD2_PRESENT_IMPLEMENTATION
++#include <windows.h>
++static volatile LONG pd2_present_lock;
++static int pd2_present_disabled;
++static HANDLE pd2_present_file = INVALID_HANDLE_VALUE;
++static unsigned pd2_present_bytes;
++static unsigned pd2_present_seen; /* Process lifetime; never reset on backend entry. */
++static pd2_metrics pd2_present_state;
++
++/* Called only with the nonblocking global gate held. CREATE_NEW never follows
++ * or truncates an existing symlink/file. Fixed basename, no environment/config.
++ * Holding this handle denies other Windows writers/deleters until process exit.
++ */
++static void pd2_present_setup(unsigned backend, uint64_t now)
++{
++    LARGE_INTEGER frequency;
++    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) {
++        pd2_present_disabled = 1;
++        return;
++    }
++    if (pd2_present_file == INVALID_HANDLE_VALUE) {
++        pd2_present_file = CreateFileW(L"pd2-present.jsonl", GENERIC_WRITE,
++            FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY |
++            FILE_FLAG_OPEN_REPARSE_POINT, NULL);
++        if (pd2_present_file == INVALID_HANDLE_VALUE) {
++            pd2_present_disabled = 1;
++            return;
++        }
++    }
++    pd2_metrics_init(&pd2_present_state, now, (uint64_t)frequency.QuadPart, backend);
++}
++
++/* Gate held; reserve before I/O so any short/failed write permanently stops. */
++static void pd2_present_write(const char *line, unsigned length)
++{
++    DWORD written;
++    if (!length || pd2_present_disabled) return;
++    if (length > PD2_PRESENT_LIMIT - pd2_present_bytes) {
++        pd2_present_disabled = 1;
++    } else {
++        pd2_present_bytes += length;
++        if (!WriteFile(pd2_present_file, line, length, &written, NULL) || written != length)
++            pd2_present_disabled = 1;
++    }
++    if (pd2_present_disabled && pd2_present_file != INVALID_HANDLE_VALUE) {
++        CloseHandle(pd2_present_file);
++        pd2_present_file = INVALID_HANDLE_VALUE;
++    }
++}
++
++void pd2_present_start(unsigned backend, unsigned width, unsigned height)
++{
++    LARGE_INTEGER now;
++    char line[PD2_PRESENT_LINE];
++    unsigned length;
++    if (InterlockedCompareExchange(&pd2_present_lock, 1, 0)) return;
++    if (!pd2_present_disabled && QueryPerformanceCounter(&now)) {
++        pd2_present_setup(backend, (uint64_t)now.QuadPart);
++        length = pd2_metrics_status(backend, width, height, line, sizeof(line));
++        pd2_present_write(line, length);
++    }
++    InterlockedExchange(&pd2_present_lock, 0);
++}
++
++void pd2_present_frame(unsigned backend, int success, unsigned width, unsigned height)
++{
++    LARGE_INTEGER now;
++    char line[PD2_PRESENT_LINE];
++    unsigned length;
++    if (InterlockedCompareExchange(&pd2_present_lock, 1, 0)) return;
++    if (pd2_present_disabled || !QueryPerformanceCounter(&now)) goto done;
++    if (pd2_present_file == INVALID_HANDLE_VALUE || pd2_present_state.backend != backend)
++        pd2_present_setup(backend, (uint64_t)now.QuadPart);
++    if (pd2_present_disabled) goto done;
++    if (success && (backend == 1 || backend == 2) && !(pd2_present_seen & (1u << backend))) {
++        length = pd2_metrics_first_present(backend, width, height, line, sizeof(line));
++        if (length) {
++            pd2_present_seen |= 1u << backend;
++            pd2_present_write(line, length);
++            if (pd2_present_disabled) goto done;
++        }
++    }
++    length = pd2_metrics_frame(&pd2_present_state, (uint64_t)now.QuadPart,
++        success, width, height, line, sizeof(line));
++    pd2_present_write(line, length);
++done:
++    if (pd2_present_disabled && pd2_present_file != INVALID_HANDLE_VALUE) {
++        CloseHandle(pd2_present_file);
++        pd2_present_file = INVALID_HANDLE_VALUE;
++    }
++    InterlockedExchange(&pd2_present_lock, 0);
++}
++#endif
++#endif
++#endif
+--- a/src/dd.c
++++ b/src/dd.c
+@@ -1837,51 +1837,12 @@
+         }
+ 
+         
+-        if (_strcmpi(g_config.renderer, "direct3d9on12") == 0)
+-        {
+-            g_config.d3d9on12 = TRUE;
+-        }
+-        else if (_strcmpi(g_config.renderer, "openglcore") == 0)
+-        {
+-            g_config.opengl_core = TRUE;
+-        }
+-
+-        if (tolower(g_config.renderer[0]) == 'd') /* direct3d9 or direct3d9on12*/
+-        {
+-            g_ddraw.renderer = d3d9_render_main;
+-        }
+-        else if (tolower(g_config.renderer[0]) == 's' || tolower(g_config.renderer[0]) == 'g') /* gdi */
+-        {
+-            g_ddraw.renderer = gdi_render_main;
+-        }
+-        else if (tolower(g_config.renderer[0]) == 'o') /* opengl or openglcore */
+-        {
+-            if (oglu_load_dll())
+-            {
+-                g_ddraw.renderer = ogl_render_main;
+-            }
+-            else
+-            {
+-                g_ddraw.show_driver_warning = TRUE;
+-                g_ddraw.renderer = gdi_render_main;
+-            }
+-        }
+-        else /* auto */
+-        {
+-            if (!IsWine() && d3d9_is_available())
+-            {
+-                g_ddraw.renderer = d3d9_render_main;
+-            }
+-            else if (oglu_load_dll())
+-            {
+-                g_ddraw.renderer = ogl_render_main;
+-            }
+-            else
+-            {
+-                g_ddraw.show_driver_warning = TRUE;
+-                g_ddraw.renderer = gdi_render_main;
+-            }
+-        }
++        /* Opt-in GL2 DLL: never select a silent GDI/D3D fallback. */
++        extern void pd2_gles2_fatal(unsigned stage, unsigned code);
++        if (!oglu_load_dll()) pd2_gles2_fatal(2, 2);
++        g_config.opengl_core = FALSE;
++        g_config.minfps = 0;
++        g_ddraw.renderer = ogl_render_main;
+ 
+         LONG ref = InterlockedDecrement(&g_ddraw.ref);
+ 
+--- a/src/ddpalette.c
++++ b/src/ddpalette.c
+@@ -2,6 +2,7 @@
+ #include <windows.h>
+ #include "dd.h"
+ #include "ddpalette.h"
++#include "gles2_palette.h"
+ #include "ddsurface.h"
+ #include "IDirectDrawPalette.h"
+ #include "debug.h"
+@@ -38,6 +39,7 @@
+     if (!lpEntries)
+         return DDERR_INVALIDPARAMS;
+ 
++    AcquireSRWLockExclusive(&pd2_gles2_palette_gate);
+     RGBQUAD data_rgb[256];
+ 
+     if ((dwFlags & DDPCAPS_REFRESH_CHANGED_ONLY))
+@@ -76,11 +78,14 @@
+         if (memcmp(data_rgb, This->data_rgb, sizeof(This->data_rgb)) == 0)
+         {
+             // do not set palette_updated BOOL if nothing changed
++            ReleaseSRWLockExclusive(&pd2_gles2_palette_gate);
+             return DD_OK;
+         }
+ 
+         TRACE_EXT("     Palette changed\n");
+     }
++
++    ReleaseSRWLockExclusive(&pd2_gles2_palette_gate);
+ 
+     if (g_ddraw.ref && g_ddraw.primary && g_ddraw.primary->palette == This && g_ddraw.render.run)
+     {
+--- a/src/render_gdi.c
++++ b/src/render_gdi.c
+@@ -1,186 +1,3 @@
+ #include <windows.h>
+-#include <stdio.h>
+-#include "fps_limiter.h"
+-#include "dd.h"
+-#include "ddsurface.h"
+-#include "opengl_utils.h"
+-#include "utils.h"
+-#include "wndproc.h"
+-#include "hook.h"
+-#include "debug.h"
+-#include "config.h"
+-
+-
+-DWORD WINAPI gdi_render_main(void)
+-{
+-    static DWORD warning_end_tick = 0;
+-    static char warning_text[512] = { 0 };
+-
+-    if (g_ddraw.show_driver_warning)
+-    {
+-        g_ddraw.show_driver_warning = FALSE;
+-
+-        TRACE("     Switched to GDI renderer\n");        
+-
+-        warning_end_tick = timeGetTime() + (15 * 1000);
+-
+-        if (!g_config.windowed)
+-            PostMessage(g_ddraw.hwnd, WM_AUTORENDERER, 0, 0);
+-
+-        _snprintf(
+-            warning_text, 
+-            sizeof(warning_text) - 1,
+-            "-WARNING- Using slow software rendering, please update your graphics card driver (%s)",
+-            strlen(g_oglu_version) > 10 ? "" : g_oglu_version);
+-    }
+-
+-    Sleep(500);
+-
+-    fpsl_init();
+-
+-    DWORD timeout = g_config.minfps > 0 ? g_ddraw.minfps_tick_len : INFINITE;
+-
+-    while (g_ddraw.render.run &&
+-        (g_config.minfps < 0 || WaitForSingleObject(g_ddraw.render.sem, timeout) != WAIT_FAILED) &&
+-        g_ddraw.render.run)
+-    {
+-#if _DEBUG
+-        dbg_draw_frame_info_start();
+-#endif
+-
+-        fpsl_frame_start();
+-
+-        EnterCriticalSection(&g_ddraw.cs);
+-
+-        if (g_ddraw.primary && 
+-            g_ddraw.primary->bpp == g_ddraw.bpp &&
+-            g_ddraw.primary->width == g_ddraw.width &&
+-            g_ddraw.primary->height == g_ddraw.height &&
+-            (g_ddraw.bpp == 16 || g_ddraw.bpp == 32 || g_ddraw.primary->palette))
+-        {
+-            if (g_config.lock_surfaces)
+-                EnterCriticalSection(&g_ddraw.primary->cs);
+-
+-            if (warning_end_tick)
+-            {
+-                if (timeGetTime() < warning_end_tick)
+-                {
+-                    HDC primary_dc;
+-                    dds_GetDC(g_ddraw.primary, &primary_dc);
+-
+-                    RECT rc = { 0, 0, g_ddraw.width, g_ddraw.height };
+-                    DrawText(primary_dc, warning_text, -1, &rc, DT_NOCLIP | DT_CENTER);
+-                }
+-                else
+-                {
+-                    warning_end_tick = 0;
+-                }
+-            }
+-
+-            BOOL upscale_hack = g_config.vhack && util_detect_low_res_screen();
+-
+-            if (g_config.vhack)
+-                InterlockedExchange(&g_ddraw.upscale_hack_active, upscale_hack);
+-
+-            if (g_config.fixchilds)
+-            {
+-                g_ddraw.child_window_exists = FALSE;
+-                EnumChildWindows(g_ddraw.hwnd, util_enum_child_proc, (LPARAM)g_ddraw.primary);
+-            }
+-
+-            if (g_ddraw.bpp == 8 && g_ddraw.primary->palette)
+-            {
+-                memcpy(&g_ddraw.primary->bmi->bmiColors[0], g_ddraw.primary->palette->data_rgb, 256 * sizeof(int));
+-            }
+-
+-            if (InterlockedExchange(&g_ddraw.render.clear_screen, FALSE) || g_ddraw.child_window_exists)
+-            {
+-                RECT rc = { 0, 0, g_ddraw.render.width, g_ddraw.render.height };
+-                FillRect(g_ddraw.render.hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+-            }
+-
+-            int lines_copied = 0;
+-
+-            if (g_ddraw.bnet_active)
+-            {
+-                RECT rc = { 0, 0, g_ddraw.render.width, g_ddraw.render.height };
+-                FillRect(g_ddraw.render.hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+-                lines_copied = 1;
+-            }
+-            else if (upscale_hack)
+-            {
+-                lines_copied = real_StretchDIBits(
+-                    g_ddraw.render.hdc,
+-                    g_ddraw.render.viewport.x,
+-                    g_ddraw.render.viewport.y,
+-                    g_ddraw.render.viewport.width,
+-                    g_ddraw.render.viewport.height,
+-                    0,
+-                    g_ddraw.height - g_ddraw.upscale_hack_height,
+-                    g_ddraw.upscale_hack_width,
+-                    g_ddraw.upscale_hack_height,
+-                    g_ddraw.primary->surface,
+-                    g_ddraw.primary->bmi,
+-                    DIB_RGB_COLORS,
+-                    SRCCOPY);
+-            }
+-            else if (!g_ddraw.child_window_exists &&
+-                (g_ddraw.render.width != g_ddraw.width || g_ddraw.render.height != g_ddraw.height))
+-            {
+-                lines_copied = real_StretchDIBits(
+-                    g_ddraw.render.hdc,
+-                    g_ddraw.render.viewport.x,
+-                    g_ddraw.render.viewport.y,
+-                    g_ddraw.render.viewport.width,
+-                    g_ddraw.render.viewport.height,
+-                    0,
+-                    0,
+-                    g_ddraw.width,
+-                    g_ddraw.height,
+-                    g_ddraw.primary->surface,
+-                    g_ddraw.primary->bmi,
+-                    DIB_RGB_COLORS,
+-                    SRCCOPY);
+-            }
+-
+-            if (lines_copied == 0 || lines_copied == GDI_ERROR)
+-            {
+-                real_SetDIBitsToDevice(
+-                    g_ddraw.render.hdc,
+-                    0,
+-                    0,
+-                    g_ddraw.width,
+-                    g_ddraw.height,
+-                    0,
+-                    0,
+-                    0,
+-                    g_ddraw.height,
+-                    g_ddraw.primary->surface,
+-                    g_ddraw.primary->bmi,
+-                    DIB_RGB_COLORS);
+-            }
+-
+-            if (g_config.lock_surfaces)
+-                LeaveCriticalSection(&g_ddraw.primary->cs);
+-        }
+-
+-        LeaveCriticalSection(&g_ddraw.cs);
+-
+-        /* Force redraw for GDI games (ClueFinders) */
+-        if (!g_ddraw.primary)
+-        {
+-            RedrawWindow(g_ddraw.hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN);
+-        }
+-
+-        if (!g_ddraw.render.run)
+-            break;
+-
+-#if _DEBUG
+-        dbg_draw_frame_info_end();
+-#endif
+-
+-        fpsl_frame_end();
+-    }
+-
+-    return TRUE;
+-}
++extern void pd2_gles2_fatal(unsigned stage, unsigned code);
++DWORD WINAPI gdi_render_main(void) { pd2_gles2_fatal(8, 15); return 0; }
+--- a/src/render_d3d9.c
++++ b/src/render_d3d9.c
+@@ -575,6 +575,8 @@
+ 
+ DWORD WINAPI d3d9_render_main(void)
+ {
++    extern void pd2_gles2_fatal(unsigned stage, unsigned code);
++    pd2_gles2_fatal(8, 15);
+     Sleep(250);
+ 
+     fpsl_init();
+--- a/cnc-ddraw.vcxproj
++++ b/cnc-ddraw.vcxproj
+@@ -213,7 +213,7 @@
+     <TargetName>ddraw</TargetName>
+   </PropertyGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+       <WarningLevel>Level2</WarningLevel>
+@@ -222,36 +222,16 @@
+       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
+-      <SubSystem>Windows</SubSystem>
+-      <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+-      <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+-    </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
++      <SubSystem>Windows</SubSystem>
++      <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
++      <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
++    </Link>
++    
++    
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <WarningLevel>Level2</WarningLevel>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+@@ -262,38 +242,18 @@
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
+       <SubSystem>Windows</SubSystem>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+     </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    
++    
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseXP|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <WarningLevel>Level2</WarningLevel>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+@@ -304,38 +264,18 @@
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
+       <SubSystem>Windows</SubSystem>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+     </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    
++    
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='DebugLogXP|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <WarningLevel>Level2</WarningLevel>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+@@ -346,38 +286,18 @@
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
+       <SubSystem>Windows</SubSystem>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+     </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    
++    
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='DebugLogMiniXP|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <WarningLevel>Level2</WarningLevel>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+@@ -388,35 +308,15 @@
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
+       <SubSystem>Windows</SubSystem>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+     </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    
++    
+   </ItemDefinitionGroup>
+   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+   <ImportGroup Label="ExtensionTargets" />
+--- a/inc/git.h
++++ b/inc/git.h
+@@ -0,0 +1,2 @@
++#define GIT_COMMIT "v7.1.0.0-pd2-gl2-1"
++#define GIT_BRANCH "gles2-renderer"

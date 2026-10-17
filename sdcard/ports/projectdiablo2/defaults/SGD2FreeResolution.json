@@ -1,0 +1,23 @@
+{
+  "SlashGaming Diablo II Free Resolution": {
+    "!!!Metadata (Do not modify)!!!": {
+      "Major Version A": 3,
+      "Major Version B": 0,
+      "Minor Version A": 1,
+      "Minor Version B": 0
+    },
+    "Ingame Resolutions": [
+      "1024x768",
+      "800x600"
+    ],
+    "Ingame Resolution Mode": 1,
+    "Main Menu Resolution": "1024x768",
+    "Custom MPQ File": "SGD2FreeRes.mpq",
+    "Enable Screen Border Frame?": false,
+    "Use Original Screen Border Frame?": false,
+    "Use 800 Interface Bar?": true
+  },
+  "!!!Globals!!!": {
+    "Config Tab Width": 4
+  }
+}

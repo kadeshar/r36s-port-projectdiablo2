@@ -1,0 +1,57 @@
+{
+  "bnet": {
+    "autofill_last_game": false,
+    "autofill_next_game": false,
+    "autofill_last_password": false,
+    "autofill_description": false,
+    "save_last_game": "",
+    "save_last_pass": "",
+    "save_last_desc": ""
+  },
+  "general": {
+    "stats_on_right": false
+  },
+  "lootfilter": {
+    "filter_level": 0,
+    "advanced_item_display": false,
+    "show_iLvl": false,
+    "detailed_notifications": 0,
+    "drop_sounds": true
+  },
+  "game": {
+    "experience_meter": false,
+    "always_show_items": false
+  },
+  "party": {
+    "auto_party": {
+      "enabled": false,
+      "hotkey": "None"
+    },
+    "auto_corpse_loot": {
+      "enabled": false,
+      "hotkey": "None"
+    }
+  },
+  "screen_info": {
+    "automap_info": [
+      "%LEVEL%",
+      "%GAMEDIFF%"
+    ],
+    "hide_game_password": true
+  },
+  "stash_export": {
+    "export_on_menu": {
+      "enabled": false,
+      "hotkey": "None"
+    }
+  },
+  "bh_ui": {
+    "is_minimized": true,
+    "opened_x": 20,
+    "opened_y": 20,
+    "minimized_x": 20,
+    "minimized_y": 400,
+    "size_x": 400,
+    "size_y": 300
+  }
+}

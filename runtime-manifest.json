@@ -1,0 +1,47 @@
+{
+  "port_version": "0.1.18",
+  "runtime_version": "8.0",
+  "experimental": true,
+  "artifacts": [
+    {
+      "file": "wine-8.0-x86.tar.xz",
+      "url": "https://github.com/Kron4ek/Wine-Builds/releases/download/8.0/wine-8.0-x86.tar.xz",
+      "resolved_url": "https://release-assets.githubusercontent.com/github-production-release-asset/162469682/0873e098-43fd-4ecf-99c6-9c111530bf68",
+      "sha256": "d77d023bd9046547afccae5860dc6089b9d5cd9699f656b83e2f573bbf3fae6d",
+      "size": 31185272,
+      "upstream_algorithm": "sha256",
+      "upstream_digest": "d77d023bd9046547afccae5860dc6089b9d5cd9699f656b83e2f573bbf3fae6d"
+    },
+    {
+      "file": "weston_pkg_0.2.squashfs",
+      "url": "https://github.com/PortsMaster/PortMaster-New/releases/download/2025-07-24_0745/weston_pkg_0.2.squashfs",
+      "resolved_url": "https://release-assets.githubusercontent.com/github-production-release-asset/729690119/9149be00-a080-40e3-a1fa-8bc402e7c008",
+      "sha256": "0bccaeebc11296bb1fe4278c9677cb82965c5a04bcd63745fa09d78228bc1a93",
+      "size": 55398400,
+      "upstream_algorithm": "md5",
+      "upstream_digest": "0a761c28877625861d9c9c4326664428"
+    },
+    {
+      "file": "vc_redist.x86.exe",
+      "url": "https://download.visualstudio.microsoft.com/download/pr/8a78e61f-9368-484b-b0c1-5628ff392121/38C9437E6E9EF1DB2671B3F0C879FEBEC08521BD2C23231199F626B69AE1C65E/VC_redist.x86.exe",
+      "resolved_url": "https://download.visualstudio.microsoft.com/download/pr/8a78e61f-9368-484b-b0c1-5628ff392121/38C9437E6E9EF1DB2671B3F0C879FEBEC08521BD2C23231199F626B69AE1C65E/VC_redist.x86.exe",
+      "sha256": "38c9437e6e9ef1db2671b3f0c879febec08521bd2c23231199f626b69ae1c65e",
+      "size": 13889072,
+      "upstream_algorithm": "sha256",
+      "upstream_digest": "38c9437e6e9ef1db2671b3f0c879febec08521bd2c23231199f626b69ae1c65e"
+    },
+    {
+      "file": "box86",
+      "sha256": "5870bf87c45051b1eb98f461a81de88f7c3c88e399e9810c093179d91a2fd013",
+      "size": 27311020,
+      "url": "https://raw.githubusercontent.com/Pi-Apps-Coders/box86-debs/master/debian/box86-generic-arm_0.3.9%2B20250213T063429.fa59e74-1_armhf.deb",
+      "version": "0.3.9-fa59e74"
+    }
+  ],
+  "microsoft_signature_required": true,
+  "sources": {
+    "wine": "https://dl.winehq.org/wine/source/8.0/wine-8.0.tar.xz",
+    "box86": "https://github.com/ptitSeb/box86/tree/fa59e74",
+    "weston": "https://github.com/binarycounter/Westonpack/wiki"
+  }
+}

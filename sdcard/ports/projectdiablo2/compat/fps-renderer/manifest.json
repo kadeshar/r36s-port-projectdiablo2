@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "file": "ddraw.dll",
+  "size": 438272,
+  "sha256": "acb44f73f3ee0b2aa4ac98ed860b40e0d9389162eaa7de9ec0028affc778ba5a",
+  "upstream": {
+    "project": "FunkyFr3sh/cnc-ddraw",
+    "tag": "v7.1.0.0",
+    "source_url": "https://codeload.github.com/FunkyFr3sh/cnc-ddraw/zip/refs/tags/v7.1.0.0",
+    "source_sha256": "a4f638383364e3bc1e4682b1d549a1f5400fa0cc312ee216d1b42555b1c814eb",
+    "license": "MIT (upstream bundled third-party notices retained in LICENSE.txt)"
+  },
+  "build": {
+    "configuration": "Release Win32",
+    "compiler": "MSVC 14.44.35207",
+    "sdk": "10.0.22621.0",
+    "crt": "static /MT",
+    "deterministic": "/Brepro /PDBALTPATH:ddraw.pdb",
+    "command": "python tools/build_fps_renderer.py --test-pe",
+    "inputs_sha256": {
+      "build_fps_renderer.py": "1d4e8c253c516c4ca45111a9b335eddd5b358b1c2341bc881088f73cbf53b8d1",
+      "fps_hud_core.h": "be1ce3e0458d92cf1344e8121018bb9c09096e5236068adbc8fe0695cb88e05f",
+      "fps_hud_renderer.h": "c41fa41b803393c10360c011542e55933ca7774e9d5c1dc156e285f3c475b4ef",
+      "test_fps_hud.c": "f75679a6873fe1d5c848204d1cdd0c14415d3c8648f9431f7028df92edd85908",
+      "test_fps_renderer_pe.c": "d9690fa226d9eb36216e31bdff522e207fd89edb91305fa5fa4ad5f70c62365b"
+    }
+  },
+  "tests": {
+    "native_core": "passed",
+    "pe_directdraw_gdi": "passed",
+    "physical_r36s": "not available"
+  },
+  "scope": "Optional renderer only; upstream OFF artifact is never written."
+}

@@ -1,0 +1,95 @@
+{
+  "classic_game_settings": {
+    "audio": {
+      "sound_mixer": 0,
+      "master_volume": 50,
+      "music_volume": 30,
+      "positional_bias": 0,
+      "npc_speech": 2,
+      "options_music": 1,
+      "options_music_volume": 30,
+      "ui_volume": 100,
+      "items_volume": 100,
+      "monsters_volume": 100,
+      "skills_volume": 100,
+      "combat_volume": 100,
+      "ambient_volume": 100,
+      "voice_volume": 100,
+      "quest_volume": 100,
+      "objects_volume": 100,
+      "item_drop_volume": 60
+    },
+    "video": {
+      "contrast": 75,
+      "gamma": 100,
+      "perspective": 0,
+      "light_quality": 0,
+      "blended_shadows": 0
+    },
+    "map": {
+      "automapfade": 3,
+      "automap_centers": 1,
+      "automap_party": 1,
+      "automap_party_names": 1,
+      "automap_left": 1,
+      "automapmode": 0
+    },
+    "ui": {
+      "show_hp_text": 1,
+      "show_mp_text": 1,
+      "help_menu": 0,
+      "popuphireling": 1,
+      "always_run": 1,
+      "mini_panel": 0
+    },
+    "bnet": {
+      "skip_to_open": 0,
+      "aux_battle_net": "",
+      "lasttcpip": "",
+      "preferred_realm": "",
+      "default_channel": "",
+      "last_bnet": "",
+      "max_player": 8,
+      "diff_level": 0,
+      "lvl_rest": 666,
+      "selected_game_server": 0,
+      "loot_alloc": 0
+    },
+    "other": {
+      "lng_file": "",
+      "installpath": "C:\\Diablo II\\",
+      "save_path": "S:\\"
+    }
+  },
+  "pd2_game_settings": {
+    "equipment_lock": false,
+    "buff_timers": true,
+    "quick_cast": false,
+    "skill_bar": true,
+    "screenshake": false,
+    "dps": false,
+    "belt_status": true,
+    "translucent_party": false,
+    "wasd_movement": true,
+    "controller_movement": false,
+    "controller_sensitivity": 50,
+    "controller_aim_assist": 1,
+    "controller_deadzone": 20,
+    "auto_equip": true,
+    "always_regenerate_levels": false,
+    "player_count": 1,
+    "auras": {
+      "dev_aura": 0,
+      "max_level_aura": 0,
+      "rathma_aura": 0,
+      "dclone_aura": 0,
+      "pvp_aura": 0,
+      "lucion_aura": 0
+    },
+    "showItemHelpText": true,
+    "controller_button_style": 0,
+    "controllerMultiButtonLoot": false,
+    "autosync": false,
+    "elme_potter": false
+  }
+}

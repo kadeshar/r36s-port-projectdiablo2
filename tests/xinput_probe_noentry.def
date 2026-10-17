@@ -1,0 +1,3 @@
+LIBRARY pd2_xinput_test_noentry
+EXPORTS
+    NotXInputGetState=_StubGetState@8

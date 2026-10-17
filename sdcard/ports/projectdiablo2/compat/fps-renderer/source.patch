@@ -1,0 +1,180 @@
+--- a/src/render_gdi.c
++++ b/src/render_gdi.c
+@@ -9,6 +9,7 @@
+ #include "hook.h"
+ #include "debug.h"
+ #include "config.h"
++#include "fps_hud_renderer.h"
+ 
+ 
+ DWORD WINAPI gdi_render_main(void)
+@@ -36,6 +37,7 @@
+ 
+     Sleep(500);
+ 
++    pd2_reset();
+     fpsl_init();
+ 
+     DWORD timeout = g_config.minfps > 0 ? g_ddraw.minfps_tick_len : INFINITE;
+@@ -48,6 +50,7 @@
+         dbg_draw_frame_info_start();
+ #endif
+ 
++        pd2_ready = 0;
+         fpsl_frame_start();
+ 
+         EnterCriticalSection(&g_ddraw.cs);
+@@ -99,6 +102,7 @@
+                 FillRect(g_ddraw.render.hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+             }
+ 
++            pd2_begin();
+             int lines_copied = 0;
+ 
+             if (g_ddraw.bnet_active)
+@@ -119,7 +123,7 @@
+                     g_ddraw.height - g_ddraw.upscale_hack_height,
+                     g_ddraw.upscale_hack_width,
+                     g_ddraw.upscale_hack_height,
+-                    g_ddraw.primary->surface,
++                    pd2_pixels(),
+                     g_ddraw.primary->bmi,
+                     DIB_RGB_COLORS,
+                     SRCCOPY);
+@@ -137,7 +141,7 @@
+                     0,
+                     g_ddraw.width,
+                     g_ddraw.height,
+-                    g_ddraw.primary->surface,
++                    pd2_pixels(),
+                     g_ddraw.primary->bmi,
+                     DIB_RGB_COLORS,
+                     SRCCOPY);
+@@ -145,7 +149,7 @@
+ 
+             if (lines_copied == 0 || lines_copied == GDI_ERROR)
+             {
+-                real_SetDIBitsToDevice(
++                lines_copied = real_SetDIBitsToDevice(
+                     g_ddraw.render.hdc,
+                     0,
+                     0,
+@@ -155,10 +159,12 @@
+                     0,
+                     0,
+                     g_ddraw.height,
+-                    g_ddraw.primary->surface,
++                    pd2_pixels(),
+                     g_ddraw.primary->bmi,
+                     DIB_RGB_COLORS);
+             }
++
++            if (lines_copied != 0 && lines_copied != GDI_ERROR) pd2_present();
+ 
+             if (g_config.lock_surfaces)
+                 LeaveCriticalSection(&g_ddraw.primary->cs);
+--- a/src/render_ogl.c
++++ b/src/render_ogl.c
+@@ -1,6 +1,7 @@
+ #include <windows.h>
+ #include <stdio.h>
+ #include "config.h"
++#include "fps_hud_renderer.h"
+ #include "fps_limiter.h"
+ #include "opengl_utils.h"
+ #include "dd.h"
+@@ -119,7 +120,8 @@
+         if (got_swap_ctrl && wglSwapIntervalEXT)
+             wglSwapIntervalEXT(g_config.vsync ? 1 : 0);
+ 
+-        fpsl_init();
++        pd2_reset();
++    fpsl_init();
+         GL_CHECK(ogl_build_programs());
+         GL_CHECK(ogl_create_textures(g_ddraw.width, g_ddraw.height));
+         GL_CHECK(ogl_init_main_program());
+@@ -1013,6 +1015,7 @@
+ 
+         BOOL scale_changed = FALSE;
+ 
++        pd2_ready = 0;
+         fpsl_frame_start();
+ 
+         EnterCriticalSection(&g_ddraw.cs);
+@@ -1063,6 +1066,7 @@
+                     g_ddraw.primary->palette->data_bgr);
+             }
+ 
++            pd2_begin();
+             if (InterlockedExchange(&g_ddraw.render.surface_updated, FALSE) || g_config.minfps == -2)
+             {
+                 if (++tex_index >= TEXTURE_COUNT)
+@@ -1084,7 +1088,7 @@
+                     g_ddraw.height,
+                     g_ogl.surface_format,
+                     g_ogl.surface_type,
+-                    g_ddraw.primary->surface);
++                    pd2_pixels());
+ 
+                 if (row_len != g_ddraw.primary->width)
+                     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+@@ -1377,7 +1381,7 @@
+         if (g_ddraw.bnet_active)
+             glClear(GL_COLOR_BUFFER_BIT);
+ 
+-        SwapBuffers(g_ogl.hdc);
++        if (SwapBuffers(g_ogl.hdc)) pd2_present();
+ 
+         /* Force redraw for GDI games (ClueFinders) */
+         if (!g_ddraw.primary)
+--- a/src/render_d3d9.c
++++ b/src/render_d3d9.c
+@@ -13,6 +13,7 @@
+ #include "d3d9types.h"
+ #include "hook.h"
+ #include "config.h"
++#include "fps_hud_renderer.h"
+ 
+ 
+ #ifdef _DEBUG
+@@ -577,6 +578,7 @@
+ {
+     Sleep(250);
+ 
++    pd2_reset();
+     fpsl_init();
+ 
+     BOOL needs_update = FALSE;
+@@ -593,6 +595,7 @@
+ 
+         static int tex_index = 0, pal_index = 0;
+ 
++        pd2_ready = 0;
+         fpsl_frame_start();
+ 
+         EnterCriticalSection(&g_ddraw.cs);
+@@ -622,6 +625,7 @@
+ 
+             D3DLOCKED_RECT lock_rc;
+ 
++            pd2_begin();
+             if (InterlockedExchange(&g_ddraw.render.surface_updated, FALSE) || g_config.minfps == -2)
+             {
+                 if (++tex_index >= D3D9_TEXTURE_COUNT)
+@@ -639,7 +643,7 @@
+                         g_ddraw.primary->width,
+                         g_ddraw.primary->height,
+                         lock_rc.Pitch,
+-                        g_ddraw.primary->surface,
++                        pd2_pixels(),
+                         0,
+                         0,
+                         g_ddraw.primary->pitch,
+@@ -718,6 +722,7 @@
+         }
+         else
+         {
++            pd2_present();
+             /* Force redraw for GDI games (ClueFinders) */
+             if (!g_ddraw.primary)
+             {

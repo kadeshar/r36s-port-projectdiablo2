@@ -1,0 +1,727 @@
+--- a/src/pcm/pcm.c
++++ b/src/pcm/pcm.c
+@@ -670,6 +670,7 @@
+ #include <sys/mman.h>
+ #include <limits.h>
+ #include "pcm_local.h"
++#include "pd2_audio_metrics_core.h"
+ 
+ #ifndef DOC_HIDDEN
+ /* return specific error codes for known bad PCM states */
+@@ -763,7 +764,7 @@
+  * Closes the specified PCM handle and frees all associated
+  * resources.
+  */
+-int snd_pcm_close(snd_pcm_t *pcm)
++static int pd2_original_snd_pcm_close(snd_pcm_t *pcm)
+ {
+ 	int res = 0, err;
+ 	assert(pcm);
+@@ -789,6 +790,18 @@
+ 	if (err < 0)
+ 		res = err;
+ 	return res;
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_close(snd_pcm_t *pcm)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_close(pcm);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_CLOSE, pd2_result, 0, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }	
+ 
+ /**
+@@ -937,7 +950,7 @@
+  * The configuration space will be updated to reflect the chosen
+  * parameters.
+  */
+-int snd_pcm_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
++static int pd2_original_snd_pcm_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
+ {
+ 	int err;
+ 	assert(pcm && params);
+@@ -946,6 +959,19 @@
+ 		return err;
+ 	err = snd_pcm_prepare(pcm);
+ 	return err;
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_hw_params(pcm, params);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_PARAMS, pd2_result, 0, 0);
++        if (pd2_result >= 0) pd2_am_params(pcm, pcm->rate, pcm->channels, pcm->access, pcm->period_size, pcm->buffer_size); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /** \brief Remove PCM hardware configuration and free associated resources
+@@ -1165,7 +1191,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */
+-int snd_pcm_resume(snd_pcm_t *pcm)
++static int pd2_original_snd_pcm_resume(snd_pcm_t *pcm)
+ {
+ 	int err = 0;
+ 
+@@ -1180,6 +1206,18 @@
+ 	else
+ 		err = -ENOSYS;
+ 	return err;
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_resume(snd_pcm_t *pcm)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_resume(pcm);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_RESUME, pd2_result, 0, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /**
+@@ -1219,7 +1257,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */
+-int snd_pcm_prepare(snd_pcm_t *pcm)
++static int pd2_original_snd_pcm_prepare(snd_pcm_t *pcm)
+ {
+ 	int err;
+ 
+@@ -1240,6 +1278,18 @@
+ 	return err;
+ }
+ 
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_prepare(snd_pcm_t *pcm)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_prepare(pcm);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_PREPARE, pd2_result, 0, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
++}
++
+ /**
+  * \brief Reset PCM position
+  * \param pcm PCM handle
+@@ -1274,7 +1324,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */
+-int snd_pcm_start(snd_pcm_t *pcm)
++static int pd2_original_snd_pcm_start(snd_pcm_t *pcm)
+ {
+ 	int err;
+ 
+@@ -1292,6 +1342,18 @@
+ 	return err;
+ }
+ 
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_start(snd_pcm_t *pcm)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_start(pcm);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_START, pd2_result, 0, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
++}
++
+ /**
+  * \brief Stop a PCM dropping pending frames
+  * \param pcm PCM handle
+@@ -1305,7 +1367,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */
+-int snd_pcm_drop(snd_pcm_t *pcm)
++static int pd2_original_snd_pcm_drop(snd_pcm_t *pcm)
+ {
+ 	int err;
+ 
+@@ -1327,6 +1389,18 @@
+ 	return err;
+ }
+ 
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_drop(snd_pcm_t *pcm)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_drop(pcm);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_DROP, pd2_result, 0, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
++}
++
+ /**
+  * \brief Stop a PCM preserving pending frames
+  * \param pcm PCM handle
+@@ -1342,7 +1416,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */
+-int snd_pcm_drain(snd_pcm_t *pcm)
++static int pd2_original_snd_pcm_drain(snd_pcm_t *pcm)
+ {
+ 	int err;
+ 
+@@ -1362,6 +1436,18 @@
+ 	else
+ 		err = -ENOSYS;
+ 	return err;
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_drain(snd_pcm_t *pcm)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_drain(pcm);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_DRAIN, pd2_result, 0, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /**
+@@ -1553,7 +1639,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */ 
+-snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
++static snd_pcm_sframes_t pd2_original_snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
+ {
+ 	int err;
+ 
+@@ -1571,6 +1657,18 @@
+ 	if (err < 0)
+ 		return err;
+ 	return _snd_pcm_writei(pcm, buffer, size);
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
++{
++    int pd2_outer = pd2_am_enter();
++    snd_pcm_sframes_t pd2_result = pd2_original_snd_pcm_writei(pcm, buffer, size);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_WRITE, pd2_result, size, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /**
+@@ -1592,7 +1690,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */ 
+-snd_pcm_sframes_t snd_pcm_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
++static snd_pcm_sframes_t pd2_original_snd_pcm_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
+ {
+ 	int err;
+ 
+@@ -1610,6 +1708,18 @@
+ 	if (err < 0)
+ 		return err;
+ 	return _snd_pcm_writen(pcm, bufs, size);
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++snd_pcm_sframes_t snd_pcm_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
++{
++    int pd2_outer = pd2_am_enter();
++    snd_pcm_sframes_t pd2_result = pd2_original_snd_pcm_writen(pcm, bufs, size);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_WRITE, pd2_result, size, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /**
+@@ -2685,7 +2795,7 @@
+  * \param mode Open mode (see #SND_PCM_NONBLOCK, #SND_PCM_ASYNC)
+  * \return 0 on success otherwise a negative error code
+  */
+-int snd_pcm_open(snd_pcm_t **pcmp, const char *name, 
++static int pd2_original_snd_pcm_open(snd_pcm_t **pcmp, const char *name, 
+ 		 snd_pcm_stream_t stream, int mode)
+ {
+ 	snd_config_t *top;
+@@ -2706,6 +2816,19 @@
+ 	return err;
+ }
+ 
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_open(snd_pcm_t **pcmp, const char *name, 
++		 snd_pcm_stream_t stream, int mode)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_open(pcmp, name, stream, mode);
++    int pd2_errno = errno;
++    if (pd2_outer) { if (pd2_result >= 0 && stream == SND_PCM_STREAM_PLAYBACK) pd2_am_open(*pcmp); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
++}
++
+ /**
+  * \brief Opens a PCM using local configuration
+  * \param pcmp Returned PCM handle
+@@ -2715,12 +2838,26 @@
+  * \param lconf Local configuration
+  * \return 0 on success otherwise a negative error code
+  */
++static int pd2_original_snd_pcm_open_lconf(snd_pcm_t **pcmp, const char *name, 
++		       snd_pcm_stream_t stream, int mode,
++		       snd_config_t *lconf)
++{
++	assert(pcmp && name && lconf);
++	return snd_pcm_open_noupdate(pcmp, lconf, name, stream, mode, 0);
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
+ int snd_pcm_open_lconf(snd_pcm_t **pcmp, const char *name, 
+ 		       snd_pcm_stream_t stream, int mode,
+ 		       snd_config_t *lconf)
+ {
+-	assert(pcmp && name && lconf);
+-	return snd_pcm_open_noupdate(pcmp, lconf, name, stream, mode, 0);
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_open_lconf(pcmp, name, stream, mode, lconf);
++    int pd2_errno = errno;
++    if (pd2_outer) { if (pd2_result >= 0 && stream == SND_PCM_STREAM_PLAYBACK) pd2_am_open(*pcmp); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /**
+@@ -2733,7 +2870,7 @@
+  * \param mode Open mode (see #SND_PCM_NONBLOCK, #SND_PCM_ASYNC)
+  * \return 0 on success otherwise a negative error code
+  */
+-int snd_pcm_open_fallback(snd_pcm_t **pcmp, snd_config_t *root,
++static int pd2_original_snd_pcm_open_fallback(snd_pcm_t **pcmp, snd_config_t *root,
+ 			  const char *name, const char *orig_name,
+ 			  snd_pcm_stream_t stream, int mode)
+ {
+@@ -2745,6 +2882,20 @@
+ 		(*pcmp)->name = orig_name ? strdup(orig_name) : NULL;
+ 	}
+ 	return err;
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_open_fallback(snd_pcm_t **pcmp, snd_config_t *root,
++			  const char *name, const char *orig_name,
++			  snd_pcm_stream_t stream, int mode)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_open_fallback(pcmp, root, name, orig_name, stream, mode);
++    int pd2_errno = errno;
++    if (pd2_outer) { if (pd2_result >= 0 && stream == SND_PCM_STREAM_PLAYBACK) pd2_am_open(*pcmp); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ #ifndef DOC_HIDDEN
+@@ -7218,7 +7369,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */
+-int snd_pcm_mmap_begin(snd_pcm_t *pcm,
++static int pd2_original_snd_pcm_mmap_begin(snd_pcm_t *pcm,
+ 		       const snd_pcm_channel_area_t **areas,
+ 		       snd_pcm_uframes_t *offset,
+ 		       snd_pcm_uframes_t *frames)
+@@ -7232,6 +7383,21 @@
+ 	err = __snd_pcm_mmap_begin(pcm, areas, offset, frames);
+ 	snd_pcm_unlock(pcm->fast_op_arg);
+ 	return err;
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_mmap_begin(snd_pcm_t *pcm,
++		       const snd_pcm_channel_area_t **areas,
++		       snd_pcm_uframes_t *offset,
++		       snd_pcm_uframes_t *frames)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_mmap_begin(pcm, areas, offset, frames);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_MMAP_BEGIN, pd2_result, 0, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ #ifndef DOC_HIDDEN
+@@ -7331,7 +7497,7 @@
+  *
+  * The function is thread-safe when built with the proper option.
+  */
+-snd_pcm_sframes_t snd_pcm_mmap_commit(snd_pcm_t *pcm,
++static snd_pcm_sframes_t pd2_original_snd_pcm_mmap_commit(snd_pcm_t *pcm,
+ 				      snd_pcm_uframes_t offset,
+ 				      snd_pcm_uframes_t frames)
+ {
+@@ -7345,6 +7511,20 @@
+ 	result = __snd_pcm_mmap_commit(pcm, offset, frames);
+ 	snd_pcm_unlock(pcm->fast_op_arg);
+ 	return result;
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++snd_pcm_sframes_t snd_pcm_mmap_commit(snd_pcm_t *pcm,
++				      snd_pcm_uframes_t offset,
++				      snd_pcm_uframes_t frames)
++{
++    int pd2_outer = pd2_am_enter();
++    snd_pcm_sframes_t pd2_result = pd2_original_snd_pcm_mmap_commit(pcm, offset, frames);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_MMAP_COMMIT, pd2_result, 0, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ #ifndef DOC_HIDDEN
+@@ -8554,7 +8734,7 @@
+  * Note that this function returs the original error code when it is not
+  * handled inside this function (for example -EAGAIN is returned back).
+  */
+-int snd_pcm_recover(snd_pcm_t *pcm, int err, int silent)
++static int pd2_original_snd_pcm_recover(snd_pcm_t *pcm, int err, int silent)
+ {
+         if (err > 0)
+                 err = -err;
+@@ -8589,6 +8769,18 @@
+                 return 0;
+         }
+         return err;
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++int snd_pcm_recover(snd_pcm_t *pcm, int err, int silent)
++{
++    int pd2_outer = pd2_am_enter();
++    int pd2_result = pd2_original_snd_pcm_recover(pcm, err, silent);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_RECOVER, pd2_result, 0, err); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /**
+--- a/src/pcm/pcm_mmap.c
++++ b/src/pcm/pcm_mmap.c
+@@ -30,6 +30,7 @@
+ #include <sys/shm.h>
+ #endif
+ #include "pcm_local.h"
++#include "audio_metrics_api.h"
+ 
+ void snd_pcm_mmap_appl_backward(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
+ {
+@@ -148,12 +149,24 @@
+  *
+  * If the non-blocking behaviour is selected, then routine doesn't wait at all.
+  */
+-snd_pcm_sframes_t snd_pcm_mmap_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
++static snd_pcm_sframes_t pd2_original_snd_pcm_mmap_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
+ {
+ 	snd_pcm_channel_area_t areas[pcm->channels];
+ 	snd_pcm_areas_from_buf(pcm, areas, (void*)buffer);
+ 	return snd_pcm_write_areas(pcm, areas, 0, size,
+ 				   snd_pcm_mmap_write_areas);
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++snd_pcm_sframes_t snd_pcm_mmap_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
++{
++    int pd2_outer = pd2_am_enter();
++    snd_pcm_sframes_t pd2_result = pd2_original_snd_pcm_mmap_writei(pcm, buffer, size);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_WRITE, pd2_result, size, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /**
+@@ -173,12 +186,24 @@
+  *
+  * If the non-blocking behaviour is selected, then routine doesn't wait at all.
+  */
+-snd_pcm_sframes_t snd_pcm_mmap_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
++static snd_pcm_sframes_t pd2_original_snd_pcm_mmap_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
+ {
+ 	snd_pcm_channel_area_t areas[pcm->channels];
+ 	snd_pcm_areas_from_bufs(pcm, areas, bufs);
+ 	return snd_pcm_write_areas(pcm, areas, 0, size,
+ 				   snd_pcm_mmap_write_areas);
++}
++
++/* PD2 metrics: exact public ABI; original function body is unchanged. */
++snd_pcm_sframes_t snd_pcm_mmap_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
++{
++    int pd2_outer = pd2_am_enter();
++    snd_pcm_sframes_t pd2_result = pd2_original_snd_pcm_mmap_writen(pcm, bufs, size);
++    int pd2_errno = errno;
++    if (pd2_outer) { pd2_am_result(pcm, PD2_AM_WRITE, pd2_result, size, 0); }
++    pd2_am_leave();
++    errno = pd2_errno;
++    return pd2_result;
+ }
+ 
+ /**
+--- /dev/null
++++ b/src/pcm/pd2_audio_metrics_core.h
+@@ -0,0 +1,207 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Source-level ALSA instrumentation. No pointers, names or samples on wire.
++ * Included ONCE in pcm.c; public wrappers are generated by audio_metrics_build.py.
++ */
++#ifndef PD2_AUDIO_METRICS_CORE_H
++#define PD2_AUDIO_METRICS_CORE_H
++#include <stdint.h>
++#include <errno.h>
++#include <string.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <pthread.h>
++#include <signal.h>
++#include <time.h>
++
++#define PD2_AM_SLOTS 8
++#define PD2_AM_CAP UINT64_C(1000000000000000)
++#define PD2_AM_BYTES 262144u
++#define PD2_AM_FIELDS(X) \
++ X(write_calls) X(write_frames) X(short_writes) \
++ X(mmap_begin_calls) X(mmap_commit_calls) X(mmap_frames) \
++ X(hw_params_calls) X(start_calls) X(prepare_calls) X(resume_calls) X(drop_calls) X(drain_calls) \
++ X(recover_calls) X(recover_epipe_calls) X(recover_successes) X(close_calls) \
++ X(error_results) X(epipe_results) X(estrpipe_results) X(eagain_results) X(eintr_results) X(other_error_results)
++struct pd2_am_slot {
++ void *handle;
++ unsigned id, active, rate_hz, channels, access, params_valid;
++ uint64_t period_frames, buffer_frames;
++#define PD2_AM_MEMBER(n) uint64_t n;
++ PD2_AM_FIELDS(PD2_AM_MEMBER)
++#undef PD2_AM_MEMBER
++ unsigned dirty;
++};
++static struct pd2_am_slot pd2_am_slots[PD2_AM_SLOTS];
++static unsigned pd2_am_used, pd2_am_guard, pd2_am_lost, pd2_am_capacity;
++static unsigned pd2_am_enabled, pd2_am_stop;
++/* Four bytes of static TLS: no lazy TLS allocation in an audio caller. */
++static __thread unsigned pd2_am_depth __attribute__((tls_model("initial-exec")));
++static pid_t pd2_am_owner;
++static int pd2_am_fd = -1;
++static pthread_t pd2_am_thread;
++static int pd2_am_thread_started;
++static unsigned pd2_am_bytes, pd2_am_limit_sent;
++
++#include "audio_metrics_api.h"
++static uint64_t pd2_am_add(uint64_t a, uint64_t b) {
++ return b > PD2_AM_CAP - a ? PD2_AM_CAP : a + b;
++}
++/* try-lock only: never wait for telemetry on an audio caller. */
++static int pd2_am_lock(void) {
++ if (__atomic_exchange_n(&pd2_am_guard, 1, __ATOMIC_ACQUIRE)) {
++  unsigned n = __atomic_load_n(&pd2_am_lost, __ATOMIC_RELAXED);
++  if (n < 1000000000u) __atomic_compare_exchange_n(&pd2_am_lost, &n, n+1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
++  return 0;
++ }
++ return 1;
++}
++static void pd2_am_unlock(void) { __atomic_store_n(&pd2_am_guard, 0, __ATOMIC_RELEASE); }
++int pd2_am_enter(void) { return pd2_am_depth++ == 0 && __atomic_load_n(&pd2_am_enabled, __ATOMIC_RELAXED); }
++void pd2_am_leave(void) { --pd2_am_depth; }
++static struct pd2_am_slot *pd2_am_find(void *handle) {
++ unsigned i;
++ for (i = 0; i < pd2_am_used; ++i)
++  if (pd2_am_slots[i].active && pd2_am_slots[i].handle == handle) return &pd2_am_slots[i];
++ return NULL;
++}
++static void pd2_am_open(void *handle) {
++ struct pd2_am_slot *s;
++ if (!pd2_am_lock()) return;
++ if (pd2_am_used == PD2_AM_SLOTS) { if (pd2_am_capacity < 1000000000u) ++pd2_am_capacity; pd2_am_slots[0].dirty = 1; pd2_am_unlock(); return; }
++ s = &pd2_am_slots[pd2_am_used++];
++ memset(s, 0, sizeof(*s)); s->handle = handle; s->id = pd2_am_used; s->active = s->dirty = 1;
++ pd2_am_unlock();
++}
++static void pd2_am_params(void *handle, unsigned rate, unsigned channels, unsigned access,
++                          uint64_t period, uint64_t buffer) {
++ struct pd2_am_slot *s;
++ if (!pd2_am_lock()) return;
++ s = pd2_am_find(handle);
++ if (s) {
++  /* Reject unusual/unbounded negotiated values, rather than misreport zero. */
++  s->params_valid = rate > 0 && rate <= 768000 && channels > 0 && channels <= 256 && access <= 4 && period > 0 && period <= 1000000000 && buffer >= period && buffer <= 1000000000;
++  s->rate_hz = s->params_valid ? rate : 0; s->channels = s->params_valid ? channels : 0;
++  s->access = s->params_valid ? access : 0; s->period_frames = s->params_valid ? period : 0;
++  s->buffer_frames = s->params_valid ? buffer : 0; s->dirty = 1;
++ }
++ pd2_am_unlock();
++}
++void pd2_am_result(void *handle, enum pd2_am_op op, int64_t result, uint64_t requested, int recover_error) {
++ struct pd2_am_slot *s;
++ if (!pd2_am_lock()) return;
++ s = pd2_am_find(handle);
++ if (!s) { pd2_am_unlock(); return; }
++#define PD2_AM_INC(n) s->n = pd2_am_add(s->n, 1)
++ switch (op) {
++ case PD2_AM_WRITE:
++  PD2_AM_INC(write_calls);
++  if (result >= 0) { s->write_frames = pd2_am_add(s->write_frames, (uint64_t)result); if ((uint64_t)result < requested) PD2_AM_INC(short_writes); }
++  break;
++ case PD2_AM_MMAP_BEGIN: PD2_AM_INC(mmap_begin_calls); break;
++ case PD2_AM_MMAP_COMMIT:
++  PD2_AM_INC(mmap_commit_calls);
++  if (result >= 0) s->mmap_frames = pd2_am_add(s->mmap_frames, (uint64_t)result);
++  break;
++ case PD2_AM_PARAMS: PD2_AM_INC(hw_params_calls); if (result < 0) s->params_valid = 0; break;
++ case PD2_AM_START: PD2_AM_INC(start_calls); break;
++ case PD2_AM_PREPARE: PD2_AM_INC(prepare_calls); break;
++ case PD2_AM_RESUME: PD2_AM_INC(resume_calls); break;
++ case PD2_AM_DROP: PD2_AM_INC(drop_calls); break;
++ case PD2_AM_DRAIN: PD2_AM_INC(drain_calls); break;
++ case PD2_AM_RECOVER:
++  PD2_AM_INC(recover_calls);
++  if (recover_error == -EPIPE) PD2_AM_INC(recover_epipe_calls);
++  if (result >= 0) PD2_AM_INC(recover_successes);
++  break;
++ case PD2_AM_CLOSE: PD2_AM_INC(close_calls); s->active = 0; s->handle = NULL; break;
++ }
++ if (result < 0) {
++  PD2_AM_INC(error_results);
++  if (result == -EPIPE) { PD2_AM_INC(epipe_results); }
++  else if (result == -ESTRPIPE) { PD2_AM_INC(estrpipe_results); }
++  else if (result == -EAGAIN) { PD2_AM_INC(eagain_results); }
++  else if (result == -EINTR) { PD2_AM_INC(eintr_results); }
++  else { PD2_AM_INC(other_error_results); }
++ }
++#undef PD2_AM_INC
++ s->dirty = 1; pd2_am_unlock();
++}
++
++#ifndef PD2_AM_TEST
++static void pd2_am_flush(void) {
++ struct pd2_am_slot copy[PD2_AM_SLOTS];
++ unsigned i, used, lost, capacity;
++ char line[2048];
++ if (!pd2_am_lock()) return;
++ used = pd2_am_used; memcpy(copy, pd2_am_slots, sizeof(copy));
++ for (i=0;i<used;++i) pd2_am_slots[i].dirty = 0;
++ lost = __atomic_load_n(&pd2_am_lost, __ATOMIC_RELAXED); capacity = pd2_am_capacity;
++ pd2_am_unlock();
++ for (i=0;i<used;++i) {
++  struct pd2_am_slot *s = &copy[i]; int n; ssize_t written;
++  if (!s->dirty || pd2_am_bytes >= PD2_AM_BYTES) continue;
++  n = snprintf(line, sizeof(line), "{\"schema\":1,\"pid\":%lu,\"stream\":%u,\"active\":%u,\"params_valid\":%u,\"rate_hz\":%u,\"channels\":%u,\"access\":%u,\"period_frames\":%llu,\"buffer_frames\":%llu,\"lost_updates\":%u,\"untracked_opens\":%u"
++#define PD2_AM_FMT(n) ",\"" #n "\":%llu"
++    PD2_AM_FIELDS(PD2_AM_FMT)
++#undef PD2_AM_FMT
++    "}\n", (unsigned long)getpid(), s->id, s->active, s->params_valid, s->rate_hz, s->channels, s->access,
++    (unsigned long long)s->period_frames, (unsigned long long)s->buffer_frames, lost, capacity
++#define PD2_AM_VAL(n) , (unsigned long long)s->n
++    PD2_AM_FIELDS(PD2_AM_VAL)
++#undef PD2_AM_VAL
++   );
++  if (n <= 0 || n >= (int)sizeof(line) || pd2_am_bytes + (unsigned)n > PD2_AM_BYTES - 128u) { pd2_am_bytes = PD2_AM_BYTES; continue; }
++  written = write(pd2_am_fd, line, (size_t)n);
++  if (written == n) pd2_am_bytes += (unsigned)n;
++  else if (pd2_am_lock()) {
++   /* Retry latest cumulative totals on next tick; never block any audio caller. */
++   pd2_am_slots[i].dirty = 1; pd2_am_unlock();
++  }
++ }
++ if (pd2_am_bytes >= PD2_AM_BYTES && !pd2_am_limit_sent) {
++  int n = snprintf(line,sizeof(line),"{\"schema\":1,\"pid\":%lu,\"limited\":1}\n",(unsigned long)getpid());
++  if (n > 0 && n < (int)sizeof(line) && write(pd2_am_fd,line,(size_t)n) == n) pd2_am_limit_sent = 1;
++ }
++}
++static void *pd2_am_writer(void *unused) {
++ sigset_t blocked; (void)unused;
++ /* Broken collector must not SIGPIPE the game; block it only on writer thread. */
++ sigemptyset(&blocked); sigaddset(&blocked, SIGPIPE); pthread_sigmask(SIG_BLOCK, &blocked, NULL);
++ while (!__atomic_load_n(&pd2_am_stop, __ATOMIC_RELAXED)) {
++  struct timespec remaining = {1,0};
++  while (nanosleep(&remaining, &remaining) && errno == EINTR) {}
++  pd2_am_flush();
++ }
++ return NULL;
++}
++static void pd2_am_after_fork(void) {
++ /* Writer threads do not survive fork. Non-exec children are unsupported, not counted. */
++ __atomic_store_n(&pd2_am_enabled, 0, __ATOMIC_RELAXED); pd2_am_thread_started = 0;
++}
++static void __attribute__((constructor)) pd2_am_init(void) {
++ const char *s = getenv("PD2_AUDIO_METRICS_FD");
++ unsigned fd = 0; struct stat st; int flags;
++ if (!s || !*s || strlen(s) > 4) return;
++ for (;*s;++s) { if (*s < '0' || *s > '9') return; fd = fd*10u + (unsigned)(*s-'0'); }
++ if (fd < 3 || fd > 1023) return;
++ flags = fcntl((int)fd, F_GETFL);
++ if (flags < 0 || !(flags & O_NONBLOCK) || (flags & O_ACCMODE) != O_WRONLY || fstat((int)fd,&st) || !S_ISFIFO(st.st_mode)) return;
++ pd2_am_fd = (int)fd; pd2_am_owner = getpid();
++ if (pthread_atfork(NULL,NULL,pd2_am_after_fork)) return;
++ if (pthread_create(&pd2_am_thread,NULL,pd2_am_writer,NULL)) return;
++ pd2_am_thread_started = 1; __atomic_store_n(&pd2_am_enabled,1,__ATOMIC_RELAXED);
++}
++static void __attribute__((destructor)) pd2_am_fini(void) {
++ /* Never flush from the closing audio API or process-exit thread. The dedicated
++  * writer normally captures close on its next tick. Last <1s may be omitted. */
++ if (pd2_am_thread_started && getpid() == pd2_am_owner) {
++  __atomic_store_n(&pd2_am_enabled,0,__ATOMIC_RELAXED);
++  __atomic_store_n(&pd2_am_stop,1,__ATOMIC_RELAXED);
++  pthread_join(pd2_am_thread,NULL);
++ }
++}
++#endif
++#endif
+--- /dev/null
++++ b/src/pcm/audio_metrics_api.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef PD2_AUDIO_METRICS_API_H
++#define PD2_AUDIO_METRICS_API_H
++#include <stdint.h>
++enum pd2_am_op { PD2_AM_WRITE, PD2_AM_MMAP_BEGIN, PD2_AM_MMAP_COMMIT,
++ PD2_AM_PARAMS, PD2_AM_START, PD2_AM_PREPARE, PD2_AM_RESUME, PD2_AM_DROP, PD2_AM_DRAIN,
++ PD2_AM_RECOVER, PD2_AM_CLOSE };
++/* Hidden cross-TU helpers, never part of libasound's public symbol surface. */
++int __attribute__((visibility("hidden"))) pd2_am_enter(void);
++void __attribute__((visibility("hidden"))) pd2_am_leave(void);
++void __attribute__((visibility("hidden"))) pd2_am_result(void *, enum pd2_am_op, int64_t, uint64_t, int);
++#endif

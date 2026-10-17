@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "file": "ddraw.dll",
+  "size": 431616,
+  "sha256": "2da0ba6d2ad4a6c85bd7c412c3cac076ba97ab8d5a4baffae6e8a3c329e66eed",
+  "upstream": {
+    "project": "FunkyFr3sh/cnc-ddraw",
+    "tag": "v7.1.0.0",
+    "source_url": "https://codeload.github.com/FunkyFr3sh/cnc-ddraw/zip/refs/tags/v7.1.0.0",
+    "source_sha256": "a4f638383364e3bc1e4682b1d549a1f5400fa0cc312ee216d1b42555b1c814eb",
+    "license": "MIT; bundled notices in LICENSE.txt"
+  },
+  "build": {
+    "configuration": "Release Win32",
+    "compiler": "MSVC 14.44.35207",
+    "sdk": "10.0.22621.0",
+    "crt": "static /MT",
+    "deterministic": "/Brepro /PDBALTPATH:ddraw.pdb",
+    "command": "python tools/build_present_renderer.py --test",
+    "inputs_sha256": {
+      "build_present_renderer.py": "70641f5092c694bcf5b58107c1ffa52ab72b6d45bc44e23b2fdf3a1d6c4aa7ab",
+      "present_metrics.h": "a3fd9d3409209f6bf755d758b91b3464e3754391be3b57f9e2bbffe4ee7dfb9e",
+      "test_present_metrics.c": "1082ca392232ba032bde0f0defa0c1104eea653c23c6c2a45c32c895887fc1bc"
+    },
+    "source_patch_sha256": "7c8d85dc6f9c15357d8a69e53ed01eb04a8471f71b474397dd305c1bf7380a88"
+  },
+  "telemetry": {
+    "file": "pd2-present.jsonl",
+    "max_bytes": 262144,
+    "interval_ms": 1000,
+    "event": {
+      "1": "render_sample",
+      "2": "render_status (valid window handle and backend entry, not presentation)",
+      "3": "first successful API presentation, once per backend per process; frames=1 duration_ms=0"
+    },
+    "backend": {
+      "1": "gdi",
+      "2": "opengl"
+    },
+    "fields": [
+      "event",
+      "backend",
+      "frames",
+      "duration_ms",
+      "width",
+      "height"
+    ],
+    "values": "integers only",
+    "clock": "QueryPerformanceCounter",
+    "scope": "successful backend presentations, not game simulation FPS"
+  },
+  "tests": {
+    "native_core": "passed",
+    "gui": "not required; not run",
+    "physical_r36s": "not available"
+  },
+  "scope": "Independent optional diagnostics; no HUD, framebuffer copies or mutations; default and FPS DLLs unchanged."
+}

@@ -1,0 +1,3 @@
+LIBRARY pd2_xinput_test_stub
+EXPORTS
+    XInputGetState=_StubGetState@8

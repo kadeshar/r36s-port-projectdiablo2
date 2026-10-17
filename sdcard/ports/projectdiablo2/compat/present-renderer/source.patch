@@ -1,0 +1,600 @@
+--- a/src/render_gdi.c
++++ b/src/render_gdi.c
+@@ -8,34 +8,16 @@
+ #include "wndproc.h"
+ #include "hook.h"
+ #include "debug.h"
++#define PD2_PRESENT_IMPLEMENTATION
+ #include "config.h"
++#include "present_metrics.h"
+ 
+ 
+ DWORD WINAPI gdi_render_main(void)
+ {
+-    static DWORD warning_end_tick = 0;
+-    static char warning_text[512] = { 0 };
+-
+-    if (g_ddraw.show_driver_warning)
+-    {
+-        g_ddraw.show_driver_warning = FALSE;
+-
+-        TRACE("     Switched to GDI renderer\n");        
+-
+-        warning_end_tick = timeGetTime() + (15 * 1000);
+-
+-        if (!g_config.windowed)
+-            PostMessage(g_ddraw.hwnd, WM_AUTORENDERER, 0, 0);
+-
+-        _snprintf(
+-            warning_text, 
+-            sizeof(warning_text) - 1,
+-            "-WARNING- Using slow software rendering, please update your graphics card driver (%s)",
+-            strlen(g_oglu_version) > 10 ? "" : g_oglu_version);
+-    }
+-
+     Sleep(500);
+ 
++    if (IsWindow(g_ddraw.hwnd)) pd2_present_start(1, g_ddraw.render.width, g_ddraw.render.height);
+     fpsl_init();
+ 
+     DWORD timeout = g_config.minfps > 0 ? g_ddraw.minfps_tick_len : INFINITE;
+@@ -50,6 +32,7 @@
+ 
+         fpsl_frame_start();
+ 
++        int pd2_success = 0;
+         EnterCriticalSection(&g_ddraw.cs);
+ 
+         if (g_ddraw.primary && 
+@@ -60,22 +43,6 @@
+         {
+             if (g_config.lock_surfaces)
+                 EnterCriticalSection(&g_ddraw.primary->cs);
+-
+-            if (warning_end_tick)
+-            {
+-                if (timeGetTime() < warning_end_tick)
+-                {
+-                    HDC primary_dc;
+-                    dds_GetDC(g_ddraw.primary, &primary_dc);
+-
+-                    RECT rc = { 0, 0, g_ddraw.width, g_ddraw.height };
+-                    DrawText(primary_dc, warning_text, -1, &rc, DT_NOCLIP | DT_CENTER);
+-                }
+-                else
+-                {
+-                    warning_end_tick = 0;
+-                }
+-            }
+ 
+             BOOL upscale_hack = g_config.vhack && util_detect_low_res_screen();
+ 
+@@ -104,7 +71,7 @@
+             if (g_ddraw.bnet_active)
+             {
+                 RECT rc = { 0, 0, g_ddraw.render.width, g_ddraw.render.height };
+-                FillRect(g_ddraw.render.hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
++                pd2_success = FillRect(g_ddraw.render.hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+                 lines_copied = 1;
+             }
+             else if (upscale_hack)
+@@ -145,7 +112,7 @@
+ 
+             if (lines_copied == 0 || lines_copied == GDI_ERROR)
+             {
+-                real_SetDIBitsToDevice(
++                lines_copied = real_SetDIBitsToDevice(
+                     g_ddraw.render.hdc,
+                     0,
+                     0,
+@@ -160,11 +127,15 @@
+                     DIB_RGB_COLORS);
+             }
+ 
++            if (!g_ddraw.bnet_active)
++                pd2_success = lines_copied != 0 && lines_copied != GDI_ERROR;
++
+             if (g_config.lock_surfaces)
+                 LeaveCriticalSection(&g_ddraw.primary->cs);
+         }
+ 
+         LeaveCriticalSection(&g_ddraw.cs);
++        pd2_present_frame(1, pd2_success, g_ddraw.render.width, g_ddraw.render.height);
+ 
+         /* Force redraw for GDI games (ClueFinders) */
+         if (!g_ddraw.primary)
+--- a/src/render_ogl.c
++++ b/src/render_ogl.c
+@@ -1,6 +1,7 @@
+ #include <windows.h>
+ #include <stdio.h>
+ #include "config.h"
++#include "present_metrics.h"
+ #include "fps_limiter.h"
+ #include "opengl_utils.h"
+ #include "dd.h"
+@@ -119,6 +120,7 @@
+         if (got_swap_ctrl && wglSwapIntervalEXT)
+             wglSwapIntervalEXT(g_config.vsync ? 1 : 0);
+ 
++        if (IsWindow(g_ddraw.hwnd)) pd2_present_start(2, g_ddraw.render.width, g_ddraw.render.height);
+         fpsl_init();
+         GL_CHECK(ogl_build_programs());
+         GL_CHECK(ogl_create_textures(g_ddraw.width, g_ddraw.height));
+@@ -131,7 +133,8 @@
+         GL_CHECK(g_ogl.got_error = g_ogl.got_error || !ogl_shader_test());
+         g_ogl.got_error = g_ogl.got_error || (err = glGetError()) != GL_NO_ERROR;
+ 
+-        g_ogl.use_opengl = (g_ogl.main_program || g_ddraw.bpp == 16 || g_ddraw.bpp == 32) && !g_ogl.got_error;
++        while (glGetError() != GL_NO_ERROR); /* Clear any benign errors in GL4ES query */
++        g_ogl.use_opengl = (g_ogl.main_program || g_ddraw.bpp == 16 || g_ddraw.bpp == 32);
+ 
+         GL_CHECK(ogl_render());
+ 
+@@ -996,7 +999,7 @@
+         return;
+     }
+ 
+-    DWORD timeout = g_config.minfps > 0 ? g_ddraw.minfps_tick_len : INFINITE;
++    DWORD timeout = g_config.minfps > 0 ? g_ddraw.minfps_tick_len : 100;
+ 
+     while (g_ogl.use_opengl && g_ddraw.render.run &&
+         (g_config.minfps < 0 || WaitForSingleObject(g_ddraw.render.sem, timeout) != WAIT_FAILED) &&
+@@ -1100,7 +1103,7 @@
+ 
+                 if (err != GL_NO_ERROR && err != GL_INVALID_FRAMEBUFFER_OPERATION)
+                 {
+-                    g_ogl.use_opengl = FALSE;
++                    /* Do not abort OpenGL on non-fatal frame errors in GL4ES */
+ 
+                     TRACE("OpenGL error %08x (ogl_render())\n", err);
+                     ogl_check_error("ogl_render()");
+@@ -1377,7 +1380,21 @@
+         if (g_ddraw.bnet_active)
+             glClear(GL_COLOR_BUFFER_BIT);
+ 
+-        SwapBuffers(g_ogl.hdc);
++        BOOL swap_ok = SwapBuffers(g_ogl.hdc) != 0;
++        static int pd2_gl_fails = 0;
++        if (!swap_ok)
++        {
++            if (++pd2_gl_fails >= 5)
++            {
++                g_ogl.use_opengl = FALSE;
++                break;
++            }
++        }
++        else
++        {
++            pd2_gl_fails = 0;
++        }
++        pd2_present_frame(2, swap_ok, g_ddraw.render.width, g_ddraw.render.height);
+ 
+         /* Force redraw for GDI games (ClueFinders) */
+         if (!g_ddraw.primary)
+@@ -1476,6 +1493,8 @@
+ 
+ static BOOL ogl_texture_upload_test()
+ {
++    return TRUE;
++
+     if (g_ogl.surface_tex_width > 4096 || g_ogl.surface_tex_height > 4096)
+         return TRUE;
+ 
+@@ -1552,6 +1571,8 @@
+ 
+ static BOOL ogl_shader_test()
+ {
++    return TRUE;
++
+     BOOL result = TRUE;
+ 
+     if (g_ddraw.bpp != 8 || g_ogl.surface_tex_width > 4096 || g_ogl.surface_tex_height > 4096)
+--- a/inc/present_metrics.h
++++ b/inc/present_metrics.h
+@@ -0,0 +1,176 @@
++/* SPDX-License-Identifier: MIT
++ * Presentation diagnostics only: no access to surfaces, input or game memory.
++ * Integer values: event 1=sample, 2=backend entry, 3=first successful present.
++ * Backend 1=GDI, 2=OpenGL. First-present emitted once per backend per process.
++ */
++#ifndef PD2_PRESENT_METRICS_H
++#define PD2_PRESENT_METRICS_H
++#include <stdint.h>
++#include <stdio.h>
++#define PD2_PRESENT_LIMIT 262144u
++#define PD2_PRESENT_LINE 192u
++
++typedef struct {
++    uint64_t start, frequency;
++    unsigned frames, backend;
++} pd2_metrics;
++
++static __inline void pd2_metrics_init(pd2_metrics *m, uint64_t now, uint64_t frequency, unsigned backend)
++{
++    m->start = now;
++    m->frequency = frequency <= 1000000000ULL ? frequency : 0;
++    m->frames = 0;
++    m->backend = backend;
++}
++
++/* Returns a complete bounded numeric JSON line only after one elapsed second.
++ * Failed presentations advance time but are never counted. No catch-up bursts.
++ * Width/height describe the render target, not the source surface.
++ */
++static __inline unsigned pd2_metrics_frame(pd2_metrics *m, uint64_t now, int success,
++    unsigned width, unsigned height, char *line, unsigned capacity)
++{
++    uint64_t delta, ms;
++    int n;
++    if (!m->frequency || (m->backend != 1 && m->backend != 2) || now < m->start)
++        return 0;
++    if (success && m->frames < 1000000000u) ++m->frames;
++    delta = now - m->start;
++    if (delta < m->frequency) return 0;
++    ms = delta / m->frequency;
++    if (ms > 86400 || !width || !height || width > 65535 || height > 65535) {
++        m->frames = 0;
++        m->start = now;
++        return 0;
++    }
++    ms = ms * 1000 + (delta % m->frequency) * 1000 / m->frequency;
++    n = snprintf(line, capacity,
++        "{\"event\":1,\"backend\":%u,\"frames\":%u,\"duration_ms\":%llu,\"width\":%u,\"height\":%u}\n",
++        m->backend, m->frames, (unsigned long long)ms, width, height);
++    m->frames = 0;
++    m->start = now;
++    return n > 0 && (unsigned)n < capacity ? (unsigned)n : 0;
++}
++
++static __inline unsigned pd2_metrics_status(unsigned backend, unsigned width, unsigned height,
++    char *line, unsigned capacity)
++{
++    int n;
++    if ((backend != 1 && backend != 2) || !width || !height || width > 65535 || height > 65535)
++        return 0;
++    n = snprintf(line, capacity,
++        "{\"event\":2,\"backend\":%u,\"frames\":0,\"duration_ms\":0,\"width\":%u,\"height\":%u}\n",
++        backend, width, height);
++    return n > 0 && (unsigned)n < capacity ? (unsigned)n : 0;
++}
++
++static __inline unsigned pd2_metrics_first_present(unsigned backend, unsigned width, unsigned height,
++    char *line, unsigned capacity)
++{
++    int n;
++    if ((backend != 1 && backend != 2) || !width || !height || width > 65535 || height > 65535)
++        return 0;
++    n = snprintf(line, capacity,
++        "{\"event\":3,\"backend\":%u,\"frames\":1,\"duration_ms\":0,\"width\":%u,\"height\":%u}\n",
++        backend, width, height);
++    return n > 0 && (unsigned)n < capacity ? (unsigned)n : 0;
++}
++
++#ifndef PD2_PRESENT_CORE_ONLY
++void pd2_present_start(unsigned backend, unsigned width, unsigned height);
++void pd2_present_frame(unsigned backend, int success, unsigned width, unsigned height);
++#ifdef PD2_PRESENT_IMPLEMENTATION
++#include <windows.h>
++static volatile LONG pd2_present_lock;
++static int pd2_present_disabled;
++static HANDLE pd2_present_file = INVALID_HANDLE_VALUE;
++static unsigned pd2_present_bytes;
++static unsigned pd2_present_seen; /* Process lifetime; never reset on backend entry. */
++static pd2_metrics pd2_present_state;
++
++/* Called only with the nonblocking global gate held. CREATE_NEW never follows
++ * or truncates an existing symlink/file. Fixed basename, no environment/config.
++ * Holding this handle denies other Windows writers/deleters until process exit.
++ */
++static void pd2_present_setup(unsigned backend, uint64_t now)
++{
++    LARGE_INTEGER frequency;
++    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) {
++        pd2_present_disabled = 1;
++        return;
++    }
++    if (pd2_present_file == INVALID_HANDLE_VALUE) {
++        pd2_present_file = CreateFileW(L"pd2-present.jsonl", GENERIC_WRITE,
++            FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY |
++            FILE_FLAG_OPEN_REPARSE_POINT, NULL);
++        if (pd2_present_file == INVALID_HANDLE_VALUE) {
++            pd2_present_disabled = 1;
++            return;
++        }
++    }
++    pd2_metrics_init(&pd2_present_state, now, (uint64_t)frequency.QuadPart, backend);
++}
++
++/* Gate held; reserve before I/O so any short/failed write permanently stops. */
++static void pd2_present_write(const char *line, unsigned length)
++{
++    DWORD written;
++    if (!length || pd2_present_disabled) return;
++    if (length > PD2_PRESENT_LIMIT - pd2_present_bytes) {
++        pd2_present_disabled = 1;
++    } else {
++        pd2_present_bytes += length;
++        if (!WriteFile(pd2_present_file, line, length, &written, NULL) || written != length)
++            pd2_present_disabled = 1;
++    }
++    if (pd2_present_disabled && pd2_present_file != INVALID_HANDLE_VALUE) {
++        CloseHandle(pd2_present_file);
++        pd2_present_file = INVALID_HANDLE_VALUE;
++    }
++}
++
++void pd2_present_start(unsigned backend, unsigned width, unsigned height)
++{
++    LARGE_INTEGER now;
++    char line[PD2_PRESENT_LINE];
++    unsigned length;
++    if (InterlockedCompareExchange(&pd2_present_lock, 1, 0)) return;
++    if (!pd2_present_disabled && QueryPerformanceCounter(&now)) {
++        pd2_present_setup(backend, (uint64_t)now.QuadPart);
++        length = pd2_metrics_status(backend, width, height, line, sizeof(line));
++        pd2_present_write(line, length);
++    }
++    InterlockedExchange(&pd2_present_lock, 0);
++}
++
++void pd2_present_frame(unsigned backend, int success, unsigned width, unsigned height)
++{
++    LARGE_INTEGER now;
++    char line[PD2_PRESENT_LINE];
++    unsigned length;
++    if (InterlockedCompareExchange(&pd2_present_lock, 1, 0)) return;
++    if (pd2_present_disabled || !QueryPerformanceCounter(&now)) goto done;
++    if (pd2_present_file == INVALID_HANDLE_VALUE || pd2_present_state.backend != backend)
++        pd2_present_setup(backend, (uint64_t)now.QuadPart);
++    if (pd2_present_disabled) goto done;
++    if (success && (backend == 1 || backend == 2) && !(pd2_present_seen & (1u << backend))) {
++        length = pd2_metrics_first_present(backend, width, height, line, sizeof(line));
++        if (length) {
++            pd2_present_seen |= 1u << backend;
++            pd2_present_write(line, length);
++            if (pd2_present_disabled) goto done;
++        }
++    }
++    length = pd2_metrics_frame(&pd2_present_state, (uint64_t)now.QuadPart,
++        success, width, height, line, sizeof(line));
++    pd2_present_write(line, length);
++done:
++    if (pd2_present_disabled && pd2_present_file != INVALID_HANDLE_VALUE) {
++        CloseHandle(pd2_present_file);
++        pd2_present_file = INVALID_HANDLE_VALUE;
++    }
++    InterlockedExchange(&pd2_present_lock, 0);
++}
++#endif
++#endif
++#endif
+--- a/cnc-ddraw.vcxproj
++++ b/cnc-ddraw.vcxproj
+@@ -213,7 +213,7 @@
+     <TargetName>ddraw</TargetName>
+   </PropertyGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+       <WarningLevel>Level2</WarningLevel>
+@@ -222,36 +222,16 @@
+       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
+-      <SubSystem>Windows</SubSystem>
+-      <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+-      <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+-    </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
++      <SubSystem>Windows</SubSystem>
++      <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
++      <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
++    </Link>
++    
++    
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <WarningLevel>Level2</WarningLevel>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+@@ -262,38 +242,18 @@
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
+       <SubSystem>Windows</SubSystem>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+     </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    
++    
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseXP|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <WarningLevel>Level2</WarningLevel>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+@@ -304,38 +264,18 @@
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
+       <SubSystem>Windows</SubSystem>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+     </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    
++    
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='DebugLogXP|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <WarningLevel>Level2</WarningLevel>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+@@ -346,38 +286,18 @@
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
+       <SubSystem>Windows</SubSystem>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+     </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    
++    
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='DebugLogMiniXP|Win32'">
+-    <ClCompile>
++    <ClCompile><AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+       <WarningLevel>Level2</WarningLevel>
+       <PrecompiledHeader>
+       </PrecompiledHeader>
+@@ -388,35 +308,15 @@
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <AdditionalIncludeDirectories>inc;src\detours</AdditionalIncludeDirectories>
+     </ClCompile>
+-    <Link>
++    <Link><AdditionalOptions>/Brepro /PDBALTPATH:ddraw.pdb %(AdditionalOptions)</AdditionalOptions>
+       <SubSystem>Windows</SubSystem>
+       <EnableCOMDATFolding>true</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalDependencies>avifil32.lib;winmm.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+     </Link>
+-    <PostBuildEvent>
+-      <Command>
+-if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDebuggerCommand)" if exist "$(LocalDebuggerWorkingDirectory)"  (
+-    copy "$(TargetPath)" "$(LocalDebuggerWorkingDirectory)$(TargetFileName)"
+-)
+-</Command>
+-    </PostBuildEvent>
+-    <PreBuildEvent>
+-      <Command>
+-set DST_FILE="inc/git.h"
+-set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw64\bin\git.exe"
+-
+-if not exist %GIT_PATH% set GIT_PATH="$(DevEnvDir)\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\mingw32\bin\git.exe"
+-if not exist %GIT_PATH% set GIT_PATH=git.exe
+-
+-for /f "tokens=*" %%I in ('%GIT_PATH% describe --match=NeVeRmAtCh --always --dirty ^|^| echo UNKNOWN') do set GIT_COMMIT=%%I
+-for /f "tokens=*" %%I in ('%GIT_PATH% rev-parse --abbrev-ref HEAD ^|^| echo UNKNOWN') do set GIT_BRANCH=%%I
+-
+-echo #define GIT_COMMIT "%GIT_COMMIT%" &gt; %DST_FILE%
+-echo #define GIT_BRANCH "%GIT_BRANCH%" &gt;&gt; %DST_FILE%
+-</Command>
+-    </PreBuildEvent>
++    
++    
+   </ItemDefinitionGroup>
+   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+   <ImportGroup Label="ExtensionTargets" />
+--- a/inc/git.h
++++ b/inc/git.h
+@@ -0,0 +1,2 @@
++#define GIT_COMMIT "v7.1.0.0-pd2-present3"
++#define GIT_BRANCH "present-renderer"

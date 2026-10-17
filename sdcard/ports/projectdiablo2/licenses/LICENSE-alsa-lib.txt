@@ -1,0 +1,23 @@
+alsa-lib 1.2.8 — unmodified upstream source, ARM32 hard-float/time32 build.
+Source archive in this update: compat/alsa-legacy-armhf/alsa-lib-1.2.8.tar.bz2
+Upstream: https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.8.tar.bz2
+Source SHA256: 1ab01b74e33425ca99c2e36c0844fd6888273193bd898240fe8f93accbcbf347
+Build recipe: tools/build_alsa_legacy.py and tools/alsa_legacy_abi.c.
+
+Copyright (c) ALSA contributors, including Jaroslav Kysela, Abramo Bagnara,
+Takashi Iwai and the authors identified in the individual source files.
+
+This library is free software; you can redistribute it and/or modify it
+under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation; either version 2.1 of the License, or
+(at your option) any later version.
+
+This library is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License
+for more details.
+
+The complete license and individual file notices are included in the source
+archive (COPYING and individual source headers). The Linux UAPI headers in
+the archive retain their own GPL-with-syscall-exception notices. No source
+patches were applied; compiler/toolchain selection provides the time32 ABI.

@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "license": "MIT",
+  "artifacts": {
+    "graphics-layers.armhf": {
+      "sha256": "da8b918db612575a05b6f8da136ca72ec93c52d2f13ec04f1232fe783e48dfde",
+      "size": 9692
+    },
+    "graphics-layers.exe": {
+      "sha256": "86fb129281f7b8edaea13a7c6a814416b9ee293e409bd80a569967a273541925",
+      "size": 114176
+    }
+  },
+  "inputs_sha256": {
+    "tools/graphics_layers.c": "5b3182ef5bf06ad6c6e46524c8e782bbe4726998eb5af4b08f3776238ee0a533",
+    "tools/graphics_layers_win.c": "3cc4a35eabd792cc7b56def0fe7edb043266da76c6a46d7ca1a724e325f73159",
+    "tools/build_graphics_layers.py": "a6931a3b4f86f306601c3597d7c9c179443aa5b2d9f3575070d0de2407c38390",
+    "tests/test_graphics_layers.py": "d6e8d01d88dc06472a21445a602240dd0b1b6cafd3e64c23982fa2dffe94bf08"
+  },
+  "build": {
+    "armhf": {
+      "image": "pd2-alsa-native-builder",
+      "command": "arm-linux-gnueabihf-gcc -std=c99 -Os -Wall -Wextra -Werror -fno-ident -Wl,--build-id=none tools/graphics_layers.c -o sdcard/ports/projectdiablo2/compat/graphics-probe/graphics-layers.armhf -ldl && arm-linux-gnueabihf-strip sdcard/ports/projectdiablo2/compat/graphics-probe/graphics-layers.armhf && arm-linux-gnueabihf-readelf -h -l -V sdcard/ports/projectdiablo2/compat/graphics-probe/graphics-layers.armhf",
+      "link": "-ldl only"
+    },
+    "win32": {
+      "compiler": "MSVC 14.44",
+      "sdk": "10.0.22621.0",
+      "crt": "/MT",
+      "deterministic": "/Brepro"
+    },
+    "command": "python tools/build_graphics_layers.py --target all"
+  },
+  "runtime": {
+    "deadline_seconds": 15,
+    "deadline_owner": "parent",
+    "output": "stdout PD2_EVENT fixed graphics_layer schema v1",
+    "maximum_events": 7,
+    "maximum_output_bytes": 4096,
+    "requires_game_assets": false
+  },
+  "validation": {
+    "physical_r36s": "not tested",
+    "gpu_hardware_success": "not established"
+  }
+}
