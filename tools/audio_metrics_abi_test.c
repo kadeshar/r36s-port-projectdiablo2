@@ -65,6 +65,7 @@ int main(int argc,char **argv) {
  assert(strstr(records,"\"mmap_commit_calls\":2000") && strstr(records,"\"mmap_frames\":2000"));
  assert(strstr(records,"\"recover_epipe_calls\":1") && strstr(records,"\"params_valid\":1"));
  assert(strstr(records,"\"rate_hz\":48000") && strstr(records,"\"channels\":2"));
+ assert(strstr(records,"\"producer_monotonic_ms\":"));
  assert(!strstr(records,"null") && !strstr(records,"0x"));
  assert(dlclose(lib)==0); close(pipes[0]); close(pipes[1]);
  puts("PD2_AUDIO_ABI_OK"); return 0;

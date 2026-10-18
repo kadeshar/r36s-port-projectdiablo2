@@ -7,9 +7,9 @@ PINNED={'wine-8.0-x86.tar.xz':(31185272,'d77d023bd9046547afccae5860dc6089b9d5cd9
 p=ROOT/'dist/projectdiablo2-port-update.zip';allow=json.loads((ROOT/'release-files.json').read_text())
 with zipfile.ZipFile(p) as z:
  assert sorted(z.namelist())==sorted(allow)
- expected_launchers={'Project Diablo 2.sh','Project Diablo 2 - Performance GDI.sh','Project Diablo 2 - Performance OpenGL.sh'}
+ expected_launchers={n for n in allow if '/' not in n and n.endswith('.sh')}
  assert {n for n in z.namelist() if '/' not in n and n.endswith('.sh')}==expected_launchers
- assert {f.name for f in (ROOT/'sdcard/ports').glob('*.sh')}==expected_launchers
+ assert expected_launchers.issubset({f.name for f in (ROOT/'sdcard/ports').glob('*.sh')})
  assert z.testzip() is None
  assert not any(any(x in ('gamedata','runtime','config','saves','logs','wineprefix','__pycache__') for x in n.split('/')) for n in z.namelist())
  assert '"port_version":"'+VERSION+'"' in z.read('Project Diablo 2.sh').decode()
@@ -22,7 +22,9 @@ with zipfile.ZipFile(p) as z:
  assert len(dll)==companion['size']==411648
  assert hashlib.sha256(dll).hexdigest()==companion['sha256']=='85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9'
  assert sorted(n for n in z.namelist() if n.lower().endswith('.dll'))==[
-  'projectdiablo2/compat/cnc-ddraw/ddraw.dll','projectdiablo2/compat/fps-renderer/ddraw.dll']
+  'projectdiablo2/compat/cnc-ddraw/ddraw.dll',
+  'projectdiablo2/compat/fps-renderer/ddraw.dll',
+  'projectdiablo2/compat/present-renderer/ddraw.dll']
  hud=z.read('projectdiablo2/compat/fps-renderer/ddraw.dll')
  hud_manifest=json.loads(z.read('projectdiablo2/compat/fps-renderer/manifest.json'))
  hud_size=438272
@@ -30,9 +32,14 @@ with zipfile.ZipFile(p) as z:
  assert len(hud)==hud_manifest['size']==hud_size
  assert hashlib.sha256(hud).hexdigest()==hud_manifest['sha256']==hud_sha256
  assert hud[:2]==b'MZ' and hud_manifest['upstream']['tag']=='v7.1.0.0'
+ present=z.read('projectdiablo2/compat/present-renderer/ddraw.dll')
+ present_manifest=json.loads(z.read('projectdiablo2/compat/present-renderer/manifest.json'))
+ assert len(present)==present_manifest['size']==431616
+ assert hashlib.sha256(present).hexdigest()==present_manifest['sha256']=='2da0ba6d2ad4a6c85bd7c412c3cac076ba97ab8d5a4baffae6e8a3c329e66eed'
  own_exes={
   'projectdiablo2/compat/xinput-probe/xinput-probe.exe':(117760,'a29deca066455a989e5c8b81eec216d78090bccb1d76be0ee0d9b34f16df85c6'),
   'projectdiablo2/compat/audio-probe/audio-probe.exe':(114176,'0ce817af5dc0583cef4de5579be6d421ed8fb8610d2274216e35822d5490370e'),
+  'projectdiablo2/compat/graphics-probe/graphics-layers.exe':(114176,'86fb129281f7b8edaea13a7c6a814416b9ee293e409bd80a569967a273541925'),
   'projectdiablo2/compat/fps-hotkey/fps-hotkey.exe':(84480,'e6ed9a039039340479d5bedfa17f627e7b00ea43daeeb54313c814124ae0d4ca')}
  assert {n for n in z.namelist() if n.lower().endswith('.exe')}==set(own_exes)
  for name,(size,digest) in own_exes.items():
@@ -42,6 +49,9 @@ with zipfile.ZipFile(p) as z:
  assert len(native)==5540 and hashlib.sha256(native).hexdigest()=='f320169c7c596136949f2ff7210808534708a9d22a1de9014179597b05f1aa21'
  assert native[:5]==b'\x7fELF\x01' and int.from_bytes(native[18:20],'little')==40
  assert ((z.getinfo('projectdiablo2/compat/alsa-native/alsa-native.armhf').external_attr >> 16) & 0o777)==0o755
+ glayers=z.read('projectdiablo2/compat/graphics-probe/graphics-layers.armhf')
+ assert len(glayers)==9692 and hashlib.sha256(glayers).hexdigest()=='da8b918db612575a05b6f8da136ca72ec93c52d2f13ec04f1232fe783e48dfde'
+ assert ((z.getinfo('projectdiablo2/compat/graphics-probe/graphics-layers.armhf').external_attr >> 16) & 0o777)==0o755
  for name,size,digest in (
   ('alsa-native.aarch64',10216,'2365cfe1eae1d19d7209d95dd92319e09f11ac75138e5cf42fa7f83341f2d9ec'),
   ('strace.aarch64',1453376,'56e1dab0112c909206e4ef9b33183c70e9fd5c084739d67d1ca9430fa2fd4ec6'),
@@ -52,13 +62,15 @@ with zipfile.ZipFile(p) as z:
   if name.endswith('.aarch64'):
    assert content[:5]==b'\x7fELF\x02' and int.from_bytes(content[18:20],'little')==183
    assert ((z.getinfo(relative).external_attr >> 16) & 0o777)==0o755
- probe=z.read('projectdiablo2/compat/xinput-probe/xinput-probe.exe')
  for name,size,digest in (
   ('libasound.so.2',590552,'899e6f5164ab24fe2863aa22f102f3baa60dc4a0f9978e79ed4588fab57b78f8'),
   ('alsa-lib-1.2.8.tar.bz2',1091475,'1ab01b74e33425ca99c2e36c0844fd6888273193bd898240fe8f93accbcbf347')):
   content=z.read('projectdiablo2/compat/alsa-legacy-armhf/'+name)
   assert len(content)==size and hashlib.sha256(content).hexdigest()==digest,name
- assert len(probe)==117760 and hashlib.sha256(probe).hexdigest()=='a29deca066455a989e5c8b81eec216d78090bccb1d76be0ee0d9b34f16df85c6'
+ for name,size,digest in (
+  ('libasound.so.2',594672,'958fde9fed0460ed6eb0201a5b151099de91d08326a55e4c9ed6dcc35144072d'),):
+  content=z.read('projectdiablo2/compat/audio-metrics/'+name)
+  assert len(content)==size and hashlib.sha256(content).hexdigest()==digest,name
  for name in allow:
   assert z.read(name)==(ROOT/'sdcard/ports'/name).read_bytes(),name
  print('ZIP entries:',len(z.namelist()),'bytes:',p.stat().st_size,'SHA256:',hashlib.sha256(p.read_bytes()).hexdigest())

@@ -310,18 +310,46 @@ def _device_status(path):
         return 'denied'
 
 
-def config_bytes(stable, device):
+ROUTE_PROFILES = ('baseline', 'dmix160', 'dmix80')
+
+
+def config_bytes(stable, device, profile='baseline', ipc_key=592834):
     if not isinstance(stable, str) or not ID_RE.fullmatch(stable):
         raise ValueError('invalid ID')
     if type(device) is not int or not 0 <= device <= 255:
         raise ValueError('invalid device')
-    return ('</usr/share/alsa/alsa.conf>\n'
-            'pcm.!default {\n type plug\n slave.pcm "hw:CARD=%s,DEV=%d"\n}\n'
-            'ctl.!default {\n type hw\n card "%s"\n}\n' % (stable, device, stable)).encode('ascii')
+    if type(ipc_key) is not int or not 1 <= ipc_key <= 2147483647:
+        raise ValueError('invalid IPC key')
+    if profile not in ROUTE_PROFILES:
+        raise ValueError('invalid profile')
+    if profile == 'baseline':
+        return ('</usr/share/alsa/alsa.conf>\n'
+                'pcm.!default {\n type plug\n slave.pcm "hw:CARD=%s,DEV=%d"\n}\n'
+                'ctl.!default {\n type hw\n card "%s"\n}\n' % (stable, device, stable)).encode('ascii')
+    if profile in ('dmix80', 'dmix160'):
+        buf_time = 80000 if profile == 'dmix80' else 160000
+        return ('</usr/share/alsa/alsa.conf>\n'
+                'pcm.pd2_dmix {\n'
+                ' type dmix\n'
+                ' ipc_key %d\n'
+                ' ipc_key_add_uid true\n'
+                ' ipc_perm 0600\n'
+                ' slave {\n'
+                '  pcm "hw:CARD=%s,DEV=%d"\n'
+                '  rate 48000\n'
+                '  channels 2\n'
+                '  period_time 20000\n'
+                '  buffer_time %d\n'
+                ' }\n'
+                '}\n'
+                'pcm.!default {\n type plug\n slave.pcm "pd2_dmix"\n}\n'
+                'ctl.!default {\n type hw\n card "%s"\n}\n' % (ipc_key, stable, device, buf_time, stable)).encode('ascii')
+    raise ValueError('invalid profile')
 
 
 def route(run, proc_root=Path('/proc/asound'), snd_root=Path('/dev/snd'),
-          alsa_base=Path('/usr/share/alsa/alsa.conf'), device_status=None):
+          alsa_base=Path('/usr/share/alsa/alsa.conf'), device_status=None,
+          profile='baseline'):
     """Synthetic roots/callback are function-only test hooks, never CLI options."""
     run = Path(os.path.abspath(run))
     destination = run / CONFIG_NAME
@@ -386,10 +414,12 @@ def route(run, proc_root=Path('/proc/asound'), snd_root=Path('/dev/snd'),
     if status is not None and status != b'closed':
         result['audio_route'] = 'busy'
         return result
+    if profile not in ROUTE_PROFILES:
+        raise ValueError('invalid profile')
     if not Path(alsa_base).is_file() or not os.access(alsa_base, os.R_OK):
         result['audio_route'] = 'default'
         return result
-    _publish(destination, config_bytes(cards[card], device))
+    _publish(destination, config_bytes(cards[card], device, profile=profile))
     result['audio_route'] = 'rk817'
     return result
 
@@ -404,6 +434,7 @@ def main(argv=None):
         parser = _Parser(add_help=False, allow_abbrev=False)
         parser.add_argument('--prefix')
         parser.add_argument('--run')
+        parser.add_argument('--profile', choices=ROUTE_PROFILES, default='baseline')
         mode = parser.add_mutually_exclusive_group(required=True)
         for name in ('route', 'prepare-export', 'snapshot', 'snapshot-missing', 'validate', 'retire'):
             mode.add_argument('--' + name, action='store_true')
@@ -411,11 +442,11 @@ def main(argv=None):
         if args.route:
             if not args.run or args.prefix:
                 raise ValueError('invalid route arguments')
-            for check, status in route(args.run).items():
+            for check, status in route(args.run, profile=args.profile).items():
                 print('PD2_EVENT ' + json.dumps({'event': 'session_probe', 'phase': 'launch',
                                                 'check': check, 'status': status}, separators=(',', ':')))
         else:
-            if not args.prefix or args.run:
+            if not args.prefix or args.run or args.profile != 'baseline':
                 raise ValueError('invalid registry arguments')
             directory = Path(os.path.abspath(args.prefix)) / 'drive_c'
             export, marker = directory / EXPORT_NAME, directory / RESTORE_NAME

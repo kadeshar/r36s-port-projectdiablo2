@@ -36,6 +36,12 @@ cleanup() {
  fi
  # Compositor/Xwayland have their own setsid group: stop it on ALL exit paths.
  stop_pid "$weston_pid" 1
+ # Reset console only after a compositor we owned has released DRM.
+ if [[ -n "$weston_pid" ]]; then
+  for tty in /dev/tty0 /dev/tty1; do
+   [[ -c "$tty" ]] && { printf '\033c' > "$tty"; } 2>/dev/null || true
+  done
+ fi
  # Let the compositor-only classifier drain EOF; it lives outside Weston group.
  if [[ -n "$compositor_log_pid" ]];then
   for ((i=0;i<20;i++));do kill -0 "$compositor_log_pid" 2>/dev/null || break;sleep 0.1;done
@@ -59,8 +65,21 @@ trap 'exit 143' TERM
 stage namespace_setup
 pd2_namespace_open || exit 2
 stage namespace_ready
+if [[ ${PD2_TUNING:-off} == crusty_glx_gl4es ]]; then
+ source "$PD2_PORT/scripts/tuning.sh" && pd2_validate_tuning && [[ "$PD2_PROFILE" == opengl ]] || { error invalid_profile;exit 2; }
+fi
 case "${PD2_RENDERER_VARIANT:-stock}" in stock|gles2) ;; *) error invalid_profile;exit 2;; esac
 case "${PD2_BOX_VARIANT:-stock}" in stock|a35) ;; *) error invalid_profile;exit 2;; esac
+case "${PD2_AUDIO_SDL:-alsa}" in alsa|dummy) ;; *) error invalid_profile;exit 2;; esac
+case "${PD2_AUDIO_DSOUND:-off}" in off|ver2|wine) ;; *) error invalid_profile;exit 2;; esac
+case "${PD2_AUDIO_METRICS:-0}" in 0|1) ;; *) error invalid_profile;exit 2;; esac
+case "${PD2_AUDIO_VARIANT:-stock}" in A|B|C|D|buffer|dmix|stock) ;; *) error invalid_profile;exit 2;; esac
+case "${PD2_AUDIO_ROUTE_PROFILE:-baseline}" in baseline|buffer80|buffer160|dmix160|dmix80) ;; *) error invalid_profile;exit 2;; esac
+export PD2_AUDIO_SDL="${PD2_AUDIO_SDL:-alsa}"
+export PD2_AUDIO_DSOUND="${PD2_AUDIO_DSOUND:-off}"
+export PD2_AUDIO_METRICS="${PD2_AUDIO_METRICS:-0}"
+export PD2_AUDIO_VARIANT="${PD2_AUDIO_VARIANT:-stock}"
+export PD2_AUDIO_ROUTE_PROFILE="${PD2_AUDIO_ROUTE_PROFILE:-baseline}"
 if [[ ${PD2_BOX_VARIANT:-stock} == a35 ]]; then
  runuser -u "$PD2_USER" --preserve-environment -- python3 -B "$PD2_PORT/scripts/box_variant.py" --variant a35 --port "$PD2_PORT" --session "$PD2_RUN" >/dev/null || { error unsupported_runtime;exit 2; }
  export PD2_BOX="$PD2_RUN/box86-a35"
@@ -104,6 +123,8 @@ CRUSTY_LIBEGL=$(python3 -B "$PD2_PORT/scripts/graphics_probe.py" --weston "$W" -
 export CRUSTY_LIBSDL CRUSTY_LIBEGL
 if CRUSTY_LIBGBM=$(python3 -B "$PD2_PORT/scripts/graphics_probe.py" --weston "$W" --role gbm --arch aarch64 --search "$native_search");then export CRUSTY_LIBGBM;else unset CRUSTY_LIBGBM;fi
 if CRUSTY_LIBDRM=$(python3 -B "$PD2_PORT/scripts/graphics_probe.py" --weston "$W" --role drm --arch aarch64 --search "$native_search");then export CRUSTY_LIBDRM;else unset CRUSTY_LIBDRM;fi
+# Preserve the verified GDI/DRM compositor environment. Input blocking belongs
+# only to the explicit headless CrustyGLX experiment, not the production path.
 export CRUSTY_NO_LIBINPUT=1 CRUSTY_BLOCK_INPUT=0 CRUSTY_SHOW_CURSOR=1 CRUSTY_WLMODE=0 CRUSTY_WLDISP=wayland-pd2
 # Keep the compositor's drawable native-size. cnc-ddraw scales the game's
 # 1024x768 surface BEFORE Xwayland/Weston; a larger Crusty SDL window is not
@@ -142,7 +163,7 @@ export PD2_NATIVE_PRELOAD=
 preload="$W/lib_aarch64/graphics/crusty_gbm/libcrusty.so"
 backendlib="$W/lib_aarch64/graphics/crusty_gbm"
 weston_args=(-B drm --drm-device card0 --renderer=gl)
-if [[ "$PD2_PROFILE" == opengl ]]; then
+if [[ "$PD2_PROFILE" == opengl && ${PD2_TUNING:-off} != crusty_glx_gl4es ]]; then
  weston_args=(-B headless --renderer=noop);preload=;backendlib=
  export PD2_NATIVE_LIBS="$W/lib_armhf/graphics/gl4es_glxpass:$W/lib_armhf/graphics/crusty_glx:$PD2_NATIVE_LIBS"
  export PD2_NATIVE_PRELOAD="$W/lib_armhf/graphics/crusty_glx/libcrusty.so"
@@ -153,7 +174,7 @@ export PD2_CRUSTY_EGL="$(LD_LIBRARY_PATH="$PD2_NATIVE_LIBS" "$W/tools/findlib32"
 export PD2_CRUSTY_GBM="$(LD_LIBRARY_PATH="$PD2_NATIVE_LIBS" "$W/tools/findlib32" libgbm.so.1)"
 export PD2_CRUSTY_DRM="$(LD_LIBRARY_PATH="$PD2_NATIVE_LIBS" "$W/tools/findlib32" libdrm.so.2)"
 # Strict ARMHF validation only for new GL trials; leave proven GDI unchanged.
-case "${PD2_TUNING:-off}" in gl-auto|gl-kms)
+case "${PD2_TUNING:-off}" in gl-auto|gl-kms|crusty_glx_gl4es)
  for role in sdl egl gles gbm drm; do
   provider=$(python3 -B "$PD2_PORT/scripts/graphics_probe.py" --weston "$W" --role "$role" --arch armhf --search "$native32_search") || { error graphics_provider_missing; exit 2; }
   case "$role" in
@@ -165,6 +186,17 @@ case "${PD2_TUNING:-off}" in gl-auto|gl-kms)
   esac
  done
  ;; esac
+if [[ ${PD2_TUNING:-off} == crusty_glx_gl4es ]]; then
+ # Do not permit noop/headless until the direct ARMHF KMS consumer has all
+ # real providers and the pinned Crusty/GL4ES wrappers pass architecture checks.
+ pd2_validate_glx_libraries "$W" "$PD2_CRUSTY_SDL" "$PD2_CRUSTY_EGL" "$PD2_CRUSTY_GLES" "$PD2_CRUSTY_GBM" "$PD2_CRUSTY_DRM" || { error graphics_provider_missing;exit 2; }
+ export PD2_NATIVE_LIBS="$W/lib_armhf/graphics/gl4es_glxpass:$W/lib_armhf/graphics/crusty_glx:$PD2_NATIVE_LIBS"
+ export PD2_NATIVE_PRELOAD="$W/lib_armhf/graphics/crusty_glx/libcrusty.so"
+ export CRUSTY_GL4ES=1 CRUSTY_BLOCK_INPUT=1
+ # These are exclusively AArch64 compositor variables; the ARMHF preload is
+ # consumed by run-game.sh's box_env, never exported as process LD_PRELOAD.
+ weston_args=(-B headless --renderer=noop);preload=;backendlib=
+fi
 stage seatd_start
 SDL_VIDEO_EGL_DRIVER="$CRUSTY_LIBEGL" LD_LIBRARY_PATH="$backendlib:$W/lib_aarch64" LD_PRELOAD="$preload" "$W/seatd" -g "$group" -l error & seat_pid=$!
 for ((i=0;i<50;i++)); do [[ -S "$SEATD_SOCK" ]] && break; kill -0 "$seat_pid" 2>/dev/null || break; sleep 0.1; done

@@ -28,7 +28,7 @@ The project combines **PortMaster**, the **Westonpack Wayland/X11** compositor, 
   - `Project Diablo 2 - GPU.sh` — Alternative variant with GLES2 hardware palette shader.
   - `Project Diablo 2 - Performance GDI.sh` — Direct GDI launch bypassing the start menu.
   - `projectdiablo2/` — Complete script runtime, compatibility libraries, and configuration files.
-- **[`tools/`](tools/):** Build scripts, library compilers (MSVC/GCC), diagnostic tools, and update package generator (`prepare.py`).
+- **[`tools/`](tools/):** Build scripts, library compilers (MSVC/GCC), diagnostic tools, and donor data importer (`prepare.py`).
 - **[`tests/`](tests/):** Clean test suite of unit and integration tests.
 
 ---

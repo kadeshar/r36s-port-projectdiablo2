@@ -45,8 +45,55 @@ int main(void) {
  pd2_am_result(&pcm1,PD2_AM_CLOSE,0,0,0); assert(!s->active && s->handle==NULL);
  pd2_am_result(&pcm1,PD2_AM_WRITE,100,100,0); assert(s->write_frames==48000240);
  pd2_am_open(&pcm1); assert(pd2_am_slots[2].id==3 && pd2_am_slots[2].write_frames==0);
- while(pd2_am_used<PD2_AM_SLOTS) pd2_am_open(&unknown);
+ pd2_am_result(&pcm1,PD2_AM_CLOSE,0,0,0);
+ pd2_am_result(&pcm2,PD2_AM_CLOSE,0,0,0);
+
+ /* Concurrent active capacity limit test: 8 active streams max */
+ int concurrent[PD2_AM_CONCURRENT_LIMIT];
+ for(i=0;i<PD2_AM_CONCURRENT_LIMIT;++i) pd2_am_open(&concurrent[i]);
  pd2_am_open(&unknown); assert(pd2_am_capacity==1);
+ /* Closing one allows new active open */
+ pd2_am_result(&concurrent[0],PD2_AM_CLOSE,0,0,0);
+ pd2_am_open(&concurrent[0]); assert(pd2_am_capacity==1);
+ for(i=0;i<PD2_AM_CONCURRENT_LIMIT;++i) pd2_am_result(&concurrent[i],PD2_AM_CLOSE,0,0,0);
+
+ /* 100 consecutive open/close cycles followed by long-running stream */
+ int probe_pcm;
+ for(i=0;i<100;++i) {
+  pd2_am_open(&probe_pcm);
+  pd2_am_result(&probe_pcm,PD2_AM_WRITE,10,10,0);
+  pd2_am_result(&probe_pcm,PD2_AM_CLOSE,0,0,0);
+ }
+ int long_pcm;
+ pd2_am_open(&long_pcm);
+ pd2_am_params(&long_pcm,48000,2,3,480,1920);
+ for(i=0;i<1000;++i) {
+  pd2_am_result(&long_pcm,PD2_AM_WRITE,480,480,0);
+ }
+ struct pd2_am_slot *ls = pd2_am_find(&long_pcm);
+ assert(ls!=NULL && ls->active && ls->params_valid && ls->write_frames==480000);
+ assert(ls->producer_monotonic_ms>0);
+
+ /* Address reuse gets fresh monotonic stream ID */
+ unsigned old_id = ls->id;
+ pd2_am_result(&long_pcm,PD2_AM_CLOSE,0,0,0);
+ pd2_am_open(&long_pcm);
+ struct pd2_am_slot *ls2 = pd2_am_find(&long_pcm);
+ assert(ls2!=NULL && ls2->id>old_id && ls2->write_frames==0);
+
+ /* Flush test via nonblocking pipe */
+ int pipefds[2];
+ assert(pipe(pipefds)==0);
+ fcntl(pipefds[1],F_SETFL,O_NONBLOCK);
+ pd2_am_fd = pipefds[1];
+ pd2_am_flush();
+ char pipe_buf[4096];
+ ssize_t pn = read(pipefds[0],pipe_buf,sizeof(pipe_buf)-1);
+ assert(pn>0);
+ pipe_buf[pn]=0;
+ assert(strstr(pipe_buf,"\"producer_monotonic_ms\":"));
+ close(pipefds[0]); close(pipefds[1]); pd2_am_fd = -1;
+
  assert(pd2_am_add(PD2_AM_CAP-1,480)==PD2_AM_CAP);
  puts("PD2_AUDIO_CORE_OK"); return 0;
 }

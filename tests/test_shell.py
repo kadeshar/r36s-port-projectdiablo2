@@ -35,14 +35,30 @@ v=dict(event='session_probe',phase='launch',check='audio_native_default',status=
 if code:v['alsa_rc']=code
 print('PD2_EVENT '+json.dumps(v,separators=(',',':')))
 ''')
-  for helper in ('tuning.sh','winebus_config.py','xinput_result.py','audio_config.py','audio_result.py','fps_counter.py','fps_renderer.py'):
+  for helper in ('tuning.sh','winebus_config.py','audio_dsound.py','xinput_result.py','audio_config.py','audio_result.py','fps_counter.py','fps_renderer.py'):
    code=(SCRIPTS/helper).read_text()
    if helper=='audio_config.py':
-    route_call=('route(args.run, proc_root=Path(%r), snd_root=Path(%r), alsa_base=Path(%r), device_status=lambda p: "ready").items()' % (str(self.mock_proc),str(self.mock_snd),str(self.base/'mock-alsa.conf')))
-    code=code.replace('route(args.run).items()', route_call)
+    route_call=('route(args.run, proc_root=Path(%r), snd_root=Path(%r), alsa_base=Path(%r), device_status=lambda p: "ready", profile=args.profile).items()' % (str(self.mock_proc),str(self.mock_snd),str(self.base/'mock-alsa.conf')))
+    code=code.replace('route(args.run, profile=args.profile).items()', route_call)
    (self.port/'scripts'/helper).write_text(code)
   (self.port/'scripts/client_graphics_probe.py').write_text('# synthetic-only probe\n')
   (self.port/'scripts/metrics.py').write_text('# synthetic-only metrics\n')
+  (self.port/'scripts/audio_metrics.py').write_text('''import json,os,pathlib,sys
+args=sys.argv[1:]
+if args and args[0]=='prepare':
+ failed=bool(os.environ.get('MOCK_AUDIO_METRICS_FAIL'))
+ if not failed:
+  dest=pathlib.Path(sys.argv[sys.argv.index('--work')+1])/'.alsa-audio-metrics'
+  dest.mkdir(exist_ok=True)
+  (dest/'libasound.so.2').write_bytes(b'synthetic-observer')
+ print('PD2_EVENT '+json.dumps(dict(event='session_probe',phase='launch',check='audio_metrics_library',status='unavailable' if failed else 'ready'),separators=(',',':')))
+ raise SystemExit(1 if failed else 0)
+if args and args[0]=='run':
+ cmd=args[args.index('--')+1:]
+ print('PD2_EVENT '+json.dumps(dict(event='session_probe',phase='launch',check='audio_metrics_capture',status='ready'),separators=(',',':')), flush=True)
+ os.execvp(cmd[0],cmd)
+raise SystemExit(1)
+''')
   (self.base/'run').chmod(0o700)
   for name in ('audio-probe','fps-hotkey'):
    folder=self.port/'compat'/name;folder.mkdir(parents=True)
@@ -69,9 +85,10 @@ if pathlib.Path(args[0]).name=='wineserver' and '-k' in args:
  release.touch()
 call={'args':args,'pid':os.getpid(),'pgid':os.getpgrp(),'time':time.monotonic_ns(),'libraries':os.environ.get('LD_LIBRARY_PATH','')}
 call['dynarec']={name:os.environ.get(name) for name in ('BOX86_DYNAREC','BOX86_DYNAREC_BIGBLOCK','BOX86_DYNAREC_SAFEFLAGS','BOX86_DYNAREC_STRONGMEM')}
-call['tuning']={name:os.environ.get(name) for name in ('BOX86_DYNAREC_FORWARD','BOX86_DYNAREC_CALLRET','SDL_VIDEODRIVER','SDL_VIDEO_EGL_DRIVER','XDG_SESSION_TYPE')}
+call['portmaster']={name:os.environ.get(name) for name in ('BOX86_SDL2_JGUID','BOX86_ALLOWMISSINGLIBS','BOX86_DLSYM_ERROR')}
+call['tuning']={name:os.environ.get(name) for name in ('BOX86_DYNAREC_FORWARD','BOX86_DYNAREC_CALLRET','SDL_VIDEODRIVER','SDL_VIDEO_EGL_DRIVER','XDG_SESSION_TYPE','SDL_AUDIODRIVER')}
 if len(args)>2 and args[1:3]==['reg.exe','import']:
- kind='audio' if args[-1].endswith('pd2-audio-restore.reg') else 'winebus'
+ kind='dsound' if args[-1].endswith('pd2-dsound-restore.reg') else ('audio' if args[-1].endswith('pd2-audio-restore.reg') else 'winebus')
  call['restore_kind']=kind
  call['restore']=(pathlib.Path(os.environ['WINEPREFIX'])/('drive_c/pd2-'+kind+'-restore.reg')).read_text(encoding='utf-16')
 if pathlib.Path(args[0]).name=='wineserver' and '-k' in args and os.environ.get('MOCK_STOP_NOSERVER'): raise SystemExit(1)
@@ -88,11 +105,32 @@ if prog=='wine' and len(args)>1:
  if args[1]=='reg.exe' and 'Save Path' in args and os.environ.get('MOCK_SAVE_PATH_FAIL'):raise SystemExit(1)
  if args[1:3]==['reg.exe','import'] and os.environ.get('MOCK_RESTORE_FAIL'):raise SystemExit(1)
  if args[1]=='reg.exe' and 'DisableInput' in args and os.environ.get('MOCK_FLAG_FAIL'):raise SystemExit(1)
+ if args[1]=='reg.exe' and any('DirectSound' in a for a in args) and os.environ.get('MOCK_DSOUND_ADD_FAIL'):raise SystemExit(1)
  if args[1:3]==['reg.exe','export'] and os.environ.get('MOCK_EXPORT_FAIL'):raise SystemExit(1)
  if args[1:3]==['reg.exe','export']:
-  exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n[HKEY_LOCAL_MACHINE\\\\System\\\\CurrentControlSet\\\\Services\\\\winebus]\\r\\n"Enable SDL"=dword:00000002\\r\\n"DisableInput"=dword:00000001\\r\\n"OtherValue"="keep"\\r\\n'
-  name='pd2-winebus-export.reg'
-  if args[3].startswith('HKCU'):
+  if args[3].startswith('HKLM'):
+   name='pd2-winebus-export.reg'
+   exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n[HKEY_LOCAL_MACHINE\\\\System\\\\CurrentControlSet\\\\Services\\\\winebus]\\r\\n"Enable SDL"=dword:00000002\\r\\n"DisableInput"=dword:00000001\\r\\n"OtherValue"="keep"\\r\\n'
+  elif any('pd2-dsound-export.reg' in a for a in args):
+   name='pd2-dsound-export.reg'
+   root='HKEY_CURRENT_USER'+chr(92)+'Software'+chr(92)+'Wine'
+   if os.environ.get('MOCK_DSOUND_MISSING'):
+    exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n['+root+']\\r\\n"Version"="win10"\\r\\n'
+   else:
+    exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n['+root+']\\r\\n['+root+chr(92)+'DirectSound]\\r\\n"HelBuflen"="65536"\\r\\n"OtherDs"="keep"\\r\\n'
+  elif any('pd2-dsound-verify.reg' in a for a in args):
+   name='pd2-dsound-verify.reg'
+   root='HKEY_CURRENT_USER'+chr(92)+'Software'+chr(92)+'Wine'
+   mode=os.environ.get('PD2_AUDIO_DSOUND','off')
+   if os.environ.get('MOCK_DSOUND_VERIFY_FAIL'):
+    exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n['+root+']\\r\\n['+root+chr(92)+'DirectSound]\\r\\n"HelBuflen"="99999"\\r\\n'
+   elif mode=='ver2':
+    exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n['+root+']\\r\\n['+root+chr(92)+'DirectSound]\\r\\n"HelBuflen"="8192"\\r\\n"MaxHardwareChannels"="16"\\r\\n"SndQueueMax"="28"\\r\\n"DefaultSampleRate"="44100"\\r\\n"DefaultBitsPerSample"="16"\\r\\n'
+   elif mode=='wine':
+    exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n['+root+']\\r\\n['+root+chr(92)+'DirectSound]\\r\\n"HelBuflen"="65536"\\r\\n'
+   else:
+    exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n['+root+']\\r\\n'
+  else:
    name='pd2-audio-export.reg'
    root='HKEY_CURRENT_USER'+chr(92)+'Software'+chr(92)+'Wine'
    exported='Windows Registry Editor Version 5.00\\r\\n\\r\\n['+root+']\\r\\n['+root+chr(92)+'Drivers]\\r\\n"Audio"="pulse"\\r\\n"OtherAudio"="keep"\\r\\n'
@@ -369,6 +407,131 @@ while True:time.sleep(.1)
   self.assertNotIn('OtherAudio',calls[restore]['restore'])
   self.assertFalse((self.prefix/'drive_c/pd2-audio-restore.reg').exists())
   self.assertIn('"check":"audio_backend","status":"alsa"',result.stdout)
+ def test_dsound_opt_in_snapshots_forces_then_restores_only_named_values(self):
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C'});self.assertEqual(result.returncode,0,result.stdout)
+  calls=self.records()
+  game=next(i for i,v in enumerate(calls) if any(a.endswith('Game.exe') for a in v['args']))
+  export=next(i for i,v in enumerate(calls) if 'export' in v['args'] and any('pd2-dsound-export' in a for a in v['args']))
+  verify=next(i for i,v in enumerate(calls) if 'export' in v['args'] and any('pd2-dsound-verify' in a for a in v['args']))
+  force=next(i for i,v in enumerate(calls) if 'HelBuflen' in v['args'] and '8192' in v['args'])
+  restore=next(i for i,v in enumerate(calls) if v.get('restore_kind')=='dsound')
+  self.assertLess(export,force);self.assertLess(force,verify);self.assertLess(verify,game);self.assertLess(game,restore)
+  self.assertIn('"HelBuflen"="65536"',calls[restore]['restore'])
+  self.assertNotIn('OtherDs',calls[restore]['restore'])
+  self.assertFalse((self.prefix/'drive_c/pd2-dsound-restore.reg').exists())
+  self.assertIn('"check":"dsound_helbuflen","status":"8192"',result.stdout)
+  self.assertIn('"check":"audio_variant","status":"C"',result.stdout)
+  self.assertIn('"check":"audio_sdl","status":"dummy"',result.stdout)
+  self.assertIn('"check":"dsound_profile","status":"ver2"',result.stdout)
+  self.assertIn('"check":"dsound_backend","status":"restored"',result.stdout)
+ def test_dsound_wine_profile_forces_wine_default_buffer(self):
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'wine','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'D'});self.assertEqual(result.returncode,0,result.stdout)
+  force=next(v for v in self.records() if 'HelBuflen' in v['args'])
+  self.assertIn('65536',force['args'])
+  self.assertIn('"check":"dsound_helbuflen","status":"65536"',result.stdout)
+  self.assertIn('"check":"audio_variant","status":"D"',result.stdout)
+  self.assertIn('"check":"dsound_profile","status":"wine"',result.stdout)
+ def test_dsound_missing_key_records_explicit_deletions(self):
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C','MOCK_DSOUND_MISSING':'1'});self.assertEqual(result.returncode,0,result.stdout)
+  calls=self.records()
+  restore=next(i for i,v in enumerate(calls) if v.get('restore_kind')=='dsound')
+  self.assertIn('"HelBuflen"=-',calls[restore]['restore'])
+  self.assertFalse((self.prefix/'drive_c/pd2-dsound-restore.reg').exists())
+ def test_dsound_off_never_touches_registry(self):
+  result,_=self.execute();self.assertEqual(result.returncode,0,result.stdout)
+  self.assertFalse(any('pd2-dsound' in a for v in self.records() for a in v['args']))
+  self.assertIn('"check":"dsound_profile","status":"off"',result.stdout)
+  self.assertIn('"check":"audio_variant","status":"stock"',result.stdout)
+ def test_dsound_export_failure_aborts_without_mutation_or_marker(self):
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C','MOCK_EXPORT_FAIL':'1'})
+  self.assertEqual(result.returncode,1,result.stdout)
+  calls=self.records()
+  self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args']) for v in calls))
+  self.assertFalse(any('DirectSound' in v['args'] and 'add' in v['args'] for v in calls))
+  self.assertFalse((self.prefix/'drive_c/pd2-dsound-restore.reg').exists())
+ def test_dsound_old_marker_recovered_and_new_session_restored_on_exit(self):
+  import importlib.util
+  sys.path.insert(0,str(SCRIPTS))
+  self.addCleanup(lambda: sys.path.remove(str(SCRIPTS)))
+  spec=importlib.util.spec_from_file_location('restore_dsound_fixture',SCRIPTS/'audio_dsound.py')
+  dsound=importlib.util.module_from_spec(spec);spec.loader.exec_module(dsound)
+  marker=self.prefix/'drive_c/pd2-dsound-restore.reg'
+  marker.write_bytes(dsound.restore_bytes(dict.fromkeys(dsound.VALUES,'oldval')))
+  marker.chmod(0o600)
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C'})
+  self.assertEqual(result.returncode,0,result.stdout)
+  calls=self.records()
+  dsound_restores=[v for v in calls if v.get('restore_kind')=='dsound']
+  self.assertEqual(len(dsound_restores),2)
+  self.assertIn('"HelBuflen"="oldval"',dsound_restores[0]['restore'])
+  self.assertIn('"HelBuflen"="65536"',dsound_restores[1]['restore'])
+  self.assertFalse(marker.exists())
+  self.assertIn('"check":"dsound_backend","status":"restored"',result.stdout)
+ def test_dsound_add_failure_restores_original_and_aborts_game(self):
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C','MOCK_DSOUND_ADD_FAIL':'1'})
+  self.assertEqual(result.returncode,1,result.stdout)
+  calls=self.records()
+  self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args']) for v in calls))
+  restore=next(v for v in calls if v.get('restore_kind')=='dsound')
+  self.assertIn('"HelBuflen"="65536"',restore['restore'])
+  self.assertFalse((self.prefix/'drive_c/pd2-dsound-restore.reg').exists())
+ def test_dsound_verify_failure_restores_original_and_aborts_game(self):
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C','MOCK_DSOUND_VERIFY_FAIL':'1'})
+  self.assertEqual(result.returncode,1,result.stdout)
+  calls=self.records()
+  self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args']) for v in calls))
+  restore=next(v for v in calls if v.get('restore_kind')=='dsound')
+  self.assertIn('"HelBuflen"="65536"',restore['restore'])
+  self.assertFalse((self.prefix/'drive_c/pd2-dsound-restore.reg').exists())
+ def test_dsound_import_failure_preserves_marker_for_next_session(self):
+  marker=self.prefix/'drive_c/pd2-dsound-restore.reg'
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C','MOCK_RESTORE_FAIL':'1'})
+  self.assertEqual(result.returncode,1,result.stdout)
+  self.assertTrue(marker.exists())
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'off'})
+  self.assertEqual(result.returncode,0,result.stdout)
+  self.assertFalse(marker.exists())
+  self.assertIn('"check":"dsound_backend","status":"restored"',result.stdout)
+ def test_dsound_invalid_options_never_start_wine(self):
+  for opt in ({'PD2_AUDIO_DSOUND':'invalid'},{'PD2_AUDIO_METRICS':'2'},{'PD2_AUDIO_SDL':'invalid'},
+              {'PD2_AUDIO_VARIANT':'invalid'},{'PD2_AUDIO_VARIANT':'B','PD2_AUDIO_SDL':'alsa'},
+              {'PD2_AUDIO_VARIANT':'C','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_DSOUND':'off'}):
+   with self.subTest(opt=opt):
+    self.calls.unlink(missing_ok=True)
+    result,_=self.execute(opt)
+    self.assertEqual(result.returncode,1,result.stdout)
+    self.assertFalse(any(pathlib.Path(v['args'][0]).name=='wine' for v in self.records()))
+ def test_audio_sdl_option_controls_driver_and_logs_probe(self):
+  for driver in ('alsa','dummy'):
+   with self.subTest(driver=driver):
+    self.calls.unlink(missing_ok=True)
+    result,_=self.execute({'PD2_AUDIO_SDL':driver,'PD2_AUDIO_VARIANT':'B' if driver=='dummy' else 'A','PD2_AUDIO_METRICS':'1'})
+    self.assertEqual(result.returncode,0,result.stdout)
+    self.assertIn('"check":"audio_sdl","status":"'+driver+'"',result.stdout)
+ def test_audio_metrics_opt_in_prepares_observer_and_wraps_game(self):
+  result,_=self.execute({'PD2_AUDIO_METRICS':'1'})
+  self.assertEqual(result.returncode,0,result.stdout)
+  self.assertIn('"check":"audio_metrics_library","status":"ready"',result.stdout)
+  self.assertIn('"check":"audio_metrics_capture","status":"ready"',result.stdout)
+  calls=self.records()
+  game=next(v for v in calls if any(a.endswith('Game.exe') for a in v['args']))
+  self.assertTrue(game['libraries'].startswith(str(self.work/'.alsa-audio-metrics')))
+ def test_audio_metrics_unavailable_proceeds_with_stock_game(self):
+  result,_=self.execute({'PD2_AUDIO_METRICS':'1','MOCK_AUDIO_METRICS_FAIL':'1'})
+  self.assertEqual(result.returncode,0,result.stdout)
+  self.assertIn('"check":"audio_metrics_library","status":"unavailable"',result.stdout)
+  self.assertNotIn('"check":"audio_metrics_capture"',result.stdout)
+  calls=self.records()
+  self.assertTrue(any(any(a.endswith('Game.exe') for a in v['args']) for v in calls))
+  game=next(v for v in calls if any(a.endswith('Game.exe') for a in v['args']))
+  self.assertFalse(game['libraries'].startswith(str(self.work/'.alsa-audio-metrics')))
+ def test_dsound_signal_and_game_exit_code_preserved(self):
+  result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C','MOCK_GAME_RC':'42'})
+  self.assertEqual(result.returncode,42,result.stdout)
+  calls=self.records()
+  restore=next(v for v in calls if v.get('restore_kind')=='dsound')
+  self.assertIn('"HelBuflen"="65536"',restore['restore'])
+  self.assertFalse((self.prefix/'drive_c/pd2-dsound-restore.reg').exists())
  # Normal audio setup no longer plays diagnostic probes; probe tests opt in.
  def test_audio_failed_private_route_logs_fallback_then_default_probe(self):
   result,_=self.execute({'PD2_AUDIO_TEST':'1','PD2_AUDIO_PROBE':'1','MOCK_AUDIO_OPEN':'missing'})
@@ -589,6 +752,31 @@ while True:time.sleep(.1)
      self.assertTrue((self.work/'ProjectD2/ddraw.dll').is_symlink())
      self.assertFalse(any(any(a.endswith('pd2-fps-hotkey.exe') for a in v['args']) for v in calls))
      self.assert_dead(self.mapper()['pid'])
+ def test_portmaster_glx_runs_stock_game_with_native_kms_consumer(self):
+  self.performance_env()
+  result,_=self.execute({'PD2_PERFORMANCE':'opengl','PD2_PROFILE':'opengl','PD2_TUNING':'crusty_glx_gl4es','PD2_START_MENU':'0','PD2_FPS':'0','PD2_CRUSTY_EGL':'real-egl','PD2_CRUSTY_GLES':'real-gles','PD2_DIAGNOSTIC':'off','BOX86_DYNAREC_SAFEFLAGS':'0','BOX86_DYNAREC_CALLRET':'1'})
+  self.assertEqual(result.returncode,0,result.stdout)
+  self.assertIn('"check":"tuning_profile","status":"crusty_glx_gl4es"',result.stdout)
+  calls=self.records();self.assertTrue(calls)
+  games=[v for v in calls if any(a.endswith('Game.exe') for a in v['args'])]
+  self.assertEqual(len(games),1)
+  for call in calls:
+   self.assertEqual(call['tuning']['SDL_VIDEODRIVER'],'kmsdrm')
+   self.assertEqual(call['tuning']['SDL_VIDEO_EGL_DRIVER'],'real-egl')
+   self.assertEqual(call['tuning']['BOX86_DYNAREC_CALLRET'],'0')
+   self.assertEqual(call['dynarec']['BOX86_DYNAREC_SAFEFLAGS'],'1')
+  self.assertTrue((self.work/'ProjectD2/ddraw.dll').is_symlink())
+ def test_portmaster_compat_flags_reach_setup_game_and_cleanup(self):
+  self.performance_env()
+  result,_=self.execute({'PD2_PERFORMANCE':'gdi','BOX86_SDL2_JGUID':'0','BOX86_ALLOWMISSINGLIBS':'0','BOX86_DLSYM_ERROR':'0','BOX86_DYNAREC_CALLRET':'1'})
+  self.assertEqual(result.returncode,0,result.stdout)
+  calls=self.records();self.assertTrue(calls)
+  self.assertTrue(any(any(a.endswith('Game.exe') for a in v['args']) for v in calls))
+  self.assertTrue(any(v['args'][0].endswith('wineserver') for v in calls))
+  for call in calls:
+   self.assertEqual(call['portmaster'],{'BOX86_SDL2_JGUID':'1','BOX86_ALLOWMISSINGLIBS':'1','BOX86_DLSYM_ERROR':'1'})
+   self.assertEqual(call['tuning']['BOX86_DYNAREC_CALLRET'],'0')
+   self.assertEqual(call['dynarec']['BOX86_DYNAREC_SAFEFLAGS'],'1')
  def test_performance_run_game_defaults_bigblock_to_one(self):
   self.performance_env()
   result,_=self.execute({'PD2_PERFORMANCE':'gdi'});self.assertEqual(result.returncode,0,result.stdout)
@@ -638,4 +826,81 @@ exec python3 -c 'import json,os,sys; print(json.dumps(dict(env={k:os.environ.get
      self.assertEqual(record['env'],{'PD2_PERFORMANCE':profile,'PD2_BIGBLOCK':bigblock or '2','PD2_GAME_RESOLUTION':'800x600','PD2_FPS':'1' if profile=='opengl' else '0'})
      self.assertEqual(record['args'],['argument with spaces','--test'])
   self.assertFalse(self.calls.exists())
+ def test_audio_variants_matrix_and_sdl_driver(self):
+  cases = (
+   ('A', {'PD2_AUDIO_VARIANT':'A','PD2_AUDIO_SDL':'alsa','PD2_AUDIO_DSOUND':'off','PD2_AUDIO_METRICS':'1'}, 'alsa', 'off', None),
+   ('B', {'PD2_AUDIO_VARIANT':'B','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_DSOUND':'off','PD2_AUDIO_METRICS':'1'}, 'dummy', 'off', None),
+   ('C', {'PD2_AUDIO_VARIANT':'C','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_METRICS':'1'}, 'dummy', 'ver2', '8192'),
+   ('D', {'PD2_AUDIO_VARIANT':'D','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_DSOUND':'wine','PD2_AUDIO_METRICS':'1'}, 'dummy', 'wine', '65536'),
+   ('dmix-route-only', {'PD2_AUDIO_VARIANT':'dmix','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_DSOUND':'off','PD2_AUDIO_ROUTE_PROFILE':'dmix160'}, 'dummy', 'off', None),
+   ('default', {}, 'alsa', 'off', None),
+  )
+  for label, extra, expected_sdl, expected_dsound, expected_helbuflen in cases:
+   with self.subTest(variant=label):
+    self.calls.unlink(missing_ok=True)
+    result,_ = self.execute(extra)
+    self.assertEqual(result.returncode, 0, result.stdout)
+    self.assertIn('"check":"audio_sdl","status":"' + expected_sdl + '"', result.stdout)
+    self.assertIn('"check":"dsound_profile","status":"' + expected_dsound + '"', result.stdout)
+    if expected_helbuflen:
+     self.assertIn('"check":"dsound_helbuflen","status":"' + expected_helbuflen + '"', result.stdout)
+    calls = self.records()
+    game_call = next(v for v in calls if any(a.endswith('Game.exe') for a in v['args']))
+    self.assertEqual(game_call['tuning']['SDL_AUDIODRIVER'], expected_sdl)
+ def test_dmix_invalid_combinations_never_start_wine(self):
+  for overrides in ({'PD2_AUDIO_SDL':'alsa'}, {'PD2_AUDIO_DSOUND':'ver2'},
+                    {'PD2_AUDIO_ROUTE_PROFILE':'baseline'}):
+   with self.subTest(overrides=overrides):
+    self.calls.unlink(missing_ok=True)
+    options = dict(PD2_AUDIO_VARIANT='dmix', PD2_AUDIO_SDL='dummy',
+                   PD2_AUDIO_DSOUND='wine', PD2_AUDIO_ROUTE_PROFILE='dmix160')
+    options.update(overrides)
+    result,_ = self.execute(options)
+    self.assertEqual(result.returncode, 1, result.stdout)
+    self.assertIn('invalid_profile', result.stdout)
+    calls = self.records() if self.calls.exists() else []
+    self.assertFalse(any(pathlib.Path(v['args'][0]).name == 'wine' for v in calls))
+ def test_audio_env_forwarding_with_mock_sudo_stripping_inherited(self):
+  mock_sudo = self.base / 'bin/mock-sudo'
+  self.executable(mock_sudo, '''#!/bin/bash
+for k in $(compgen -v | grep '^PD2_'); do unset "$k"; done
+exec "$@"
+''')
+  mock_unshare = self.base / 'bin/unshare'
+  self.executable(mock_unshare, '''#!/bin/bash
+while [[ $# -gt 0 && "$1" != setsid ]]; do shift; done
+exec "$@"
+''')
+  capture_file = self.base / 'forwarded-env.json'
+  mock_weston = self.base / 'mock-weston.sh'
+  self.executable(mock_weston, f'''#!/bin/bash
+python3 -c 'import json,os,pathlib; pathlib.Path(r"{capture_file}").write_text(json.dumps({{k:os.environ.get(k) for k in ("PD2_AUDIO_SDL","PD2_AUDIO_DSOUND","PD2_AUDIO_METRICS","PD2_METRICS","PD2_AUDIO_VARIANT","PD2_AUDIO_ROUTE_PROFILE")}}))'
+''')
+  test_cmd = f'''#!/bin/bash
+export PD2_PORT="{self.port}" PD2_RUN="{self.base/'run'}" PD2_WESTON="{self.base/'weston'}" PD2_USER="testuser" PD2_HOME="{self.base}" PD2_STATE="{self.state}"
+export PD2_WINE="{self.base/'wine'}" PD2_BOX="{self.base/'bin/box'}" PD2_PREFIX="{self.prefix}" PD2_WORK="{self.work}" PD2_PROFILE="gdi" PD2_SWAP_AB="0"
+export PD2_DIAGNOSTIC="off" PD2_TUNING="off" PD2_BIGBLOCK="2" PD2_PERFORMANCE="gdi" PD2_GAME_RESOLUTION="800x600" PD2_FPS="0" PD2_AUDIO_TEST="0" PD2_AUDIO_PROBE="0" PD2_START_MENU="0"
+export PD2_INPUT_MODE="mapper" PD2_CONTROLLER_TEST="0" PD2_GPTOKEYB="mapper" PD2_CONTROLLER_CONFIG="" PD2_PARENT_MNT_NS=""
+export PD2_AUDIO_METRICS="1" PD2_METRICS="1" PD2_AUDIO_DSOUND="off" PD2_AUDIO_SDL="dummy" PD2_AUDIO_VARIANT="dmix" PD2_AUDIO_ROUTE_PROFILE="dmix160"
+SUDO=("{mock_sudo}")
+"${{SUDO[@]}}" unshare --mount --propagation private setsid env \\
+ PD2_PORT="$PD2_PORT" PD2_RUN="$PD2_RUN" PD2_WESTON="$PD2_WESTON" PD2_USER="$PD2_USER" PD2_HOME="$PD2_HOME" PD2_STATE="$PD2_STATE" \\
+ PD2_WINE="$PD2_WINE" PD2_BOX="$PD2_BOX" PD2_PREFIX="$PD2_PREFIX" PD2_WORK="$PD2_WORK" PD2_PROFILE="$PD2_PROFILE" PD2_SWAP_AB="$PD2_SWAP_AB" \\
+ PD2_DIAGNOSTIC="$PD2_DIAGNOSTIC" PD2_TUNING="$PD2_TUNING" PD2_BIGBLOCK="$PD2_BIGBLOCK" PD2_PERFORMANCE="$PD2_PERFORMANCE" PD2_GAME_RESOLUTION="$PD2_GAME_RESOLUTION" PD2_FPS="$PD2_FPS" PD2_AUDIO_TEST="$PD2_AUDIO_TEST" PD2_AUDIO_PROBE="$PD2_AUDIO_PROBE" PD2_START_MENU="$PD2_START_MENU" \\
+ PD2_INPUT_MODE="$PD2_INPUT_MODE" PD2_CONTROLLER_TEST="$PD2_CONTROLLER_TEST" PD2_GPTOKEYB="$PD2_GPTOKEYB" PD2_CONTROLLER_CONFIG="$PD2_CONTROLLER_CONFIG" PD2_PARENT_MNT_NS="$PD2_PARENT_MNT_NS" PD2_HOST_NATIVE_LIBS="" \\
+ PD2_AUDIO_METRICS="$PD2_AUDIO_METRICS" PD2_METRICS="$PD2_METRICS" PD2_AUDIO_DSOUND="$PD2_AUDIO_DSOUND" PD2_AUDIO_SDL="$PD2_AUDIO_SDL" PD2_AUDIO_VARIANT="$PD2_AUDIO_VARIANT" PD2_AUDIO_ROUTE_PROFILE="$PD2_AUDIO_ROUTE_PROFILE" \\
+ bash "{mock_weston}"
+'''
+  runner = self.base / 'test-env-forward.sh'
+  self.executable(runner, test_cmd)
+  r = subprocess.run(['bash', str(runner)], env=dict(self.env), capture_output=True, text=True, timeout=5)
+  self.assertEqual(r.returncode, 0, r.stderr)
+  self.assertTrue(capture_file.exists())
+  data = json.loads(capture_file.read_text())
+  self.assertEqual(data['PD2_AUDIO_SDL'], 'dummy')
+  self.assertEqual(data['PD2_AUDIO_VARIANT'], 'dmix')
+  self.assertEqual(data['PD2_AUDIO_DSOUND'], 'off')
+  self.assertEqual(data['PD2_AUDIO_METRICS'], '1')
+  self.assertEqual(data['PD2_METRICS'], '1')
+  self.assertEqual(data['PD2_AUDIO_ROUTE_PROFILE'], 'dmix160')
 if __name__=='__main__':unittest.main()

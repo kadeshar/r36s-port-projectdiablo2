@@ -1,5 +1,24 @@
 # Project Diablo 2 on R36S / dArkOSen — Version 0.1.18
 
+## PortMaster adaptation — isolated GLX trial
+
+Deploy directly from `sdcard/ports/`: copy the launcher scripts and updated `projectdiablo2/` payload into the existing Ports directory. **Do not build an update ZIP, delete game data, reset the prefix, or overwrite user configurations.**
+
+- The [regular launcher](<../sdcard/ports/Project Diablo 2.sh>) remains GDI by default, with the existing visible menu and audio defaults. All wrappers share its host cleanup.
+- Production GDI keeps the verified `CRUSTY_BLOCK_INPUT=0` compositor environment. Only the explicit `crusty_glx_gl4es` experiment sets `CRUSTY_BLOCK_INPUT=1`; never apply this experiment globally to the DRM compositor. The reported GDI startup failure occurs after EGL/GL initialization and before menu/Wine; target-device confirmation of this rollback remains required.
+- Wine/Box86 receives `BOX86_SDL2_JGUID=1`, `BOX86_ALLOWMISSINGLIBS=1`, and `BOX86_DLSYM_ERROR=1`. Required native libraries still undergo preflight validation. Diagnostic output still passes through the existing privacy-filtered logger; these flags do not enable raw traces.
+- After the session's compositor stops, the adapter resets `/dev/tty0` and `/dev/tty1` where available. Main-launcher host restoration/service-restart additions have been rolled back; firmware cleanup remains delegated to the existing PortMaster `pm_finish` hook.
+
+### Experimental PortMaster GLX
+
+Select **Project Diablo 2 - PortMaster GLX** in Ports. The separate [launcher](<../sdcard/ports/Project Diablo 2 - PortMaster GLX.sh>) opts into `crusty_glx_gl4es` and an OpenGL session-only INI, bypassing the invisible headless menu. It uses stock cnc-ddraw, not the GLES2 replacement, and keeps safe dynarec flags (`SAFEFLAGS=1`, `CALLRET=0`).
+
+The experiment uses ARMHF `graphics/crusty_glx/libcrusty.so` as the Wine/Box86 preload and `graphics/gl4es_glxpass/libGL.so.1` as the GL backend from the already hash-pinned Westonpack runtime. No extra compat library is downloaded or added; runtime manifests remain unchanged. Required ARMHF providers and GLX libraries must pass validation before headless/noop Weston is allowed. ARMHF preload is never installed in the AArch64 compositor environment. Crusty is responsible for direct KMS scanout; headless Weston alone does not display game frames.
+
+**Unverified on R36S:** a successful library probe or automated test does not establish a working GPU context, scanout, improved FPS, or resolved black screen. Compare identical resolution/scene against GDI: startup/menu bypass, visible image/colors/cursor, all controller buttons, sound, inventory/stash, and return to EmulationStation with volume/brightness/suspend keys restored. Test normal quit, menu cancellation in GDI, and interrupted launch. If GLX is black, quit and use the regular GDI entry; do not modify drivers or reset game data. Stored user renderer configuration is not changed by this session-only trial.
+
+Legacy risky CallRet/FastFlags entries below predate this adaptation. They are not enabled by the regular or PortMaster GLX launcher and are not part of its acceptance tests.
+
 ## Diagnostics-1 — Current Stage: Measurement Over New Flags
 
 [New tests A–F and log export guide](<DIAGNOSTICS-1.md>). Previous Forward512/FastFlags tests did not improve FPS, KMS/Auto remained black screens, and CALLRET failed before reaching gameplay. The new package introduces a lightweight counter without HUD overhead, granular setup stages, CPU/RAM/swap/PSI metrics, and isolated attempts for SDL → GLX/Crusty → Wine/DirectDraw. The regular launcher does not enable the new counter. We make no claims of performance improvements or working OpenGL without verified hardware testing on the R36S. The legacy tuning-1 notes below remain for historical reference.

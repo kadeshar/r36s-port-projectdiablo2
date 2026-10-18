@@ -444,6 +444,32 @@ class ProcParserTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 audio.config_bytes(stable, device)
 
+    def test_config_profiles_generate_correct_definitions(self):
+        baseline = audio.config_bytes('rk817', 0, profile='baseline')
+        self.assertIn(b'slave.pcm "hw:CARD=rk817,DEV=0"', baseline)
+        self.assertNotIn(b'dmix', baseline)
+
+        dmix160 = audio.config_bytes('rk817', 0, profile='dmix160')
+        self.assertIn(b'type dmix', dmix160)
+        self.assertIn(b'buffer_time 160000', dmix160)
+        self.assertIn(b'ipc_key_add_uid true', dmix160)
+        self.assertIn(b'ipc_perm 0600', dmix160)
+        self.assertIn(b'slave.pcm "pd2_dmix"', dmix160)
+
+        dmix80 = audio.config_bytes('rk817', 0, profile='dmix80', ipc_key=987654)
+        self.assertIn(b'type dmix', dmix80)
+        self.assertIn(b'buffer_time 80000', dmix80)
+        self.assertIn(b'ipc_key 987654', dmix80)
+
+        for invalid in ('buffer160', 'buffer80', 'invalid_profile'):
+            with self.assertRaises(ValueError):
+                audio.config_bytes('rk817', 0, profile=invalid)
+
+        for invalid_key in (0, -1, 2147483648, '592834', None):
+            with self.assertRaises(ValueError):
+                audio.config_bytes('rk817', 0, profile='dmix160', ipc_key=invalid_key)
+
 
 if __name__ == '__main__':
     unittest.main()
+

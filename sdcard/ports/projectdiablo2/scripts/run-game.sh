@@ -13,20 +13,23 @@ export HOME="$PD2_HOME"
 export WINEPREFIX="$PD2_PREFIX" WINEARCH=win32 WINEDEBUG=-all
 export WINEDLLOVERRIDES='ddraw=n,b;winegstreamer=;winemenubuilder=;mscoree=;mshtml=;winepulse.drv='
 export BOX86_LOG=1 BOX86_NORCFILES=1 BOX86_TRACE=0 BOX86_TRACE_INIT=0 BOX86_DUMP=0 BOX86_SHOWBT=0 BOX86_ROLLING_LOG=0 BOX86_JITGDB=0
+# PortMaster compatibility: stable SDL GUIDs and optional-library diagnostics.
+# Required native libraries are still validated by the privileged adapter.
+export BOX86_SDL2_JGUID=1 BOX86_ALLOWMISSINGLIBS=1 BOX86_DLSYM_ERROR=1
 # The main launcher intentionally clears inherited BOX86_* variables. Reapply
 # only this validated experiment, never arbitrary tracing/unsafe overrides.
 case "${PD2_BIGBLOCK:-1}" in 1|2) ;; *) exit 1;; esac
 if [[ ${PD2_PERFORMANCE:-off} != off ]]; then
  export BOX86_DYNAREC=1 BOX86_DYNAREC_BIGBLOCK="${PD2_BIGBLOCK:-1}"
- export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0
+ export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET=0
 fi
-export BOX86_PATH="$PD2_WINE/bin" BOX86_LD_LIBRARY_PATH="$PD2_WINE/lib/wine/i386-unix"
-export SDL_GAMECONTROLLERCONFIG="$PD2_CONTROLLER_CONFIG" SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=alsa
+export SDL_GAMECONTROLLERCONFIG="$PD2_CONTROLLER_CONFIG" SDL_VIDEODRIVER=x11
 export FONTCONFIG_FILE="$PD2_WESTON/fonts/fonts.conf"
 mapper_pid=; mapper_metrics_pid=; navigator_pid=; game_pid=; metrics_pid=; fps_pid=; renderer_pid=; audio_probe_pid=; audio_capture_pid=; wine_ready=0
-winebus_restore_attempted=0; audio_restore_attempted=0
+winebus_restore_attempted=0; audio_restore_attempted=0; dsound_restore_attempted=0
 winebus_restore_file="$PD2_PREFIX/drive_c/pd2-winebus-restore.reg"
 audio_restore_file="$PD2_PREFIX/drive_c/pd2-audio-restore.reg"
+dsound_restore_file="$PD2_PREFIX/drive_c/pd2-dsound-restore.reg"
 setup_step=initial
 step() {
  setup_step=$1
@@ -41,6 +44,9 @@ error() { step_failed; printf 'PD2_EVENT {"event":"runtime_error","reason":"%s",
 refresh_box_env() {
  box_env=(env LD_LIBRARY_PATH="$PD2_NATIVE_LIBS" LD_PRELOAD="$PD2_NATIVE_PRELOAD"
   CRUSTY_LIBSDL="$PD2_CRUSTY_SDL" CRUSTY_LIBEGL="$PD2_CRUSTY_EGL" CRUSTY_LIBGBM="$PD2_CRUSTY_GBM" CRUSTY_LIBDRM="$PD2_CRUSTY_DRM")
+ if [[ -n "${ALSA_CONFIG_PATH:-}" ]]; then
+  box_env+=(ALSA_CONFIG_PATH="$ALSA_CONFIG_PATH")
+ fi
  if [[ ${PD2_GAME_TUNING_ACTIVE:-0} == 0 && ${PD2_PERFORMANCE:-off} != off ]]; then
   box_env+=(BOX86_DYNAREC_BIGBLOCK=1 BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_CALLRET=0)
  fi
@@ -79,6 +85,18 @@ restore_audio() {
  stop_wine || return 1
  python3 -B "$PD2_PORT/scripts/audio_config.py" --prefix "$PD2_PREFIX" --retire || return 1
  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_backend","status":"restored"}\n'
+}
+# Restore the opt-in DirectSound experiment, including interrupted sessions.
+# Only the five named DirectSound strings are restored; no other registry data.
+restore_dsound() {
+ [[ -e "$dsound_restore_file" || -L "$dsound_restore_file" ]] || return 0
+ dsound_restore_attempted=1
+ python3 -B "$PD2_PORT/scripts/audio_dsound.py" --prefix "$PD2_PREFIX" --validate || return 1
+ stop_wine || return 1
+ setup_cmd reg.exe import 'C:\pd2-dsound-restore.reg' || return 1
+ stop_wine || return 1
+ python3 -B "$PD2_PORT/scripts/audio_dsound.py" --prefix "$PD2_PREFIX" --retire || return 1
+ printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"dsound_backend","status":"restored"}\n'
 }
 stop_owned() {
  local pid=$1
@@ -213,6 +231,7 @@ run_audio_probe() {
  fi
  if [[ "$private_active" == 1 ]]; then
   unset ALSA_CONFIG_PATH
+  refresh_box_env
   unlink "$PD2_RUN/alsa-pd2.conf" 2>/dev/null || true
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_fallback","status":"attempted"}\n'
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_route","status":"default"}\n'
@@ -248,6 +267,10 @@ cleanup() {
   error invalid_layout 1
   [[ "$rc" == 0 ]] && rc=1
  fi
+ if [[ "$wine_ready" == 1 && "$dsound_restore_attempted" == 0 ]] && ! restore_dsound; then
+  error invalid_layout 1
+  [[ "$rc" == 0 ]] && rc=1
+ fi
  # Prefix-specific shutdown AND wait. Retain failure status if it cannot quiesce.
  step prefix_shutdown
  if [[ ${PD2_DIAGNOSTIC:-off} != sdl && ${PD2_DIAGNOSTIC:-off} != glx ]] && ! stop_wine; then
@@ -269,7 +292,7 @@ printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"box_variant
 if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 ]]; then export PD2_METRICS=1; fi
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"tuning_profile","status":"%s"}\n' "${PD2_TUNING:-off}"
 if [[ ${PD2_TUNING:-off} != off ]]; then export PD2_METRICS=1; fi
-case "${PD2_TUNING:-off}" in gl-auto|gl-kms)
+case "${PD2_TUNING:-off}" in gl-auto|gl-kms|crusty_glx_gl4es)
  python3 -B "$PD2_PORT/scripts/client_graphics_probe.py" || true
  ;; esac
 case "${PD2_PERFORMANCE:-off}" in off|gdi|opengl) ;; *) error invalid_profile 1; exit 1;; esac
@@ -287,6 +310,63 @@ audio_test="${PD2_AUDIO_TEST:-1}"
 [[ "$audio_test" == 0 || "$audio_test" == 1 ]] || { error invalid_profile 1; exit 1; }
 audio_probe="${PD2_AUDIO_PROBE:-0}"
 [[ "$audio_probe" == 0 || "$audio_probe" == 1 ]] || { error invalid_profile 1; exit 1; }
+# Opt-in SDL audio driver selection: defaults to alsa, dummy allowed for A/B tests.
+audio_sdl="${PD2_AUDIO_SDL:-alsa}"
+case "$audio_sdl" in alsa|dummy) ;; *) error invalid_profile 1; exit 1;; esac
+export SDL_AUDIODRIVER="$audio_sdl"
+[[ "$SDL_AUDIODRIVER" == "$audio_sdl" ]] || { error invalid_profile 1; exit 1; }
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_sdl","status":"%s"}\n' "$audio_sdl"
+# Opt-in PCM telemetry for the default (non-GPU) launch: measurement only.
+audio_metrics_enabled="${PD2_AUDIO_METRICS:-0}"
+[[ "$audio_metrics_enabled" == 0 || "$audio_metrics_enabled" == 1 ]] || { error invalid_profile 1; exit 1; }
+# Opt-in DirectSound HelBuflen A/B; every applied value is backed up and restored.
+dsound_mode="${PD2_AUDIO_DSOUND:-off}"
+case "$dsound_mode" in off|ver2|wine) ;; *) error invalid_profile 1; exit 1;; esac
+audio_variant="${PD2_AUDIO_VARIANT:-stock}"
+case "$audio_variant" in A|B|C|D|buffer|dmix|stock) ;; *) error invalid_profile 1; exit 1;; esac
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_variant","status":"%s"}\n' "$audio_variant"
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_schema","status":"v1"}\n'
+audio_route_profile="${PD2_AUDIO_ROUTE_PROFILE:-baseline}"
+case "$audio_route_profile" in baseline|buffer80|buffer160|dmix160|dmix80) ;; *) error invalid_profile 1; exit 1;; esac
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_route_profile","status":"%s"}\n' "$audio_route_profile"
+case "$audio_variant" in
+ A)
+  if [[ "$audio_sdl" != alsa || "$dsound_mode" != off ]]; then
+   error invalid_profile 1; exit 1
+  fi
+  ;;
+ B)
+  if [[ "$audio_sdl" != dummy || "$dsound_mode" != off ]]; then
+   error invalid_profile 1; exit 1
+  fi
+  ;;
+ C)
+  if [[ "$audio_sdl" != dummy || "$dsound_mode" != ver2 ]]; then
+   error invalid_profile 1; exit 1
+  fi
+  ;;
+ D)
+  if [[ "$audio_sdl" != dummy || "$dsound_mode" != wine ]]; then
+   error invalid_profile 1; exit 1
+  fi
+  ;;
+ buffer)
+  if [[ "$audio_sdl" != dummy || "$dsound_mode" != off || "$audio_route_profile" != buffer* ]]; then
+   error invalid_profile 1; exit 1
+  fi
+  ;;
+ dmix)
+  # Current Dmix launcher selects wine; retain off for earlier route-only tests.
+  if [[ "$audio_sdl" != dummy || ( "$dsound_mode" != off && "$dsound_mode" != wine ) || "$audio_route_profile" != dmix* ]]; then
+   error invalid_profile 1; exit 1
+  fi
+  ;;
+ stock)
+  if [[ "$dsound_mode" != off ]]; then
+   error invalid_profile 1; exit 1
+  fi
+  ;;
+esac
 resolution="${PD2_GAME_RESOLUTION:-800x600}"
 [[ "$fps_enabled" == 0 || "$fps_enabled" == 1 ]] || { error invalid_profile 1; exit 1; }
 case "$resolution" in 800x600|1024x768|native) ;; *) error invalid_profile 1; exit 1;; esac
@@ -374,6 +454,8 @@ step recover_winebus
 restore_winebus || { error invalid_layout 1; exit 1; }
 step recover_audio
 restore_audio || { error invalid_layout 1; exit 1; }
+step recover_dsound
+restore_dsound || { error invalid_layout 1; exit 1; }
 if [[ "$audio_test" == 1 ]]; then
  # Export the existing parent key: success also proves a missing Drivers/Audio.
  # Publish a durable, Audio-only restore marker BEFORE touching the registry.
@@ -395,11 +477,52 @@ if [[ "$audio_test" == 1 ]]; then
  # Session-local rk817 routing only if unambiguous, accessible and not busy.
  # Missing/denied/busy devices retain the system ALSA default; never change mixers.
  step audio_route
- python3 -B "$PD2_PORT/scripts/audio_config.py" --route --run "$PD2_RUN" || { error invalid_layout 1; exit 1; }
+ python3 -B "$PD2_PORT/scripts/audio_config.py" --route --run "$PD2_RUN" --profile "$audio_route_profile" || { error invalid_layout 1; exit 1; }
  if [[ -f "$PD2_RUN/alsa-pd2.conf" && ! -L "$PD2_RUN/alsa-pd2.conf" ]]; then
   export ALSA_CONFIG_PATH="$PD2_RUN/alsa-pd2.conf"
+  refresh_box_env
+  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_config_path","status":"active"}\n'
+ else
+  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_config_path","status":"default"}\n'
  fi
  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_backend","status":"alsa"}\n'
+fi
+if [[ "$dsound_mode" != off ]]; then
+ # Back up the whole DirectSound key BEFORE the first mutation; a missing key is
+ # recorded as an explicit deletion marker, never inferred from a stale export.
+ dsound_restore_attempted=0
+ step dsound_prepare
+ python3 -B "$PD2_PORT/scripts/audio_dsound.py" --prefix "$PD2_PREFIX" --prepare-export || { error invalid_layout 1; exit 1; }
+ step dsound_export
+ setup_cmd reg.exe export 'HKCU\Software\Wine' 'C:\pd2-dsound-export.reg' /y || { error invalid_layout 1; exit 1; }
+ step dsound_snapshot
+ python3 -B "$PD2_PORT/scripts/audio_dsound.py" --prefix "$PD2_PREFIX" --snapshot || { error invalid_layout 1; exit 1; }
+ step dsound_select
+ case "$dsound_mode" in
+  ver2)
+   while read -r name value; do
+    setup_cmd reg.exe add 'HKCU\Software\Wine\DirectSound' /v "$name" /t REG_SZ /d "$value" /f || { error invalid_layout 1; exit 1; }
+   done <<'DSOUND_VER2'
+HelBuflen 8192
+MaxHardwareChannels 16
+SndQueueMax 28
+DefaultSampleRate 44100
+DefaultBitsPerSample 16
+DSOUND_VER2
+   ;;
+  wine)
+   setup_cmd reg.exe add 'HKCU\Software\Wine\DirectSound' /v HelBuflen /t REG_SZ /d 65536 /f || { error invalid_layout 1; exit 1; }
+   ;;
+ esac
+ # DirectSound reads these values when it loads per process; quiesce so only the
+ # freshly started Game.exe inherits them.
+ stop_wine || { error timeout 1; exit 1; }
+ step dsound_verify
+ setup_cmd reg.exe export 'HKCU\Software\Wine' 'C:\pd2-dsound-verify.reg' /y || { error invalid_layout 1; exit 1; }
+ python3 -B "$PD2_PORT/scripts/audio_dsound.py" --prefix "$PD2_PREFIX" --verify-applied "$dsound_mode" || { error invalid_layout 1; exit 1; }
+ printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"dsound_profile","status":"%s"}\n' "$dsound_mode"
+else
+ printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"dsound_profile","status":"off"}\n'
 fi
 if [[ "$input_mode" == native ]]; then
  # Backup durable original DWORDs/missing values before the first mutation.
@@ -467,7 +590,7 @@ if [[ "$controller_test" == 0 ]]; then
 fi
 # Attach the observer only after setup, with no old Wine process retaining ALSA.
 audio_game_wrapper=()
-if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 ]]; then
+if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 || "$audio_metrics_enabled" == 1 ]]; then
  stop_wine || { error timeout 1; exit 1; }
  if python3 -B "$PD2_PORT/scripts/audio_metrics.py" prepare --port "$PD2_PORT" --work "$PD2_WORK"; then
   export PD2_NATIVE_LIBS="$PD2_WORK/.alsa-audio-metrics:$PD2_NATIVE_LIBS"

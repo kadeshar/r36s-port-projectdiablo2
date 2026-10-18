@@ -54,10 +54,12 @@ COMMON = frozenset(("phase", "profile", "port_version", "runtime_version", "mach
 FREQUENCY_RANGES = {'cpu_freq_khz': 10_000_000, 'cpu_max_freq_khz': 10_000_000, 'gpu_freq_hz': 10_000_000_000, 'gpu_max_freq_hz': 10_000_000_000}
 SESSION_METRICS = frozenset(('sample_monotonic_ms', 'system_cpu_pct_x100', 'swap_total_mb', 'swap_free_mb', 'swap_in_pages', 'swap_out_pages', 'system_major_faults', 'game_processes', 'game_cpu_user_ms', 'game_cpu_system_ms', 'game_cpu_pct_x100', 'game_rss_kb', 'game_swap_kb', 'game_major_faults')) | frozenset('pressure_'+resource+'_'+kind+'_'+metric for resource in ('cpu','memory','io') for kind in ('some','full') for metric in ('avg10_x100','total_us'))
 SESSION_METRICS = SESSION_METRICS | frozenset(role+'_'+suffix for role in ('compositor','mapper') for suffix in ('processes','cpu_user_ms','cpu_system_ms','cpu_pct_x100','rss_kb','swap_kb','major_faults'))
-SETUP_STAGES = frozenset(('initial','prefix_quiesce','prefix_initialize','recover_winebus','recover_audio','audio_prepare','audio_export','audio_snapshot','audio_select','audio_route','winebus_prepare','winebus_export','winebus_snapshot','winebus_select','game_registry','game_start','prefix_shutdown','graphics_test'))
+SETUP_STAGES = frozenset(('initial','prefix_quiesce','prefix_initialize','recover_winebus','recover_audio','recover_dsound','audio_prepare','audio_export','audio_snapshot','audio_select','audio_route','dsound_prepare','dsound_export','dsound_snapshot','dsound_select','dsound_verify','winebus_prepare','winebus_export','winebus_snapshot','winebus_select','game_registry','game_start','prefix_shutdown','graphics_test'))
 METRICS = frozenset(("available_ram_mb", "disk_mb", "temperature_mc", "duration_ms")) | FREQUENCY_RANGES.keys() | SESSION_METRICS
 AUDIO_PCM_COUNTERS = frozenset(('write_calls','write_frames','short_writes','mmap_begin_calls','mmap_commit_calls','mmap_frames','hw_params_calls','start_calls','prepare_calls','resume_calls','drop_calls','drain_calls','recover_calls','recover_epipe_calls','recover_successes','close_calls','error_results','epipe_results','estrpipe_results','eagain_results','eintr_results','other_error_results'))
-AUDIO_PCM_FIELDS = AUDIO_PCM_COUNTERS | frozenset(('event','schema','source','stream','active','params_valid','rate_hz','channels','access','period_frames','buffer_frames','lost_updates','untracked_opens','sample_monotonic_ms'))
+AUDIO_PCM_ROLES = frozenset(('game', 'probe', 'server', 'wine', 'unknown', 0, 1, 2, 3, 4))
+AUDIO_PCM_FIELDS = AUDIO_PCM_COUNTERS | frozenset(('event','schema','role','source','stream','active','params_valid','rate_hz','channels','access','period_frames','buffer_frames','lost_updates','untracked_opens','sample_monotonic_ms','producer_monotonic_ms'))
+AUDIO_HARDWARE_PCM_FIELDS = frozenset(('event', 'state', 'sample_monotonic_ms', 'owner_pid', 'delay', 'avail', 'hw_ptr', 'appl_ptr', 'format', 'access', 'channels', 'rate_hz', 'period_frames', 'buffer_frames', 'avail_min', 'start_threshold', 'stop_threshold', 'card', 'device'))
 COUNTS = frozenset(("input_lines", "accepted_events", "omitted_lines", "oversized_lines", "written_events", "limited_events"))
 FIELDS = {
     "phase": COMMON | {"event"},
@@ -75,6 +77,7 @@ FIELDS = {
     "render_status": frozenset(('event','backend','status','width','height')),
     "graphics_layer": frozenset(('event','schema','probe','stage','status','backend','renderer','frame','code')),
     "audio_pcm": AUDIO_PCM_FIELDS,
+    "audio_hardware_pcm": AUDIO_HARDWARE_PCM_FIELDS,
     "summary": frozenset(("event", "counts")),
 }
 MISSING_SO = re.compile(r"(?:[^\r\n]{1,256}: )?error while loading shared libraries: ([A-Za-z0-9_.-]{1,128}): cannot open shared object file: No such file or directory\Z", re.ASCII)
@@ -119,14 +122,29 @@ def validate_event(value, allow_summary=False):
     if event == 'audio_pcm':
         if set(value) != AUDIO_PCM_FIELDS or type(value.get('schema')) is not int or value['schema'] != 1:
             return None
-        bounds = {'source':(1,32),'stream':(1,8),'active':(0,1),'params_valid':(0,1),'rate_hz':(0,768000),'channels':(0,256),'access':(0,4),'period_frames':(0,10**9),'buffer_frames':(0,10**9),'lost_updates':(0,10**9),'untracked_opens':(0,10**9),'sample_monotonic_ms':(0,10**15)}
-        for name in AUDIO_PCM_FIELDS - {'event','schema'}:
+        if value.get('role') not in AUDIO_PCM_ROLES:
+            return None
+        bounds = {'source':(1,32),'stream':(1,10**9),'active':(0,1),'params_valid':(0,1),'rate_hz':(0,768000),'channels':(0,256),'access':(0,4),'period_frames':(0,10**9),'buffer_frames':(0,10**9),'lost_updates':(0,10**9),'untracked_opens':(0,10**9),'sample_monotonic_ms':(0,10**15),'producer_monotonic_ms':(0,10**15)}
+        for name in AUDIO_PCM_FIELDS - {'event','schema','role'}:
             if not _integer(value[name],*bounds.get(name,(0,10**15))):
                 return None
         if value['params_valid'] and (not value['rate_hz'] or not value['channels'] or not value['period_frames'] or value['period_frames'] > value['buffer_frames']):
             return None
         if value['recover_successes'] > value['recover_calls'] or value['recover_epipe_calls'] > value['recover_calls'] or value['short_writes'] > value['write_calls'] or value['error_results'] != sum(value[k] for k in ('epipe_results','estrpipe_results','eagain_results','eintr_results','other_error_results')):
             return None
+    if event == 'audio_hardware_pcm':
+        if not set(value) <= FIELDS[event] or 'event' not in value or 'state' not in value:
+            return None
+        if type(value['state']) is not str or value['state'] not in ('RUNNING', 'PREPARED', 'DRAINING', 'XRUN', 'PAUSED', 'SUSPENDED', 'DISCONNECTED', 'OPEN', 'SETUP', 'closed', 'unknown', 'unavailable'):
+            return None
+        for k in ('sample_monotonic_ms', 'delay', 'avail', 'hw_ptr', 'appl_ptr', 'channels', 'rate_hz', 'period_frames', 'buffer_frames', 'avail_min', 'start_threshold', 'stop_threshold', 'card', 'device'):
+            if k in value and not _integer(value[k], 0, 10**18):
+                return None
+        if 'owner_pid' in value and not _integer(value['owner_pid'], 0, 2147483647):
+            return None
+        for k in ('format', 'access'):
+            if k in value and (type(value[k]) is not str or len(value[k]) > 64):
+                return None
     if event == 'renderer_gl2':
         if set(value) != FIELDS[event]:
             return None
@@ -174,10 +192,10 @@ def validate_event(value, allow_summary=False):
             'renderer_variant': ('stock', 'gles2'),
             'box_variant': ('stock', 'a35'),
             'audio_metrics': ('ready', 'unavailable'),
-            'audio_metrics_capture': ('ready','unavailable','invalid_capture','capture_limit','no_stream'),
+            'audio_metrics_capture': ('ready', 'playback_observed', 'sustained_playback', 'no_playback', 'partial_coverage', 'capture_limit', 'data_lost', 'no_stream', 'invalid_capture', 'unavailable'),
             'audio_metrics_library': ('ready','unavailable'),
             'dynarec_bigblock': ('1', '2'),
-            'tuning_profile': ('off', 'baseline', 'forward512', 'callret', 'fastflags', 'gl-auto', 'gl-kms'),
+            'tuning_profile': ('off', 'baseline', 'forward512', 'callret', 'fastflags', 'gl-auto', 'gl-kms', 'crusty_glx_gl4es'),
             'client_drm_access': ('ready', 'missing', 'denied', 'invalid', 'unavailable'),
             'fps_counter': ('hotkey', 'renderer', 'disabled', 'unavailable'),
             'diagnostic_mode': ('off','present','sdl','glx','ddraw'),
@@ -186,8 +204,16 @@ def validate_event(value, allow_summary=False):
             'start_menu': ('selected', 'failed', 'cancelled'),
             'menu_display': ('connect_failed', 'auth_failed', 'setup_invalid', 'window_failed', 'not_visible', 'protocol_error', 'disconnected', 'timeout', 'input_failed', 'unavailable'),
             'audio_route': ('rk817', 'default', 'missing', 'denied', 'ambiguous', 'busy'),
+            'audio_route_profile': ('baseline', 'buffer80', 'buffer160', 'dmix160', 'dmix80'),
+            'audio_config_path': ('active', 'default', 'missing'),
             'audio_device': ('ready', 'missing', 'denied'),
             'audio_backend': ('alsa', 'restored'),
+            'audio_sdl': ('alsa', 'dummy'),
+            'audio_variant': ('A', 'B', 'C', 'D', 'buffer', 'dmix', 'stock'),
+            'audio_schema': ('v1', 'v2'),
+            'dsound_profile': ('off', 'ver2', 'wine'),
+            'dsound_backend': ('restored',),
+            'dsound_helbuflen': ('8192', '65536'),
             'audio_endpoints': ('ready', 'missing'),
             'audio_open': ('ready', 'missing', 'busy', 'denied', 'unsupported', 'error'),
             'audio_directsound': ('ready', 'missing', 'busy', 'denied', 'unsupported', 'error', 'not_run'),

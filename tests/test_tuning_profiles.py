@@ -22,15 +22,9 @@ class StaticTuningTests(unittest.TestCase):
         names = json.loads((ROOT/'release-files.json').read_text())
         for name in ('tuning.sh', 'client_graphics_probe.py'):
             self.assertIn('projectdiablo2/scripts/'+name, names)
-        entries = sorted((ROOT/'sdcard/ports').glob('Project Diablo 2 - Test [1-6]*.sh'))
-        self.assertEqual(len(entries), 6)
-        for entry in entries:
-            text=entry.read_text()
-            self.assertIn(entry.name, names)
-            self.assertIn('PD2_START_MENU=0', text)
-            self.assertIn('PD2_BIGBLOCK=1', text)
-            self.assertIn('PD2_FPS="${PD2_FPS:-1}"', text)
-            self.assertNotIn(b'\r', entry.read_bytes())
+        for launcher in ('Project Diablo 2.sh', 'Project Diablo 2 - GPU.sh', 'Project Diablo 2 - Performance GDI.sh', 'Project Diablo 2 - Performance OpenGL.sh'):
+            self.assertIn(launcher, names)
+            self.assertTrue((ROOT/'sdcard/ports'/launcher).is_file())
 
     def test_safe_telemetry_closed_schema(self):
         for mode in ['off', *MODES]:

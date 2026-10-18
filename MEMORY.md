@@ -4,6 +4,41 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## GDI compositor startup regression — session 20261018T191920Z-10605
+
+- User reports the earlier main-launcher rollback did not help. Attached [session log](<C:/Users/kadeshar/.dsh/attachments/v1/files/96/96b969be60719f4a9c150b323ef195261738a4bd7a1252556e6469bee9fba6f7/pd2-session-20261018T191920Z-10605.jsonl>) shows GDI, native providers ready, seatd ready, DRM/GL modules and EGL/GL initialized; Weston exits 1 before X11 readiness, menu or Wine. `compositor_failed`, then runtime/shutdown 2. Logger omitted 56 lines; exact native fatal message is unavailable. CRLF is not the explanation for this observed run: the launcher and adapter both executed.
+- Remaining production startup delta from the conversion: shared adapter changed `CRUSTY_BLOCK_INPUT=0` to global `1`. Restore `0` for production/legacy profiles; enable `1` only inside the explicit `crusty_glx_gl4es` branch. This is a targeted rollback of an unintended default change, not a hardware-confirmed diagnosis of Weston's fatal error.
+- Added regression executing actual adapter export/profile selection with inherited `CRUSTY_BLOCK_INPUT=1`: GDI and legacy OpenGL must reset to `0`; explicit GLX must set `1`. Test failed for both legacy paths before correction. Synthetic environment tests do not establish working hardware startup.
+- Main launcher left untouched in this fix. Replace only [weston-session.sh](<sdcard/ports/projectdiablo2/scripts/weston-session.sh>) on the SD card; no prefix/config/save reset, no ZIP. Confirm startup on R36S and provide the next log if it still fails.
+- Validation: 34 Linux tests passed (PortMaster GLX 12, graphics providers 10, OpenGL entry 2, GPU runtime 10). These cover profile environment isolation and existing synthetic regressions, not real-device compositor startup.
+- User instruction persisted in [AGENTS.md](<AGENTS.md>): no main-launcher modifications without explicit instruction naming that launcher; experiments must not alter production defaults via shared code.
+
+## PortMaster adaptation — implementation (historical; host changes subsequently rolled back)
+
+- Implementing [conversion plan](<plan/portmaster_convert.md>) directly in `sdcard/ports/`; no update ZIP. Existing local audio changes preserved.
+- Baseline after switching this session to full access: 37 layout tests, 2 OpenGL entry tests passed; GPU runtime: 2 passed, 8 Linux-only tests skipped on Windows. Earlier workspace-confined layout attempts failed creating fixtures with `WinError 5`; one authorized Windows permissions repair did not resolve confined execution. Full access removed that test-execution obstacle.
+- Shared host cleanup resets both console TTYs only after a session started Weston, captures service activity before PortMaster hooks and queues bounded nonblocking `restart` only for previously active `oga_events.service`, and keeps original exit status. Service restoration stays outside private `/run`; adapter handles post-compositor console cleanup, host handles forced-exit fallback. All wrappers delegate to the main launcher.
+- Weston Crusty input blocking enabled. Box86 gains stable SDL GUIDs, optional-library handling and symbol diagnostics; production GDI/audio defaults preserved. New GLX path uses `SAFEFLAGS=1`, `CALLRET=0`; legacy risky test profiles remain separate, unchanged.
+- Separate PortMaster GLX experiment reuses pinned Westonpack ARMHF Crusty GLX + GL4ES providers, session-only OpenGL configuration, no headless startup menu, no new runtime downloads. Required provider/library validation precedes headless/noop. This is not evidence of working scanout or better FPS on R36S.
+- Inspected both wrapper binaries directly from the existing SquashFS using `unsquashfs -cat`: Crusty GLX and GL4ES GLX pass libraries are ELF32 little-endian ARM ET_DYN with flags `0x5000400` (hard-float). No runtime binaries changed. This verifies the new ABI gate against the bundled wrappers, not target-device providers or GPU behavior.
+- Final regression (WSL/Ubuntu, Python 3.12.3): `python3 -m unittest discover -s tests` — **727 tests, OK, 4 skipped**, 466.641 s. Focused host lifecycle: 8 OK; PortMaster shell integration: 3 OK (including existing macro coverage); isolated GLX: 11 OK. Earlier Windows full pass: 713 tests, 146 skipped, before final test additions.
+- All 23 shipped Bash entry/helper scripts pass `bash -n`; release allowlist validates 101 files including the new launcher. SHA-256 and size verification passes for all 4 runtime artifacts; root and payload runtime manifests agree. `git diff --check` passes. No release ZIP built, no physical SD/device deployment performed.
+- Hardware acceptance still required: game image, controls, audio, quit/interruption cleanup and restored brightness/volume/suspend keys. GDI remains rollback.
+
+## Dmix follow-up — session 20261018T180608Z-62502
+
+- User reports that the next test after the startup-validation fix also did not help. Problem remains unresolved; no further diagnosis requested.
+- Attached log: [pd2-session-20261018T180608Z-62502.jsonl](<C:/Users/kadeshar/.dsh/attachments/v1/files/1d/1d5264b229ae2686ecac2aa796db47e2c42ebf7abd8c99289c659e7978cc7153/pd2-session-20261018T180608Z-62502.jsonl>), SHA-256 `1d5264b229ae2686ecac2aa796db47e2c42ebf7abd8c99289c659e7978cc7153`. Log not analyzed in this follow-up; record reflects user feedback only.
+
+## Dmix startup regression — session 20261018T174656Z-35723
+
+- Attached session ends with `invalid_profile` immediately after `audio_route_profile=dmix160`; no game playback occurs.
+- Cause: [`Audio Dmix launcher`](<sdcard/ports/Project Diablo 2 - Audio Dmix.sh>) selects DirectSound `wine`, while [`run-game.sh`](<sdcard/ports/projectdiablo2/scripts/run-game.sh>) required `off` for variant `dmix`.
+- Fix: accept `wine` or legacy `off` for dmix; retain SDL dummy and dmix route constraints. Production defaults unchanged.
+- Regression: real Dmix wrapper → real run-game validation with synthetic Wine; verifies game execution, 160000-us requested config and DirectSound restoration. Separate negative combinations and legacy route-only coverage. New wrapper test reproduced the exact `invalid_profile` before the fix.
+- Validation (WSL/Ubuntu): 78 shell integration tests and 96 audio tests passed; `bash -n` on run-game and `git diff --check` passed.
+- Deployment: replace only `ports/projectdiablo2/scripts/run-game.sh` for this startup fix; no prefix/save reset. Hardware startup and audio quality remain unverified.
+
 ## 1. Project Genesis and Architectural Verification
 
 ### Initial User Assumptions:
@@ -106,55 +141,62 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
-## 6. Phase 5: Solving Audio Stuttering (Audio Underruns)
+## 6. Phase 5: Initial Audio Stuttering Investigation
 
 ### Symptoms Reported by User:
 - *"Audio plays, but it stutters severely and ruins gameplay. Could it be duplicated or conflicted due to the workaround?"*
 
-### Architecture and Conflict Analysis:
-1. **Bypassing `dmix` directly to raw `hw:`**:
-   - In ArkOS, `/etc/asound.conf` configures `dmix` (software mixing with a large ring buffer).
-   - The [`audio_config.py`](sdcard/ports/projectdiablo2/scripts/audio_config.py) script generated a private `alsa-pd2.conf` routing directly:
-     `pcm.!default { type plug slave.pcm "hw:CARD=rk817...,DEV=0" }`
-   - This connected Wine directly to the hardware DMA buffer of the audio chip. The hardware buffer of the `rk817` codec holds only ~20 ms of audio.
-   - Under heavy x86 JIT translation load in Box86, the Cortex-A35 could not consistently meet the 20-millisecond deadline, resulting in continuous **ALSA Buffer Underruns (xruns)** — audible as crackling, audio stutter, and loop glitches.
-2. **`SDL_AUDIODRIVER` Conflict with `winealsa.drv`**:
-   - The startup script set `SDL_AUDIODRIVER=alsa`. SDL companion libraries attempted to open ALSA concurrently with Wine. Because raw `hw:` without `dmix` cannot be opened by multiple processes simultaneously, both components fought for exclusive buffer access.
-3. **DirectSound Emulation Overhead**:
-   - Diablo II uses the Miles Sound System (`mss32.dll`), which relies on DirectSound.
-   - By default, DirectSound in Wine mixed up to 32–64 channels in software with a tiny emulation buffer `HelBuflen` (512–2048 bytes), consuming up to 40% of CPU time merely mixing monster and spell audio.
-
-### Implemented Solution (in [`run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh)):
-1. Configured `export SDL_AUDIODRIVER=dummy`, preventing SDL libraries from intercepting ALSA.
-2. Tuned DirectSound parameters in the Wine registry:
-   - `HelBuflen = 8192` (buffer increased 4x, providing ~100 ms headroom for JIT latency).
-   - `MaxHardwareChannels = 16` (restricted mixed channels to 16, significantly reducing CPU load).
-   - `DefaultSampleRate = 44100` (eliminates on-the-fly sample rate conversion).
-3. Disabled **Environmental Effects** (3D EAX) in the in-game audio options.
+### Initial Hypotheses and Tweaks:
+1. **`SDL_AUDIODRIVER` Conflict:** Standard launches defaulted to `SDL_AUDIODRIVER=alsa`, which competed with `winealsa.drv` for `/dev/snd/pcmC0D0p`. Switching to `SDL_AUDIODRIVER=dummy` successfully gave Wine exclusive ALSA access.
+2. **DirectSound Registry Tuning:** Tweaked `HelBuflen` and `MaxHardwareChannels` in registry. However, later code inspection showed Wine 8.0 default `HelBuflen` is 65536 bytes (~370 ms), so lowering to 8192 actually tightened the buffer, and `HelBuflen` affects only the DirectSound software emulation buffer, not the kernel ALSA buffer.
+3. **Outcome:** While SDL contention was eliminated, stuttering and repeating audio chunks ("echo") remained audible during gameplay.
 
 ---
 
-## 7. Phase 6: Achieving Smooth Gameplay (CPU and Memory Optimizations)
+## 7. Phase 6: Performance Optimization (CPU and Memory)
 
-Once display and audio stability were established, a comprehensive set of performance optimizations was deployed to increase framerates:
-
-1. **Box86 Dynarec Tuning for Cortex-A35:**
+To address Cortex-A35 execution bottlenecks:
+1. **Box86 Dynarec Tuning:**
    - `BOX86_DYNAREC_BIGBLOCK=2`: Translates larger basic blocks of game code.
    - `BOX86_DYNAREC_FORWARD=256`: Extends forward jump lookahead.
    - `BOX86_DYNAREC_FASTROUND=1`: Utilizes hardware ARM rounding instructions.
-   - `BOX86_DYNAREC_FASTNAN=1`: Skips heavy IEEE NaN validation.
+   - `BOX86_DYNAREC_FASTNAN=1`: Fast IEEE NaN handling.
+   - `BOX86_DYNAREC_SAFEFLAGS=1`: Preserved safe flags (mandatory for Diablo II JIT stability).
    - `BOX86_DYNAREC_X87DOUBLE=0`: Employs hardware NEON instead of software 80-bit x87 emulation.
-2. **RAM Protection on 1 GB Handheld:**
-   - With only 1 GB RAM, swapping Wine pages to the slow microSD card caused second-long freezes (swap thrashing).
-   - Applied: `sysctl -w vm.swappiness=10` and `sync; echo 3 > /proc/sys/vm/drop_caches` prior to starting the session.
+2. **RAM and Swap Protection:**
+   - Applied `sysctl -w vm.swappiness=10` and `sync; echo 3 > /proc/sys/vm/drop_caches` to avoid microSD swap thrashing on 1 GB RAM.
 
 ---
 
-## 8. Final State Summary
+## 8. Phase 7: Audio Telemetry, Route De-bunking, and Dmix Hardening (0.1.18+)
 
-The repository provides a complete, tested solution:
+### In-Depth Investigation:
+1. **Telemetry Infrastructure Implemented:**
+   - Preloaded PCM observer library (`audio_metrics`) capturing real-time ALSA API calls: `period_frames`, `buffer_frames`, `write_calls`, `short_writes`, `recover_calls`, `epipe_results`, `eagain_results`.
+   - Kernel hardware PCM telemetry (`audio_hardware_pcm`): samples `/proc/asound/card0/pcm0p/sub0/{hw_params,sw_params,status}` for actual DMA hardware parameters, delay, and pointer offsets.
+   - System resource sampler (`metrics`): periodic CPU%, RAM, swap, and temperature logging.
+   - Sustained playback gate: requires >=3 consecutive snapshots with audio frames over >=2.0s, distinguishing active gameplay from short 1.5s probes.
+2. **"Buffer 160ms" Route De-bunked:**
+   - Source inspection of ALSA 1.2.8 (`pcm_plug.c:1293-1298`, `pcm.c:7885`) revealed that `type plug` slave definition (`snd_pcm_slave_conf`) only parses `format`, `channels`, and `rate`.
+   - Placing `period_time`/`buffer_time` inside `pcm_slave` triggered `-EINVAL: Unknown field period_time`.
+   - `snd_pcm_open("default")` was failing and Wine silently fell back to system default ALSA. All historical "Buffer 160ms" tests were running on stock ALSA configuration!
+   - The invalid Buffer launcher was retired and removed.
+3. **Dmix Flow Control and Hardening:**
+   - Dmix telemetry proved **0 EPIPE** across 125 seconds of gameplay with 4,295 successful writes.
+   - The 508 `eagain_results` was non-blocking flow control from Wine when the dmix ring buffer was full, not underruns.
+   - Hardened dmix IPC configuration with `ipc_key_add_uid true` and `ipc_perm 0600` to prevent multi-user collisions.
+5. **DirectSound Headroom vs Persistent Prefix:**
+   - Log 20261018T163650Z confirmed ALSA received 11,118 writes over 113s with 0 EPIPE and 0 lost updates.
+   - User confirmed Environmental Effects is locked and OFF, and stutter/echo worsens during combat spells and occurs during Akara's voice.
+   - Analysis: persistent wineprefix retaining historical `HelBuflen=8192` (~46 ms) causes DirectSound circular buffer wrapping on any frame taking longer than 46 ms (<22 FPS). Updated Dmix launcher to enforce `PD2_AUDIO_DSOUND=wine` (`HelBuflen=65536`, ~371 ms headroom) with automatic backup and restore.
+   - Fixed `PD2_METRICS` preservation in `Project Diablo 2.sh` and prioritized RK817 in `audio_hardware_pcm` with `card` and `device` tracking.
+
+---
+
+## 9. Current Status Summary
+
 - **Display:** 100% stable through the GDI profile with the DRM compositor ([`Project Diablo 2.sh`](sdcard/ports/Project%20Diablo%202.sh)) and the alternative GPU shader profile ([`Project Diablo 2 - GPU.sh`](sdcard/ports/Project%20Diablo%202%20-%20GPU.sh)).
-- **Audio:** Crisp, stutter-free, and lag-free through enlarged DirectSound buffering and SDL isolation.
 - **Controls:** Complete support for all 17 physical R36S inputs via the virtual Xbox 360 controller.
+- **Audio:** Dmix software mixing with hardened IPC, exclusive SDL dummy driver, full PCM/hardware/system telemetry, DirectSound buffer expansion (`HelBuflen=65536`) protecting against producer starvation; hardware test protocol defined in [`docs/AUDIO-FIX-1.md`](docs/AUDIO-FIX-1.md). Buffer route debunked and removed.
 - **Performance:** Optimized Box86 Dynarec flags and memory thrashing prevention.
-- **Testing:** Comprehensive regression test suite validating layouts, configurations, and system contracts.
+- **Testing:** Comprehensive regression test suite validating layouts, configurations, telemetry, and shell contracts.

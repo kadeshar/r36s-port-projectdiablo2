@@ -181,9 +181,9 @@ def finalize():
           prepared_inputs_sha256=sha(STATE / 'prepared-inputs.sha256'), cflags='-Os -fno-ident (identical to stock compatibility provider)',
           source_patch_sha256=sha(DEST / 'source.patch'), abi='ELF32 ARM hard-float; time_t=4; sync_ptr=132; ioctl=0xc0844123',
           reproducibility='Sources/options pinned; existing builder apt toolchain packages are not bit-reproducibly pinned'),
-        capture=dict(version=1, slots_per_process=8, bytes_per_process=262144, interval_ms=1000,
+        capture=dict(version=1, slots_per_process=32, concurrent_limit=8, bytes_per_process=262144, interval_ms=1000,
           transport='Inherited O_NONBLOCK write-only anonymous pipe; dedicated writer thread',
-          scope='Top-level public ALSA playback PCM APIs in processes loading this library; nested plugin calls suppressed; first 8 successful opens per process',
+          scope='Top-level public ALSA playback PCM APIs in processes loading this library; nested plugin calls suppressed; up to 8 concurrent active streams, dynamically recycled pool of 32 slots with monotonic stream IDs',
           caveats=['Client-side negotiated PCM parameters, not necessarily hardware-slave parameters', 'EPIPE results and recover(-EPIPE) calls are observations, not unique underrun episodes', 'No audio samples, audible-quality verdict, or missing-data inference', 'Non-exec fork children disabled; exec loads initialize independently', 'Skipped try-lock updates/capacity tracked; abrupt termination can omit last snapshot']),
         tests=dict(arm_abi='passed', versioned_exports='identical to stock', r36s='not run'))
     (DEST / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')

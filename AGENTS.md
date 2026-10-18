@@ -164,7 +164,7 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 │           │   └── ...
 │           └── defaults/                    # Default game configs and gamepad mappings
 ├── tools/                                   # Compilation, packaging, and diagnostic tools
-│   ├── prepare.py                           # Update package builder
+│   ├── prepare.py                           # Game data importer and validator
 │   ├── build_cnc_ddraw_ogl.py               # ddraw.dll build script (MSVC)
 │   ├── build_box86_a35.py                   # Box86 A35 build script
 │   └── ...
@@ -184,27 +184,26 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 ### Documentation Location Standard:
 - **No loose `.md` files in `sdcard/ports/`:** Handheld ROM partitions must contain only execution payloads, scripts, runtimes, and configs. All user-facing guides, diagnostic protocols, and changelogs must reside strictly within the root [`docs/`](docs/) directory.
 
+### Port Deployment and SD Card Standard:
+- **No `dist/` or ZIP archives:** Never build `dist/` update ZIP packages (`projectdiablo2-port-update.zip`) after completing tasks.
+- **Direct `sdcard/` deployment:** Handheld console files must always be taken directly from the `sdcard/ports/` directory (`Project Diablo 2.sh` and `projectdiablo2/`). All changes and additions must be directly made and maintained inside `sdcard/ports/`.
+
 ### Running Local Tests:
 ```bash
 # Configuration and layout tests:
-python tests/test_layout.py
+python -m unittest discover -s tests -p "test_layout.py"
 
 # Launcher and menu tests:
-python tests/test_opengl_entry_fix.py
+python -m unittest discover -s tests -p "test_opengl_entry_fix.py"
 
 # GPU profile tests:
-python tests/test_gpu_runtime.py
+python -m unittest discover -s tests -p "test_gpu_runtime.py"
 ```
-
-### Building the Update Package:
-```bash
-python tools/prepare.py build-update
-```
-The resulting ZIP package is generated in `dist/projectdiablo2-port-update.zip`.
 
 ### Rules of Code Integrity:
 1. **Never change `SAFEFLAGS=1` to `0` or enable `CALLRET=1` in Box86** — Diablo II contains self-modifying code (in-engine JIT); aggressive Box86 flags lead to immediate crashes during spell casting.
 2. **Never install Wine as root** or execute games with root privileges — Westonpack requires user namespace separation (`runuser`).
-3. **The file `Project Diablo 2.sh` must always remain the verified, stable production release.** Experimental tweaks must only be implemented in separate launcher files.
+3. **Never modify `Project Diablo 2.sh` without an explicit user instruction naming that launcher.** A general modernization/conversion plan is not permission. The file must remain the verified, stable production release. Experimental tweaks must use separate launchers and must not alter the default production environment through shared scripts.
 4. **Mandatory Caveman Skill in AI Sessions:** Agents must strictly employ the `caveman` skill (`.agents/skills/caveman/SKILL.md`) to conserve context window tokens and maximize operational reasoning capacity.
 5. **Preserve Clean SD Card Payload:** Do not add loose `.md` files to `sdcard/ports/` or `sdcard/ports/projectdiablo2/`. Keep all documentation in [`docs/`](docs/).
+6. **Direct SD Card Source (No `dist/` builds):** Never build ZIP packages in `dist/` after completing work. All port files, launchers, and scripts are taken directly from `sdcard/ports/`.
