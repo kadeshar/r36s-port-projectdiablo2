@@ -119,7 +119,9 @@ class ControllerLayoutTests(unittest.TestCase):
         with mock.patch.object(layout, 'link', side_effect=fake_link), \
                 mock.patch.object(Path, 'symlink_to', new=fake_probe), \
                 mock.patch.object(layout.shutil, 'disk_usage', return_value=mock.Mock(free=2 * 1024 ** 3)):
-            return layout.prepare(self.port, self.state, volatile_work=volatile, input_mode=mode)
+            # Controller-only fixtures use 800x600; their minimal PE lacks native 640 cast signatures.
+            return layout.prepare(self.port, self.state, volatile_work=volatile, input_mode=mode,
+                                  game_resolution='800x600')
 
     def seed(self):
         return fixtures.write(self.port, 'config/ProjectDiablo.json', encoded(config()))

@@ -266,6 +266,7 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
   case "$menu_selection" in
    'default default'|'default 0'|'default 1'|\
     'native default'|'native 0'|'native 1'|\
+    '640x480 default'|'640x480 0'|'640x480 1'|\
     '800x600 default'|'800x600 0'|'800x600 1'|\
     '1024x768 default'|'1024x768 0'|'1024x768 1') menu_valid=1;;
   esac

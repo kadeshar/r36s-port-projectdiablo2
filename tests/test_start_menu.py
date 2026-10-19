@@ -78,12 +78,33 @@ class MenuTests(unittest.TestCase):
         menu.action('accept')
         self.assertEqual(menu.selection(), ('default', '0'))
 
+    def test_missing_inherited_resolution_defaults_to_lcd(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            menu = m.Menu()
+        self.assertEqual((menu.inherited_resolution, menu.inherited_fps), ('640x480', False))
+        menu.action('accept')
+        self.assertEqual(menu.selection(), ('default', 'default'))
+
+    def test_explicit_800x600_inheritance_and_selection_are_preserved(self):
+        with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': '800x600'}):
+            menu = m.Menu()
+        self.assertEqual(menu.inherited_resolution, '800x600')
+        menu.action('up')
+        menu.action('up')
+        for _ in range(m.RESOLUTIONS.index('800x600')):
+            menu.action('right')
+        self.assertEqual(m.LABELS[menu.resolution], '800X600')
+        menu.action('down')
+        menu.action('down')
+        menu.action('accept')
+        self.assertEqual(menu.selection(), ('800x600', 'default'))
+
     def test_invalid_inherited_resolution_uses_safe_display_default(self):
         with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': 'invalid', 'PD2_FPS': 'invalid'}):
             menu = m.Menu()
-        self.assertEqual((menu.inherited_resolution, menu.inherited_fps), ('800x600', False))
+        self.assertEqual((menu.inherited_resolution, menu.inherited_fps), ('640x480', False))
 
-    def test_all_12_resolution_fps_choices(self):
+    def test_all_15_resolution_fps_choices(self):
         choices = set()
         for index, resolution in enumerate(m.RESOLUTIONS):
             for fps in ('default', '0', '1'):
@@ -103,19 +124,19 @@ class MenuTests(unittest.TestCase):
                 choices.add(menu.selection())
                 menu.action('cancel')
                 self.assertEqual(menu.result, 'launch')
-        self.assertEqual(len(choices), 12)
+        self.assertEqual(len(choices), 15)
 
     def test_native_disables_override_and_resolution_wraps(self):
         menu = m.Menu()
         menu.action('up')
         menu.action('up')
         menu.action('left')
-        self.assertEqual(menu.resolution, 3)
+        self.assertEqual(menu.resolution, 4)
         menu.action('right')
         self.assertEqual(menu.resolution, 0)
         menu.action('accept')
         self.assertEqual(menu.resolution, 1)
-        for _ in range(3):
+        for _ in range(4):
             menu.action('right')
         self.assertEqual(menu.resolution, 0)
 
@@ -292,9 +313,9 @@ class LauncherContractTests(unittest.TestCase):
         self.assertNotRegex(block, r'(?:eval|source)\s')
 
     def test_default_and_explicit_protocol_whitelisted(self):
-        self.assertEqual(m.RESOLUTIONS, ('default', 'native', '800x600', '1024x768'))
-        self.assertEqual(len(m.LABELS), 4)
-        self.assertEqual(m.LABELS[0], '800X600')
+        self.assertEqual(m.RESOLUTIONS, ('default', '640x480', '800x600', '1024x768', 'native'))
+        self.assertEqual(len(m.LABELS), 5)
+        self.assertEqual(m.LABELS[0], 'LCD 640X480')
         for resolution in m.RESOLUTIONS:
             for fps in ('default', '0', '1'):
                 self.assertIn("'" + resolution + ' ' + fps + "'", self.weston)
@@ -302,7 +323,7 @@ class LauncherContractTests(unittest.TestCase):
         expected = {resolution + ' ' + fps for resolution in m.RESOLUTIONS
                     for fps in ('default', '0', '1')}
         self.assertEqual(set(re.findall(r"'([^']+)'", protocol)), expected)
-        self.assertEqual(len(re.findall(r"'([^']+)'", protocol)), 12)
+        self.assertEqual(len(re.findall(r"'([^']+)'", protocol)), 15)
         self.assertIn('menu_resolution="${menu_selection%% *}"', self.weston)
         self.assertIn('menu_fps="${menu_selection#* }"', self.weston)
 

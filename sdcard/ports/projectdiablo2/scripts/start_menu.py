@@ -12,8 +12,8 @@ import struct
 import sys
 import time
 
-RESOLUTIONS = ('default', 'native', '800x600', '1024x768')
-LABELS = ('800X600', 'NATIVE 1068X600', '800X600', '1024X768')
+RESOLUTIONS = ('default', '640x480', '800x600', '1024x768', 'native')
+LABELS = ('LCD 640X480', 'LCD 640X480', '800X600', '1024X768', 'PD2 1068X600')
 CANCEL = 10
 EVENT = struct.Struct('@llHHi')  # Linux input_event: native timeval (aarch64/ARM32).
 PAD_ACTIONS = {0x220: 'up', 0x221: 'down', 0x222: 'left', 0x223: 'right',
@@ -30,10 +30,10 @@ class Menu:
         self.fps = False
         self.fps_changed = False
         # Display resolved launcher values without changing the inheritance
-        # protocol. Standalone/default sessions use 800x600 and FPS off.
-        inherited_resolution = os.environ.get('PD2_GAME_RESOLUTION', '800x600')
+        # protocol. Standalone/default sessions use 640x480 and FPS off.
+        inherited_resolution = os.environ.get('PD2_GAME_RESOLUTION', '640x480')
         self.inherited_resolution = (inherited_resolution if inherited_resolution in
-                                     ('native', '800x600', '1024x768') else '800x600')
+                                     ('640x480', '800x600', '1024x768', 'native') else '640x480')
         self.inherited_fps = os.environ.get('PD2_FPS', '0') == '1'
         self.result = None
 

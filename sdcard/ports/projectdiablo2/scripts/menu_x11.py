@@ -116,8 +116,8 @@ class Screen:
         self._initializing = True
         self._mapped = self._exposed = False
         self._pending = []
-        if len(self.labels) != 4 or ' ' not in self.font:
-            raise ValueError('four labels and a space glyph required')
+        if len(self.labels) not in (4, 5) or ' ' not in self.font:
+            raise ValueError('valid labels and a space glyph required')
         for glyph in self.font.values():
             if not isinstance(glyph, str) or len(glyph) != 14:
                 raise ValueError('font must contain seven hex rows')
@@ -347,7 +347,7 @@ class Screen:
     def draw(self, menu):
         if self.socket is None:
             raise MenuDisplayError('protocol_error')
-        if menu.row not in range(4) or menu.resolution not in range(4):
+        if menu.row not in range(4) or menu.resolution not in range(len(self.labels)):
             raise ValueError('invalid menu selection')
         self._menu = menu
         self._repaint = False
@@ -385,8 +385,17 @@ class Screen:
         # Show actual inherited settings, not an unexplained DEFAULT label.
         resolution = self.labels[menu.resolution]
         if menu.resolution == 0:
-            inherited = getattr(menu, 'inherited_resolution', '800x600')
-            resolution = 'NATIVE 1068X600' if inherited == 'native' else inherited.upper()
+            inherited = getattr(menu, 'inherited_resolution', '640x480')
+            if len(self.labels) == 5:
+                label_map = {
+                    '640x480': 'LCD 640X480',
+                    '800x600': '800X600',
+                    '1024x768': '1024X768',
+                    'native': 'PD2 1068X600',
+                }
+                resolution = label_map.get(inherited, inherited.upper())
+            else:
+                resolution = 'NATIVE 1068X600' if inherited == 'native' else inherited.upper()
         fps = menu.fps if menu.fps_changed else getattr(menu, 'inherited_fps', False)
         # Even the longest row, '> RESOLUTION: NATIVE 1068X600', fits the
         # 548-pixel text area at the existing 3x font scale (501 pixels).

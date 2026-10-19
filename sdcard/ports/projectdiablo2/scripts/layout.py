@@ -39,7 +39,14 @@ SGD2_1024_PATCHES = (
     (0xc6ab, bytes.fromhex('2c040000'), bytes.fromhex('00040000')),
     (0xc6b5, bytes.fromhex('58020000'), bytes.fromhex('00030000')),
 )
-GAME_RESOLUTIONS = ('800x600', '1024x768', 'native')
+SGD2_640_SHA256 = 'b582f3018b75ff1010ce811924f146d7bd8b67b5693c2f338f782695b1b14cec'
+SGD2_640_PATCHES = (
+    (0x3ca1, bytes.fromhex('58020000'), bytes.fromhex('e0010000')),
+    (0x3caa, bytes.fromhex('2c040000'), bytes.fromhex('80020000')),
+    (0xc6ab, bytes.fromhex('2c040000'), bytes.fromhex('80020000')),
+    (0xc6b5, bytes.fromhex('58020000'), bytes.fromhex('e0010000')),
+)
+GAME_RESOLUTIONS = ('640x480', '800x600', '1024x768', 'native')
 DISPLAY_KEYS = {
     'width': '640', 'height': '480', 'fullscreen': 'true', 'windowed': 'true',
     'maintas': 'true', 'boxing': 'false', 'adjmouse': 'true', 'handlemouse': 'true',
@@ -131,6 +138,11 @@ def sgd2_1024_bytes(content):
     return _sgd2_patch(content, SGD2_1024_PATCHES, SGD2_1024_SHA256)
 
 
+def sgd2_640_bytes(content):
+    """Pinned 640x480 vector and parser derivative, including both heights."""
+    return _sgd2_patch(content, SGD2_640_PATCHES, SGD2_640_SHA256)
+
+
 def _sgd2_patch(content, patches, expected):
     if len(content) != SGD2_SOURCE_SIZE or hashlib.sha256(content).hexdigest() != SGD2_SOURCE_SHA256:
         raise LayoutError('unsupported_runtime')
@@ -165,6 +177,10 @@ def sgd2_1024_file(data, state):
     return _sgd2_file(data, state, '1024x768', sgd2_1024_bytes, SGD2_1024_SHA256)
 
 
+def sgd2_640_file(data, state):
+    return _sgd2_file(data, state, '640x480', sgd2_640_bytes, SGD2_640_SHA256)
+
+
 def _sgd2_file(data, state, resolution, patch, expected):
     """Publish a verified local derivative, keeping the original byte-for-byte."""
     directory = pathlib.Path(data) / 'ProjectD2'
@@ -186,6 +202,48 @@ def _sgd2_file(data, state, resolution, patch, expected):
         checked_dir(cache)
         atomic_bytes(destination, incoming)
         _sgd2_bytes(destination, expected)
+    return destination
+
+
+def native_cast_file(data, state):
+    """Cache a pinned local controller fix; never patch the imported DLL."""
+    try:
+        import native_cast
+    except ImportError:
+        raise LayoutError('unsupported_runtime') from None
+
+    directory = pathlib.Path(data) / 'ProjectD2'
+    no_links(directory)
+    sources = [p for p in directory.iterdir() if p.name.lower() == 'projectdiablo.dll']
+    if len(sources) != 1:
+        raise LayoutError('unsupported_runtime')
+
+    def verified(path, size, expected):
+        path = regular(path)
+        if path.stat().st_size != size:
+            raise LayoutError('unsupported_runtime')
+        with path.open('rb') as stream:
+            content = stream.read(size + 1)
+        if len(content) != size or hashlib.sha256(content).hexdigest() != expected:
+            raise LayoutError('unsupported_runtime')
+        return content
+
+    source = verified(sources[0], native_cast.SOURCE_SIZE, native_cast.SOURCE_SHA256)
+    try:
+        incoming = native_cast.native_cast_bytes(source)
+    except ValueError:
+        raise LayoutError('unsupported_runtime') from None
+    cache = pathlib.Path(state) / 'compat/pd2-native-cast-640-v1'
+    destination = cache / 'ProjectDiablo.dll'
+    pending = destination.with_name(destination.name + '.new')
+    no_links(destination)
+    no_links(pending)
+    if pending.exists():
+        raise LayoutError('invalid_layout')
+    if not destination.exists():
+        checked_dir(cache)
+        atomic_bytes(destination, incoming)
+    verified(destination, native_cast.TARGET_SIZE, native_cast.TARGET_SHA256)
     return destination
 
 
@@ -607,13 +665,14 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     settings = config / 'settings.json'
     no_links(settings)
     if not settings.exists():
-        atomic_json(settings, {'schema_version': 1, 'profile': 'gdi', 'swap_ab': False, 'game_resolution': '800x600'})
+        atomic_json(settings, {'schema_version': 1, 'profile': 'gdi', 'swap_ab': False, 'game_resolution': '640x480'})
     opts = read_object(settings)
     if opts.get('schema_version') != 1 or opts.get('profile') not in ('gdi', 'opengl') or type(opts.get('swap_ab')) is not bool:
         raise LayoutError('invalid_profile')
     # Existing prefixes keep their file byte-identical; a missing key takes the
-    # experimental 4:3 default. Validate persisted settings even with an override.
-    resolution = opts.get('game_resolution', '800x600')
+    # LCD-native default. Preserve explicit choices, including 800x600.
+    # Validate persisted settings even with an override.
+    resolution = opts.get('game_resolution', '640x480')
     if type(resolution) is not str or resolution not in GAME_RESOLUTIONS:
         raise LayoutError('invalid_profile')
     if game_resolution is not None:
@@ -643,21 +702,30 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     # Preflight the pinned 4:3 copy before any work mutation; native bypasses
     # it so a broken or missing resolution DLL still falls back to the asset.
     sgd2_cache = None
-    if resolution == '800x600':
+    if resolution == '640x480':
+        sgd2_cache = sgd2_640_file(data, state)
+    elif resolution == '800x600':
         sgd2_cache = sgd2_800_file(data, state)
     elif resolution == '1024x768':
         sgd2_cache = sgd2_1024_file(data, state)
+    cast_cache = (native_cast_file(data, state)
+                  if resolution == '640x480' and input_mode == 'native' else None)
     for directory, destination in ((data, work), (data / 'ProjectD2', work / 'ProjectD2')):
         for source in directory.iterdir():
             no_links(source)
             if source.is_dir():
                 continue
-            if destination == work / 'ProjectD2' and source.name in WORK_CONFIGS:
+            if destination == work / 'ProjectD2' and (
+                    source.name in WORK_CONFIGS or source.name.lower() in ('bncache.dat', 'bnetlog.txt')):
+                # Imported engine cache/logs are not immutable assets. Wine must
+                # create fresh files in RAM; persistent mode uses game-state below.
                 continue
             regular(source)
             target = source
             if destination == work / 'ProjectD2' and source.name.lower() == 'sgd2freeres.dll' and sgd2_cache is not None:
                 target = sgd2_cache
+            elif destination == work / 'ProjectD2' and source.name.lower() == 'projectdiablo.dll' and cast_cache is not None:
+                target = cast_cache
             elif destination == work / 'ProjectD2' and source.name.lower() == 'ddraw.dll':
                 target = wrapper
             link(destination / source.name, target)

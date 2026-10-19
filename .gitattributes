@@ -1,0 +1,3 @@
+# Keep the Linux deployment payload usable after checkouts on Windows.
+# Auto-detect text so DLLs, executables and other binary assets stay untouched.
+sdcard/** text=auto eol=lf

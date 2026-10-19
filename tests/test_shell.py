@@ -655,11 +655,22 @@ while True:time.sleep(.1)
     result,_=self.execute(value);self.assertEqual(result.returncode,1,result.stdout)
     self.assertNotIn('private',result.stdout)
     self.assertFalse(any(pathlib.Path(v['args'][0]).name=='wine' for v in self.records()))
+ def test_missing_or_empty_resolution_defaults_to_640x480(self):
+  for resolution in (None, ''):
+   with self.subTest(resolution=resolution):
+    self.tearDown(); self.setUp()
+    self.env.pop('PD2_GAME_RESOLUTION', None)
+    result,_=self.execute({} if resolution is None else {'PD2_GAME_RESOLUTION':resolution})
+    self.assertEqual(result.returncode,0,result.stdout)
+    self.assertIn('"check":"render_resolution","status":"640x480"',result.stdout)
  def test_alternative_resolution_preserves_native_desktop(self):
-  result,_=self.execute({'PD2_GAME_RESOLUTION':'1024x768'});self.assertEqual(result.returncode,0,result.stdout)
-  game=next(v for v in self.records() if any(a.endswith('Game.exe') for a in v['args']))
-  self.assertIn('/desktop=PD2Native,640x480',game['args'])
-  self.assertIn('"check":"render_resolution","status":"1024x768"',result.stdout)
+  for resolution in ('1024x768', '640x480', '800x600'):
+   with self.subTest(resolution=resolution):
+    self.tearDown(); self.setUp()
+    result,_=self.execute({'PD2_GAME_RESOLUTION':resolution});self.assertEqual(result.returncode,0,result.stdout)
+    game=next(v for v in self.records() if any(a.endswith('Game.exe') for a in v['args']))
+    self.assertIn('/desktop=PD2Native,640x480',game['args'])
+    self.assertIn(f'"check":"render_resolution","status":"{resolution}"',result.stdout)
  def test_numbered_tuning_reaches_wine_after_audio_refresh(self):
   self.performance_env()
   for mode,profile in [('baseline','gdi'),('forward512','gdi'),('callret','gdi'),('fastflags','gdi'),('gl-kms','opengl'),('gl-auto','opengl')]:
@@ -817,14 +828,17 @@ exec python3 -c 'import json,os,sys; print(json.dumps(dict(env={k:os.environ.get
    launcher=self.base/('Project Diablo 2 - Performance '+label+'.sh')
    launcher.write_text((ROOT/'sdcard/ports'/launcher.name).read_text())
    for bigblock in (None,'1'):
-    with self.subTest(profile=profile,bigblock=bigblock):
-     env=dict(self.env);env.update({'PD2_PERFORMANCE':'off','PD2_GAME_RESOLUTION':'1024x768','PD2_FPS':'1'})
-     if bigblock is not None:env['PD2_BIGBLOCK']=bigblock
-     result=subprocess.run(['bash',str(launcher),'argument with spaces','--test'],env=env,capture_output=True,text=True,timeout=5)
-     self.assertEqual(result.returncode,0,result.stderr)
-     record=json.loads(result.stdout)
-     self.assertEqual(record['env'],{'PD2_PERFORMANCE':profile,'PD2_BIGBLOCK':bigblock or '2','PD2_GAME_RESOLUTION':'800x600','PD2_FPS':'1' if profile=='opengl' else '0'})
-     self.assertEqual(record['args'],['argument with spaces','--test'])
+    for resolution in (None, '', '800x600', '1024x768'):
+     with self.subTest(profile=profile,bigblock=bigblock,resolution=resolution):
+      env=dict(self.env);env.update({'PD2_PERFORMANCE':'off','PD2_FPS':'1'})
+      env.pop('PD2_GAME_RESOLUTION',None)
+      if resolution is not None:env['PD2_GAME_RESOLUTION']=resolution
+      if bigblock is not None:env['PD2_BIGBLOCK']=bigblock
+      result=subprocess.run(['bash',str(launcher),'argument with spaces','--test'],env=env,capture_output=True,text=True,timeout=5)
+      self.assertEqual(result.returncode,0,result.stderr)
+      record=json.loads(result.stdout)
+      self.assertEqual(record['env'],{'PD2_PERFORMANCE':profile,'PD2_BIGBLOCK':bigblock or '2','PD2_GAME_RESOLUTION':resolution or '640x480','PD2_FPS':'1' if profile=='opengl' else '0'})
+      self.assertEqual(record['args'],['argument with spaces','--test'])
   self.assertFalse(self.calls.exists())
  def test_audio_variants_matrix_and_sdl_driver(self):
   cases = (

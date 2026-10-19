@@ -148,7 +148,7 @@ class AudioResultTests(unittest.TestCase):
                   'audio_diagnostics': ('capture_v2', 'enum_v3', 'errno_v4', 'native_v5', 'syscalls_v6', 'legacy_v7'),
                   'audio_library': ('legacy_armhf', 'unavailable'),
                   'audio_test': ('invalid',), 'fps_counter': ('hotkey', 'renderer', 'disabled', 'unavailable'),
-                  'render_resolution': ('800x600', '1024x768', 'native')}
+                  'render_resolution': ('640x480', '800x600', '1024x768', 'native')}
         for check, statuses in states.items():
             for status in statuses:
                 value = dict(event='session_probe', phase='launch', check=check, status=status)

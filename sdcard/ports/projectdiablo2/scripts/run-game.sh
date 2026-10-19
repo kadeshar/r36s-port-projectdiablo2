@@ -367,9 +367,9 @@ case "$audio_variant" in
   fi
   ;;
 esac
-resolution="${PD2_GAME_RESOLUTION:-800x600}"
+resolution="${PD2_GAME_RESOLUTION:-640x480}"
 [[ "$fps_enabled" == 0 || "$fps_enabled" == 1 ]] || { error invalid_profile 1; exit 1; }
-case "$resolution" in 800x600|1024x768|native) ;; *) error invalid_profile 1; exit 1;; esac
+case "$resolution" in 640x480|800x600|1024x768|native) ;; *) error invalid_profile 1; exit 1;; esac
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"render_resolution","status":"%s"}\n' "$resolution"
 [[ "$input_mode" == mapper || "$input_mode" == native ]] || { error invalid_profile 1; exit 1; }
 [[ "$controller_test" == 0 || ( "$controller_test" == 1 && "$input_mode" == native ) ]] || { error invalid_profile 1; exit 1; }

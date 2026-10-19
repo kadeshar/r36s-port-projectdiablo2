@@ -44,6 +44,8 @@ def sgd2_fixture():
     content[:2] = b'MZ'
     for offset in (0x3caa, 0xc6ab):
         content[offset:offset + 4] = bytes.fromhex('2c040000')
+    for offset in (0x3ca1, 0xc6b5):
+        content[offset:offset + 4] = bytes.fromhex('58020000')
     return bytes(content)
 
 
@@ -84,6 +86,7 @@ class LayoutTests(unittest.TestCase):
         self.state = self.root / 'state'
         self.data = self.port / 'gamedata/Diablo II'
         self.links = {}
+        self.link_calls = []
         self.port.mkdir()
         self.state.mkdir()
         for name in ('d2data.mpq', 'd2exp.mpq', 'd2char.mpq', 'ProjectD2/pd2data.mpq', 'ProjectD2/pd2monchars.mpq'):
@@ -118,6 +121,10 @@ class LayoutTests(unittest.TestCase):
         mock.patch.object(layout, 'CNC_DDRAW_SHA256', self.wrapper_hash).start()
         mock.patch.object(layout, 'SGD2_SOURCE_SHA256', hashlib.sha256(self.sgd2_content).hexdigest()).start()
         mock.patch.object(layout, 'SGD2_800_SHA256', hashlib.sha256(sgd2_target(self.sgd2_content)).hexdigest()).start()
+        target640 = bytearray(self.sgd2_content)
+        for offset, previous, replacement in layout.SGD2_640_PATCHES:
+            target640[offset:offset + len(previous)] = replacement
+        mock.patch.object(layout, 'SGD2_640_SHA256', hashlib.sha256(target640).hexdigest()).start()
         runtime = self.port / 'runtime'
         runtime.mkdir()
         with tarfile.open(runtime / 'wine-8.0-x86.tar.xz', 'w:xz') as archive:
@@ -139,6 +146,7 @@ class LayoutTests(unittest.TestCase):
         def fake_link(path, target):
             layout.no_links(path.parent)
             self.links[str(path)] = str(target)
+            self.link_calls.append((path, target))
         def fake_probe(path, target, **kwargs):
             path.touch(exist_ok=False)
         with mock.patch.object(layout, 'link', side_effect=fake_link), mock.patch.object(Path, 'symlink_to', new=fake_probe), mock.patch.object(layout.shutil, 'disk_usage', return_value=mock.Mock(free=2 * 1024 ** 3)):
@@ -160,7 +168,7 @@ class LayoutTests(unittest.TestCase):
                 content = (self.state / 'game/ProjectD2/ddraw.ini').read_text()
                 self.assertIn('renderer=' + backend, content)
                 self.assertIn('shader=Nearest neighbor', content)
-                self.assertIn('inject_resolution=800x600', content)
+                self.assertIn('inject_resolution=640x480', content)
                 self.assertIn('maxgameticks=-1', content)
                 self.assertEqual(layout.sync_config(self.port, self.state), 0)
                 self.assertEqual(before, digest_tree(self.port / 'config'))
@@ -204,6 +212,57 @@ class LayoutTests(unittest.TestCase):
         self.assertNotIn(str(self.state / 'game/ProjectD2/BnetLog.txt'), self.links)
         self.assertNotIn(str(self.state / 'game/ProjectD2/bncache.dat'), self.links)
         self.assertEqual(self.original_data, digest_tree(self.data))
+
+    def check_imported_engine_files_are_not_linked(self, volatile):
+        names = ('bncache.dat', 'BnetLog.txt', 'BnCaChE.DaT', 'bNeTlOg.TxT')
+        for index, name in enumerate(names):
+            with self.subTest(volatile=volatile, name=name):
+                # Separate imports avoid case-only duplicate names on Windows.
+                data = self.root / ('engine-import-' + str(index))
+                shutil.copytree(self.data, data)
+                content = b'imported engine output must stay private\x00\xff'
+                imported = write(data, 'ProjectD2/' + name, content)
+                before = digest_tree(data)
+                tree = sorted(path.relative_to(data).as_posix() for path in data.rglob('*'))
+                self.links.clear()
+                self.link_calls.clear()
+                result = self.prepare(volatile=volatile, data_override=data)
+                self.assertEqual(result['volatile_work'], volatile)
+                work = Path(result['work']) / 'ProjectD2'
+                self.assertFalse(any(target == imported for _, target in self.link_calls))
+                self.assertFalse(imported.is_symlink())
+                self.assertTrue(imported.is_file())
+                self.assertEqual(imported.read_bytes(), content)
+                self.assertEqual(before, digest_tree(data))
+                self.assertEqual(tree, sorted(path.relative_to(data).as_posix() for path in data.rglob('*')))
+                mutable = self.port / 'config/game-state'
+                for canonical in ('bncache.dat', 'BnetLog.txt'):
+                    destination = work / canonical
+                    if volatile:
+                        self.assertFalse(destination.exists())
+                        self.assertNotIn(str(destination), self.links)
+                    else:
+                        active = mutable / canonical
+                        self.assertEqual(self.links[str(destination)], str(active))
+                        self.assertTrue(active.is_file())
+                        self.assertFalse(active.is_symlink())
+                        self.assertEqual(active.read_bytes(), b'')
+                if volatile:
+                    self.assertFalse(mutable.exists())
+                    self.assertFalse((work / name).exists())
+                    self.assertNotIn(str(work / name), self.links)
+                elif name not in ('bncache.dat', 'BnetLog.txt'):
+                    self.assertNotIn(str(work / name), self.links)
+                for path in (self.port / 'config').rglob('*'):
+                    if path.is_file():
+                        self.assertNotIn(content, path.read_bytes())
+                self.assertEqual(self.original_data, digest_tree(self.data))
+
+    def test_volatile_ignores_imported_engine_cache_and_log_case_insensitively(self):
+        self.check_imported_engine_files_are_not_linked(volatile=True)
+
+    def test_nonvolatile_links_empty_game_state_not_imported_engine_files(self):
+        self.check_imported_engine_files_are_not_linked(volatile=False)
 
     def test_repeated_updates_preserve_user_configs_and_runtime(self):
         self.prepare()

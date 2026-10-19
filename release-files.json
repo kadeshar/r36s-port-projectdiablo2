@@ -65,6 +65,7 @@
   "projectdiablo2/compat/cnc-ddraw/manifest.json",
   "projectdiablo2/scripts/safe_log.py",
   "projectdiablo2/scripts/layout.py",
+  "projectdiablo2/scripts/native_cast.py",
   "projectdiablo2/scripts/session_probe.py",
   "projectdiablo2/scripts/metrics.py",
   "projectdiablo2/scripts/run-game.sh",

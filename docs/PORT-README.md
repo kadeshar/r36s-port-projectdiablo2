@@ -1,5 +1,23 @@
 # Project Diablo 2 on R36S / dArkOSen — Version 0.1.18
 
+## Native 640×480 and controller casting
+
+Fresh settings, settings without `game_resolution`, and the Performance entries now default to **640×480 internally**, matching the LCD. Explicit saved resolutions and environment overrides remain respected; `native` still means the original **1068×600**, not LCD-native rendering. The older 800×600-only notes below describe earlier versions.
+
+The R2/A failure at 640×480 was a stale mouse coordinate, not missing trigger input: the native controller could leave game `mouseY=547`. The original attack/skill sender rejects `mouseY > renderHeight - 49`: 547 passes at 600 pixels but fails at 480. On the R36S, changing only the temporary Y coordinate to 240 restored Charged Bolt without movement or a selected monster. The previous coordinate was restored after that diagnostic test.
+
+The [local builder](<../sdcard/ports/projectdiablo2/scripts/native_cast.py>) redirects two native world-action calls through a 79-byte, register/flag-preserving wrapper. Only native controller mode at actual 640×480 changes Y above 431 to 240; Y=431, mouse mode and other resolutions remain unchanged. Original HUD rejection, skill validation and dispatch remain active. No input remapping, render scaling workaround, resident probe or unsafe dynarec flag is introduced.
+
+[Layout preparation](<../sdcard/ports/projectdiablo2/scripts/layout.py>) creates the derivative locally in the user's compatibility cache, only for native input at 640×480. Source size/SHA-256, exact instruction preimages, PE structure and output size/SHA-256 must all match. Unknown sources or corrupted caches fail closed. Imported game DLLs, saves and user configurations are never patched; the payload contains Python source, not proprietary DLLs. Selecting 800×600, 1024×768 or `native` uses the original ProjectDiablo DLL.
+
+Deploy the updated [scripts directory](<../sdcard/ports/projectdiablo2/scripts>) and, if used, the [Performance GDI entry](<../sdcard/ports/Project Diablo 2 - Performance GDI.sh>) / [Performance OpenGL entry](<../sdcard/ports/Project Diablo 2 - Performance OpenGL.sh>) directly from the payload. Do not overwrite user config, game data or saves. After updating: test R2 and A outside town, enter/leave inventory and stash, recheck casting, verify the town restriction, then compare 800×600 and exit normally. The causal cursor test passed on hardware. After manual deployment, the user also confirmed R2 outside town without movement/target, ordinary A attack, and R2 after opening/closing inventory on the R36S. Stash, town restriction and the 800×600 comparison remain recommended additional checks.
+
+### Startup failure with imported engine cache
+
+A startup returning to Ports with `invalid_layout` immediately after `volatile_work_prepare` was reproduced on the R36S: the imported game directory contained `bncache.dat`. Layout preparation linked it as an immutable asset, then correctly rejected that link in its volatile-log safety check. Imported engine cache/log names are now skipped case-insensitively in ProjectD2; volatile sessions let Wine create fresh files in RAM, while nonvolatile preparation retains the separate launcher-managed game-state links. The original imported files and the stale-link rejection remain untouched. No cache deletion, prefix reset or safety-check bypass is needed.
+
+The SSH repair backed up and replaced only the layout script. Isolated on-device preflight passed with the pinned native-cast DLL, unchanged persistent configuration and unchanged imported cache. The subsequent normal session reached `volatile_work_ready`, reported `640x480` and native movement, and entered the game; the user confirmed R2 worked. Thirty-nine layout tests passed, including canonical/mixed-case imported cache/log regressions in both work modes.
+
 ## PortMaster adaptation — isolated GLX trial
 
 Deploy directly from `sdcard/ports/`: copy the launcher scripts and updated `projectdiablo2/` payload into the existing Ports directory. **Do not build an update ZIP, delete game data, reset the prefix, or overwrite user configurations.**

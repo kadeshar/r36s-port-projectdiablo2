@@ -8,5 +8,5 @@ export PD2_BIGBLOCK="${PD2_BIGBLOCK:-2}"
 # Selecting this Ports entry is the explicit request to start the game.
 export PD2_START_MENU=0
 # No menu in this profile: set PD2_FPS=1 here (or in the environment) to measure.
-export PD2_GAME_RESOLUTION=800x600 PD2_FPS="${PD2_FPS:-0}"
+export PD2_GAME_RESOLUTION="${PD2_GAME_RESOLUTION:-640x480}" PD2_FPS="${PD2_FPS:-0}"
 exec bash "$BASE/Project Diablo 2.sh" "$@"

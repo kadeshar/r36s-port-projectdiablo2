@@ -17,7 +17,7 @@ import menu_x11 as x11
 
 FONT = {' ': '00000000000000', '>': '08040201020408',
         'A': '0E11111F111111'}
-LABELS = ('800X600', 'NATIVE 1068X600', '800X600', '1024X768')
+LABELS = ('LCD 640X480', 'LCD 640X480', '800X600', '1024X768', 'PD2 1068X600')
 
 
 def setup_body():
@@ -208,10 +208,18 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(server.requests[-1][0], 43)
         with self.assertRaises(ValueError):
             screen._rectangles([(639, 0, 3, 3)], (0, 0, 0), 1e20)
-        for resolution in range(4):
+        for resolution in range(5):
             menu = Menu()
             menu.resolution = resolution
             screen.draw(menu)
+
+    def test_missing_inherited_resolution_draws_lcd_default(self):
+        screen, _ = self.screen()
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(Menu())
+        labels = [call.args[2] for call in text.call_args_list]
+        self.assertIn('  RESOLUTION: LCD 640X480', labels)
+        self.assertNotIn('  RESOLUTION: 800X600', labels)
 
     def test_current_four_row_labels_and_selection_bounds(self):
         import start_menu
@@ -237,17 +245,17 @@ class ProtocolTests(unittest.TestCase):
     def test_resolved_labels_and_all_rows_fit_inside_highlight(self):
         import start_menu
         screen, _ = self.screen()
-        for inherited in ('800x600', '1024x768', 'native'):
+        for inherited in ('640x480', '800x600', '1024x768', 'native'):
             for fps in ('0', '1'):
                 with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': inherited, 'PD2_FPS': fps}):
                     menu = start_menu.Menu()
                 with mock.patch.object(screen, '_text') as text:
                     screen.draw(menu)
                 labels = [call.args[2] for call in text.call_args_list]
-                expected = 'NATIVE 1068X600' if inherited == 'native' else inherited.upper()
+                expected = 'PD2 1068X600' if inherited == 'native' else ('LCD 640X480' if inherited == '640x480' else inherited.upper())
                 self.assertIn('  RESOLUTION: ' + expected, labels)
                 self.assertIn('  FPS COUNTER: ' + ('ON' if fps == '1' else 'OFF'), labels)
-                for resolution in range(4):
+                for resolution in range(len(screen.labels)):
                     menu.resolution = resolution
                     with mock.patch.object(screen, '_text') as text:
                         screen.draw(menu)

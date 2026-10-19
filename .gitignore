@@ -24,3 +24,6 @@ Thumbs.db
 desktop.ini
 /.vs
 /.vs/slnx.sqlite
+/.analysis-recovery
+/.analysis-tools
+/.acl-recovery

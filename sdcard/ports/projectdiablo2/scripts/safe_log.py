@@ -187,7 +187,7 @@ def validate_event(value, allow_summary=False):
             'xinput_axes': ('changed', 'unchanged', 'unavailable'),
             'controller_mapper': ('ready', 'missing', 'denied', 'invalid', 'fallback'),
             'mapper_layout': ('standard',),
-            'render_resolution': ('800x600', '1024x768', 'native'),
+            'render_resolution': ('640x480', '800x600', '1024x768', 'native'),
             'performance_profile': ('off', 'gdi', 'opengl'),
             'renderer_variant': ('stock', 'gles2'),
             'box_variant': ('stock', 'a35'),
