@@ -421,7 +421,7 @@ def migrate_display(config):
             raise LayoutError('invalid_layout')
         return
     changes = []
-    for name in ('ddraw-gdi.ini', 'ddraw-opengl.ini', 'SGD2FreeResolution.json'):
+    for name in ('ddraw-gdi.ini', 'SGD2FreeResolution.json'):
         active = config / name
         previous = config_content(active, name in JSON_CONFIGS)
         if name.endswith('.ini'):
@@ -669,6 +669,8 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     opts = read_object(settings)
     if opts.get('schema_version') != 1 or opts.get('profile') not in ('gdi', 'opengl') or type(opts.get('swap_ab')) is not bool:
         raise LayoutError('invalid_profile')
+    # Legacy OpenGL settings fall back to GDI in memory, never rewrite user settings.
+    opts['profile'] = 'gdi'
     # Existing prefixes keep their file byte-identical; a missing key takes the
     # LCD-native default. Preserve explicit choices, including 800x600.
     # Validate persisted settings even with an override.
@@ -677,13 +679,7 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
         raise LayoutError('invalid_profile')
     if game_resolution is not None:
         resolution = game_resolution
-    performance = os.environ.get('PD2_PERFORMANCE', 'off')
-    if performance not in ('off', 'gdi', 'opengl'):
-        raise LayoutError('invalid_profile')
-    if performance != 'off':
-        # Session-only backend: Weston/Crusty and cnc-ddraw must agree.
-        opts['profile'] = performance
-    active_names = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw-gdi.ini', 'ddraw-opengl.ini')
+    active_names = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw-gdi.ini')
     for name in active_names:
         active = config / name
         no_links(active)
@@ -741,12 +737,12 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
             content = config_content(active, name in JSON_CONFIGS)
             if name == 'ProjectDiablo.json' and input_mode is not None:
                 content = input_config(content, input_mode)
-            if name == 'ddraw.ini' and performance != 'off':
+            if name == 'ddraw.ini':
                 # Use a clean known template; user game-specific INI sections
-                # can override global keys. Never sync this experiment to config.
-                content = config_content(port / 'defaults' / ('ddraw-' + performance + '.ini'), False)
+                # can override global keys. Never sync this session template to config.
+                content = config_content(port / 'defaults/ddraw-gdi.ini', False)
                 content = display_ini(content, {
-                    'renderer': performance, 'shader': 'Nearest neighbor',
+                    'renderer': 'gdi', 'shader': 'Nearest neighbor',
                     'maxfps': '30', 'minfps': '0', 'vsync': 'false',
                     'singlecpu': 'false', 'maxgameticks': '-1',
                     'inject_resolution': resolution if resolution != 'native' else '1068x600',
@@ -779,8 +775,6 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     elif z.exists():
         raise LayoutError('invalid_layout')
     result = {'wine': str(wine), 'box': str(box), 'prefix': str(prefix), 'work': str(work), 'profile': opts['profile'], 'swap_ab': opts['swap_ab'], 'game_resolution': resolution, 'volatile_work': bool(volatile_work)}
-    if performance != 'off':
-        result['performance'] = performance
     if input_mode is not None:
         result['input_mode'] = input_mode
     atomic_json(state / 'session-layout.json', result)
@@ -795,15 +789,12 @@ def sync_config(port, state):
     no_links(state)
     session = read_object(state / 'session-layout.json')
     work = state / 'game'
-    if session.get('work') != str(work) or session.get('profile') not in ('gdi', 'opengl') or session.get('volatile_work') is not True:
+    if session.get('work') != str(work) or session.get('profile') != 'gdi' or session.get('volatile_work') is not True:
         raise LayoutError('invalid_layout')
     no_links(work)
     config = port / 'config'
     no_links(config)
     if not config.is_dir():
-        raise LayoutError('invalid_layout')
-    performance = session.get('performance', 'off')
-    if performance not in ('off', 'gdi', 'opengl'):
         raise LayoutError('invalid_layout')
     changes = []
     # Complete preflight before touching any persistent config or backup.
@@ -812,8 +803,8 @@ def sync_config(port, state):
         active_name = 'ddraw-' + session['profile'] + '.ini' if name == 'ddraw.ini' else name
         active = config / active_name
         previous = config_content(active, name in JSON_CONFIGS)
-        if name == 'ddraw.ini' and performance != 'off':
-            continue  # Never persist the session-only performance template.
+        if name == 'ddraw.ini':
+            continue  # Never persist the session-only GDI template.
         if name == 'ProjectDiablo.json' and session.get('input_mode') in ('native', 'mapper'):
             incoming = restore_input_config(incoming, previous)
         if incoming != previous:

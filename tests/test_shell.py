@@ -2,6 +2,22 @@
 import json, os, pathlib, signal, subprocess, sys, tempfile, time, unittest
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS=ROOT/'sdcard/ports/projectdiablo2/scripts'
+class ProductionRuntimeTests(unittest.TestCase):
+ def test_only_production_gdi_and_drm_paths_remain(self):
+  game=(SCRIPTS/'run-game.sh').read_text()
+  compositor=(SCRIPTS/'weston-session.sh').read_text()
+  for obsolete in ('PD2_TUNING','PD2_PERFORMANCE','PD2_BIGBLOCK','PD2_RENDERER_VARIANT','PD2_BOX_VARIANT','gles2_renderer.py','box_variant.py','tuning.sh'):
+   self.assertNotIn(obsolete,game)
+   self.assertNotIn(obsolete,compositor)
+  self.assertIn('export BOX86_DYNAREC=1 BOX86_DYNAREC_BIGBLOCK=2',game)
+  self.assertIn('BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET=0',game)
+  self.assertIn('box_env+=(BOX86_DYNAREC_BIGBLOCK=1 BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_CALLRET=0)',game)
+  self.assertIn('weston_args=(-B drm --drm-device card0 --renderer=gl)',compositor)
+  self.assertIn('graphics/crusty_gbm/libcrusty.so',compositor)
+  self.assertNotIn('headless',compositor)
+  self.assertNotIn('--renderer=noop',compositor)
+  self.assertIn('SDL_VIDEODRIVER=x11',game)
+
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Native Linux needed for process groups')
 class ShellTests(unittest.TestCase):
  def setUp(self):
@@ -35,13 +51,12 @@ v=dict(event='session_probe',phase='launch',check='audio_native_default',status=
 if code:v['alsa_rc']=code
 print('PD2_EVENT '+json.dumps(v,separators=(',',':')))
 ''')
-  for helper in ('tuning.sh','winebus_config.py','audio_dsound.py','xinput_result.py','audio_config.py','audio_result.py','fps_counter.py','fps_renderer.py'):
+  for helper in ('winebus_config.py','audio_dsound.py','xinput_result.py','audio_config.py','audio_result.py','fps_counter.py','fps_renderer.py'):
    code=(SCRIPTS/helper).read_text()
    if helper=='audio_config.py':
     route_call=('route(args.run, proc_root=Path(%r), snd_root=Path(%r), alsa_base=Path(%r), device_status=lambda p: "ready", profile=args.profile).items()' % (str(self.mock_proc),str(self.mock_snd),str(self.base/'mock-alsa.conf')))
     code=code.replace('route(args.run, profile=args.profile).items()', route_call)
    (self.port/'scripts'/helper).write_text(code)
-  (self.port/'scripts/client_graphics_probe.py').write_text('# synthetic-only probe\n')
   (self.port/'scripts/metrics.py').write_text('# synthetic-only metrics\n')
   (self.port/'scripts/audio_metrics.py').write_text('''import json,os,pathlib,sys
 args=sys.argv[1:]
@@ -671,27 +686,6 @@ while True:time.sleep(.1)
     game=next(v for v in self.records() if any(a.endswith('Game.exe') for a in v['args']))
     self.assertIn('/desktop=PD2Native,640x480',game['args'])
     self.assertIn(f'"check":"render_resolution","status":"{resolution}"',result.stdout)
- def test_numbered_tuning_reaches_wine_after_audio_refresh(self):
-  self.performance_env()
-  for mode,profile in [('baseline','gdi'),('forward512','gdi'),('callret','gdi'),('fastflags','gdi'),('gl-kms','opengl'),('gl-auto','opengl')]:
-   with self.subTest(mode=mode):
-    # Each launch gets fresh volatile work, just like the real tmpfs session.
-    self.tearDown(); self.setUp(); self.performance_env()
-    self.calls.unlink(missing_ok=True)
-    result,_=self.execute({'PD2_TUNING':mode,'PD2_PERFORMANCE':profile,'PD2_PROFILE':profile,'PD2_BIGBLOCK':'1','PD2_AUDIO_TEST':'1','PD2_AUDIO_PROBE':'0'})
-    self.assertEqual(result.returncode,0,result.stdout)
-    calls=self.records();self.assertTrue(calls)
-    game=next(v for v in calls if any(a.endswith('Game.exe') for a in v['args']))
-    self.assertIn('.alsa-legacy-armhf',game['libraries'])
-    for call in calls:
-     if profile=='gdi':
-      is_game=any(a.endswith('Game.exe') for a in call['args'])
-      self.assertEqual(call['tuning']['BOX86_DYNAREC_FORWARD'],('512' if mode=='forward512' else '128') if is_game else None)
-      self.assertEqual(call['tuning']['BOX86_DYNAREC_CALLRET'],'1' if mode=='callret' and is_game else '0')
-      self.assertEqual(call['dynarec']['BOX86_DYNAREC_SAFEFLAGS'],'0' if mode=='fastflags' and is_game else '1')
-     else:
-      self.assertEqual(call['tuning']['SDL_VIDEODRIVER'],'kmsdrm' if mode=='gl-kms' else None)
-    self.assertIn('"check":"tuning_profile","status":"'+mode+'"',result.stdout)
  def test_diagnostic_presentation_selects_light_not_hud(self):
   (self.port/'scripts/present_renderer.py').write_text('import pathlib,os\n(pathlib.Path(os.environ["PD2_WORK"])/"light-selected").touch()\n')
   (self.port/'scripts/presentation_watch.py').write_text('# synthetic-only watcher\n')
@@ -734,52 +728,32 @@ while True:time.sleep(.1)
      self.assertIn('C:\\Diablo II\\ProjectD2',probe['args'])
     self.assertTrue(any(v['args'][0].endswith('wineserver') and '-w' in v['args'] for v in self.records()))
  def test_diagnostic_setup_timeout_has_precise_stage(self):
-  result,_=self.execute({'MOCK_QUIESCE_TIMEOUT':'1','PD2_PERFORMANCE':'gdi','PD2_TUNING':'callret'})
+  result,_=self.execute({'MOCK_QUIESCE_TIMEOUT':'1'})
   self.assertNotEqual(result.returncode,0)
   self.assertIn('"stage":"prefix_quiesce","status":"failed"',result.stdout)
   self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args']) for v in self.records()))
   self.assertTrue(all(v['tuning']['BOX86_DYNAREC_CALLRET']=='0' for v in self.records()))
- def performance_env(self):
+ def production_env(self):
   # The real launcher clears inherited Box86 overrides before run-game.sh.
-  for key in ('PD2_PERFORMANCE','PD2_BIGBLOCK','BOX86_DYNAREC','BOX86_DYNAREC_BIGBLOCK','BOX86_DYNAREC_SAFEFLAGS','BOX86_DYNAREC_STRONGMEM'):
+  for key in ('BOX86_DYNAREC','BOX86_DYNAREC_BIGBLOCK','BOX86_DYNAREC_SAFEFLAGS','BOX86_DYNAREC_STRONGMEM'):
    self.env.pop(key,None)
- def test_performance_profiles_export_dynarec_to_all_wine_calls(self):
-  self.performance_env()
-  for profile in ('gdi','opengl'):
-   for bigblock in ('1','2'):
-    with self.subTest(profile=profile,bigblock=bigblock):
-     self.calls.unlink(missing_ok=True)
-     result,_=self.execute({'PD2_PERFORMANCE':profile,'PD2_PROFILE':profile,'PD2_BIGBLOCK':bigblock,'BOX86_DYNAREC':'0','BOX86_DYNAREC_BIGBLOCK':'0','BOX86_DYNAREC_SAFEFLAGS':'0','BOX86_DYNAREC_STRONGMEM':'1'})
-     self.assertEqual(result.returncode,0,result.stdout)
-     calls=self.records();self.assertTrue(calls)
-     expected={'BOX86_DYNAREC':'1','BOX86_DYNAREC_BIGBLOCK':bigblock,'BOX86_DYNAREC_SAFEFLAGS':'1','BOX86_DYNAREC_STRONGMEM':'0'}
-     for call in calls:
-      scoped=dict(expected)
-      if not any(a.endswith('Game.exe') for a in call['args']):scoped['BOX86_DYNAREC_BIGBLOCK']='1'
-      self.assertEqual(call['dynarec'],scoped,call['args'])
-     games=[v for v in calls if any(a.endswith('Game.exe') for a in v['args'][1:])]
-     self.assertEqual(len(games),1)
-     self.assertIn('/desktop=PD2Native,640x480',games[0]['args']);self.assertEqual(games[0]['args'][-1],'-ddraw')
-     self.assertTrue((self.work/'ProjectD2/ddraw.dll').is_symlink())
-     self.assertFalse(any(any(a.endswith('pd2-fps-hotkey.exe') for a in v['args']) for v in calls))
-     self.assert_dead(self.mapper()['pid'])
- def test_portmaster_glx_runs_stock_game_with_native_kms_consumer(self):
-  self.performance_env()
-  result,_=self.execute({'PD2_PERFORMANCE':'opengl','PD2_PROFILE':'opengl','PD2_TUNING':'crusty_glx_gl4es','PD2_START_MENU':'0','PD2_FPS':'0','PD2_CRUSTY_EGL':'real-egl','PD2_CRUSTY_GLES':'real-gles','PD2_DIAGNOSTIC':'off','BOX86_DYNAREC_SAFEFLAGS':'0','BOX86_DYNAREC_CALLRET':'1'})
+ def test_production_dynarec_reaches_game_and_setup_with_safe_flags(self):
+  self.production_env()
+  result,_=self.execute({'BOX86_DYNAREC':'0','BOX86_DYNAREC_BIGBLOCK':'0','BOX86_DYNAREC_SAFEFLAGS':'0','BOX86_DYNAREC_STRONGMEM':'1','BOX86_DYNAREC_CALLRET':'1'})
   self.assertEqual(result.returncode,0,result.stdout)
-  self.assertIn('"check":"tuning_profile","status":"crusty_glx_gl4es"',result.stdout)
   calls=self.records();self.assertTrue(calls)
-  games=[v for v in calls if any(a.endswith('Game.exe') for a in v['args'])]
-  self.assertEqual(len(games),1)
   for call in calls:
-   self.assertEqual(call['tuning']['SDL_VIDEODRIVER'],'kmsdrm')
-   self.assertEqual(call['tuning']['SDL_VIDEO_EGL_DRIVER'],'real-egl')
+   is_game=any(a.endswith('Game.exe') for a in call['args'])
+   self.assertEqual(call['dynarec'],{'BOX86_DYNAREC':'1','BOX86_DYNAREC_BIGBLOCK':'2' if is_game else '1','BOX86_DYNAREC_SAFEFLAGS':'1','BOX86_DYNAREC_STRONGMEM':'0'})
    self.assertEqual(call['tuning']['BOX86_DYNAREC_CALLRET'],'0')
-   self.assertEqual(call['dynarec']['BOX86_DYNAREC_SAFEFLAGS'],'1')
+   self.assertEqual(call['tuning']['SDL_VIDEODRIVER'],'x11')
+  game=next(v for v in calls if any(a.endswith('Game.exe') for a in v['args']))
+  self.assertIn('/desktop=PD2Native,640x480',game['args']);self.assertEqual(game['args'][-1],'-ddraw')
   self.assertTrue((self.work/'ProjectD2/ddraw.dll').is_symlink())
+  self.assert_dead(self.mapper()['pid'])
  def test_portmaster_compat_flags_reach_setup_game_and_cleanup(self):
-  self.performance_env()
-  result,_=self.execute({'PD2_PERFORMANCE':'gdi','BOX86_SDL2_JGUID':'0','BOX86_ALLOWMISSINGLIBS':'0','BOX86_DLSYM_ERROR':'0','BOX86_DYNAREC_CALLRET':'1'})
+  self.production_env()
+  result,_=self.execute({'BOX86_SDL2_JGUID':'0','BOX86_ALLOWMISSINGLIBS':'0','BOX86_DLSYM_ERROR':'0','BOX86_DYNAREC_CALLRET':'1'})
   self.assertEqual(result.returncode,0,result.stdout)
   calls=self.records();self.assertTrue(calls)
   self.assertTrue(any(any(a.endswith('Game.exe') for a in v['args']) for v in calls))
@@ -788,58 +762,6 @@ while True:time.sleep(.1)
    self.assertEqual(call['portmaster'],{'BOX86_SDL2_JGUID':'1','BOX86_ALLOWMISSINGLIBS':'1','BOX86_DLSYM_ERROR':'1'})
    self.assertEqual(call['tuning']['BOX86_DYNAREC_CALLRET'],'0')
    self.assertEqual(call['dynarec']['BOX86_DYNAREC_SAFEFLAGS'],'1')
- def test_performance_run_game_defaults_bigblock_to_one(self):
-  self.performance_env()
-  result,_=self.execute({'PD2_PERFORMANCE':'gdi'});self.assertEqual(result.returncode,0,result.stdout)
-  calls=self.records();self.assertTrue(calls)
-  self.assertTrue(all(v['dynarec']['BOX86_DYNAREC_BIGBLOCK']=='1' for v in calls))
- def test_performance_off_or_unset_keeps_normal_wine_environment(self):
-  self.performance_env()
-  for extra in ({},{'PD2_PERFORMANCE':'off','PD2_BIGBLOCK':'2'}):
-   with self.subTest(extra=extra):
-    self.calls.unlink(missing_ok=True)
-    result,_=self.execute(extra);self.assertEqual(result.returncode,0,result.stdout)
-    calls=self.records();self.assertTrue(calls)
-    self.assertTrue(all(all(value is None for value in v['dynarec'].values()) for v in calls))
-    game=next(v for v in calls if any(a.endswith('Game.exe') for a in v['args'][1:]))
-    self.assertEqual(game['args'][1:],['explorer.exe','/desktop=PD2Native,640x480','start.exe','/d',r'C:\Diablo II\ProjectD2','/exec',r'C:\Diablo II\ProjectD2\Game.exe','-ddraw'])
-    self.assertTrue((self.work/'ProjectD2/ddraw.dll').is_symlink())
-    self.assertNotIn('"check":"audio_library"',result.stdout)
-    self.assert_dead(self.mapper()['pid'])
- def test_performance_invalid_options_never_start_wine(self):
-  self.performance_env()
-  for extra in ({'PD2_PERFORMANCE':'private'},{'PD2_PERFORMANCE':'gdi','PD2_BIGBLOCK':'0'},{'PD2_PERFORMANCE':'opengl','PD2_BIGBLOCK':'3'},{'PD2_PERFORMANCE':'off','PD2_BIGBLOCK':'private'}):
-   with self.subTest(extra=extra):
-    self.calls.unlink(missing_ok=True)
-    result,_=self.execute(extra);self.assertEqual(result.returncode,1,result.stdout)
-    calls=self.records() if self.calls.exists() else []
-    # An EXIT trap may stop wineserver, but must never invoke Wine itself.
-    self.assertFalse(any(pathlib.Path(v['args'][0]).name=='wine' for v in calls))
-    self.assertFalse((self.base/'mapper.json').exists())
-    self.assertNotIn('private',result.stdout)
- def test_performance_launchers_export_defaults_and_preserve_bigblock_override(self):
-  self.performance_env()
-  # Execute the real wrappers against a synthetic main launcher, never the port.
-  main=self.base/'Project Diablo 2.sh'
-  main.write_text('''#!/bin/bash
-exec python3 -c 'import json,os,sys; print(json.dumps(dict(env={k:os.environ.get(k) for k in ("PD2_PERFORMANCE","PD2_BIGBLOCK","PD2_GAME_RESOLUTION","PD2_FPS")},args=sys.argv[1:])))' "$@"
-''')
-  for label,profile in (('GDI','gdi'),('OpenGL','opengl')):
-   launcher=self.base/('Project Diablo 2 - Performance '+label+'.sh')
-   launcher.write_text((ROOT/'sdcard/ports'/launcher.name).read_text())
-   for bigblock in (None,'1'):
-    for resolution in (None, '', '800x600', '1024x768'):
-     with self.subTest(profile=profile,bigblock=bigblock,resolution=resolution):
-      env=dict(self.env);env.update({'PD2_PERFORMANCE':'off','PD2_FPS':'1'})
-      env.pop('PD2_GAME_RESOLUTION',None)
-      if resolution is not None:env['PD2_GAME_RESOLUTION']=resolution
-      if bigblock is not None:env['PD2_BIGBLOCK']=bigblock
-      result=subprocess.run(['bash',str(launcher),'argument with spaces','--test'],env=env,capture_output=True,text=True,timeout=5)
-      self.assertEqual(result.returncode,0,result.stderr)
-      record=json.loads(result.stdout)
-      self.assertEqual(record['env'],{'PD2_PERFORMANCE':profile,'PD2_BIGBLOCK':bigblock or '2','PD2_GAME_RESOLUTION':resolution or '640x480','PD2_FPS':'1' if profile=='opengl' else '0'})
-      self.assertEqual(record['args'],['argument with spaces','--test'])
-  self.assertFalse(self.calls.exists())
  def test_audio_variants_matrix_and_sdl_driver(self):
   cases = (
    ('A', {'PD2_AUDIO_VARIANT':'A','PD2_AUDIO_SDL':'alsa','PD2_AUDIO_DSOUND':'off','PD2_AUDIO_METRICS':'1'}, 'alsa', 'off', None),
@@ -893,14 +815,14 @@ python3 -c 'import json,os,pathlib; pathlib.Path(r"{capture_file}").write_text(j
   test_cmd = f'''#!/bin/bash
 export PD2_PORT="{self.port}" PD2_RUN="{self.base/'run'}" PD2_WESTON="{self.base/'weston'}" PD2_USER="testuser" PD2_HOME="{self.base}" PD2_STATE="{self.state}"
 export PD2_WINE="{self.base/'wine'}" PD2_BOX="{self.base/'bin/box'}" PD2_PREFIX="{self.prefix}" PD2_WORK="{self.work}" PD2_PROFILE="gdi" PD2_SWAP_AB="0"
-export PD2_DIAGNOSTIC="off" PD2_TUNING="off" PD2_BIGBLOCK="2" PD2_PERFORMANCE="gdi" PD2_GAME_RESOLUTION="800x600" PD2_FPS="0" PD2_AUDIO_TEST="0" PD2_AUDIO_PROBE="0" PD2_START_MENU="0"
+export PD2_DIAGNOSTIC="off" PD2_GAME_RESOLUTION="800x600" PD2_FPS="0" PD2_AUDIO_TEST="0" PD2_AUDIO_PROBE="0" PD2_START_MENU="0"
 export PD2_INPUT_MODE="mapper" PD2_CONTROLLER_TEST="0" PD2_GPTOKEYB="mapper" PD2_CONTROLLER_CONFIG="" PD2_PARENT_MNT_NS=""
 export PD2_AUDIO_METRICS="1" PD2_METRICS="1" PD2_AUDIO_DSOUND="off" PD2_AUDIO_SDL="dummy" PD2_AUDIO_VARIANT="dmix" PD2_AUDIO_ROUTE_PROFILE="dmix160"
 SUDO=("{mock_sudo}")
 "${{SUDO[@]}}" unshare --mount --propagation private setsid env \\
  PD2_PORT="$PD2_PORT" PD2_RUN="$PD2_RUN" PD2_WESTON="$PD2_WESTON" PD2_USER="$PD2_USER" PD2_HOME="$PD2_HOME" PD2_STATE="$PD2_STATE" \\
  PD2_WINE="$PD2_WINE" PD2_BOX="$PD2_BOX" PD2_PREFIX="$PD2_PREFIX" PD2_WORK="$PD2_WORK" PD2_PROFILE="$PD2_PROFILE" PD2_SWAP_AB="$PD2_SWAP_AB" \\
- PD2_DIAGNOSTIC="$PD2_DIAGNOSTIC" PD2_TUNING="$PD2_TUNING" PD2_BIGBLOCK="$PD2_BIGBLOCK" PD2_PERFORMANCE="$PD2_PERFORMANCE" PD2_GAME_RESOLUTION="$PD2_GAME_RESOLUTION" PD2_FPS="$PD2_FPS" PD2_AUDIO_TEST="$PD2_AUDIO_TEST" PD2_AUDIO_PROBE="$PD2_AUDIO_PROBE" PD2_START_MENU="$PD2_START_MENU" \\
+ PD2_DIAGNOSTIC="$PD2_DIAGNOSTIC" PD2_GAME_RESOLUTION="$PD2_GAME_RESOLUTION" PD2_FPS="$PD2_FPS" PD2_AUDIO_TEST="$PD2_AUDIO_TEST" PD2_AUDIO_PROBE="$PD2_AUDIO_PROBE" PD2_START_MENU="$PD2_START_MENU" \\
  PD2_INPUT_MODE="$PD2_INPUT_MODE" PD2_CONTROLLER_TEST="$PD2_CONTROLLER_TEST" PD2_GPTOKEYB="$PD2_GPTOKEYB" PD2_CONTROLLER_CONFIG="$PD2_CONTROLLER_CONFIG" PD2_PARENT_MNT_NS="$PD2_PARENT_MNT_NS" PD2_HOST_NATIVE_LIBS="" \\
  PD2_AUDIO_METRICS="$PD2_AUDIO_METRICS" PD2_METRICS="$PD2_METRICS" PD2_AUDIO_DSOUND="$PD2_AUDIO_DSOUND" PD2_AUDIO_SDL="$PD2_AUDIO_SDL" PD2_AUDIO_VARIANT="$PD2_AUDIO_VARIANT" PD2_AUDIO_ROUTE_PROFILE="$PD2_AUDIO_ROUTE_PROFILE" \\
  bash "{mock_weston}"

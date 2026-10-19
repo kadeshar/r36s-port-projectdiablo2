@@ -93,7 +93,7 @@ class MenuTests(unittest.TestCase):
         menu.action('up')
         for _ in range(m.RESOLUTIONS.index('800x600')):
             menu.action('right')
-        self.assertEqual(m.LABELS[menu.resolution], '800X600')
+        self.assertEqual(m.LABELS[menu.resolution], '800x600')
         menu.action('down')
         menu.action('down')
         menu.action('accept')
@@ -314,8 +314,9 @@ class LauncherContractTests(unittest.TestCase):
 
     def test_default_and_explicit_protocol_whitelisted(self):
         self.assertEqual(m.RESOLUTIONS, ('default', '640x480', '800x600', '1024x768', 'native'))
-        self.assertEqual(len(m.LABELS), 5)
-        self.assertEqual(m.LABELS[0], 'LCD 640X480')
+        self.assertEqual(m.LABELS, ('640x480', '640x480', '800x600', '1024x768', '1068x600'))
+        self.assertIn('x', m.FONT)
+        self.assertEqual(m.LABELS[0], '640x480')
         for resolution in m.RESOLUTIONS:
             for fps in ('default', '0', '1'):
                 self.assertIn("'" + resolution + ' ' + fps + "'", self.weston)

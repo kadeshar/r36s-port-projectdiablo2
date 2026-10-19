@@ -71,7 +71,6 @@ FIELDS = {
     "x11_probe": frozenset(('event', 'phase', 'check', 'status', 'duration_ms', 'mode', 'owner')),
     "session_probe": frozenset(('event', 'phase', 'check', 'status', 'count', 'detail', 'alsa_rc', 'arch', 'node', 'device_kind', 'device_major', 'device_minor', 'syscall_rc', 'fd', 'request')),
     "metrics": COMMON | METRICS | {"event", "game_scope"},
-    "renderer_gl2": frozenset(('event','stage','status','code','gl_major','gl_minor','bpp','width','height','render_width','render_height')),
     "setup_stage": frozenset(('event','phase','stage','status')),
     "render_sample": frozenset(('event','backend','frames','duration_ms','width','height')),
     "render_status": frozenset(('event','backend','status','width','height')),
@@ -145,19 +144,6 @@ def validate_event(value, allow_summary=False):
         for k in ('format', 'access'):
             if k in value and (type(value[k]) is not str or len(value[k]) > 64):
                 return None
-    if event == 'renderer_gl2':
-        if set(value) != FIELDS[event]:
-            return None
-        if value.get('stage') not in ('context','api','shader','texture','validation','frame','release','policy') or value.get('status') not in ('ready','failed'):
-            return None
-        if not _integer(value.get('code'),0,16) or (value['status'] == 'ready') != (value['code'] == 0):
-            return None
-        if not all(_integer(value.get(k),0,9) for k in ('gl_major','gl_minor')):
-            return None
-        if type(value.get('bpp')) is not int or value['bpp'] not in (0,8,16,32):
-            return None
-        if not all(_integer(value.get(k),0,16384) for k in ('width','height','render_width','render_height')):
-            return None
     if event == 'metrics' and 'game_scope' in value:
         if value['game_scope'] not in ('verified_subset','partial','unavailable') or type(value['game_scope']) is not str:
             return None
@@ -188,15 +174,10 @@ def validate_event(value, allow_summary=False):
             'controller_mapper': ('ready', 'missing', 'denied', 'invalid', 'fallback'),
             'mapper_layout': ('standard',),
             'render_resolution': ('640x480', '800x600', '1024x768', 'native'),
-            'performance_profile': ('off', 'gdi', 'opengl'),
-            'renderer_variant': ('stock', 'gles2'),
-            'box_variant': ('stock', 'a35'),
             'audio_metrics': ('ready', 'unavailable'),
             'audio_metrics_capture': ('ready', 'playback_observed', 'sustained_playback', 'no_playback', 'partial_coverage', 'capture_limit', 'data_lost', 'no_stream', 'invalid_capture', 'unavailable'),
             'audio_metrics_library': ('ready','unavailable'),
             'dynarec_bigblock': ('1', '2'),
-            'tuning_profile': ('off', 'baseline', 'forward512', 'callret', 'fastflags', 'gl-auto', 'gl-kms', 'crusty_glx_gl4es'),
-            'client_drm_access': ('ready', 'missing', 'denied', 'invalid', 'unavailable'),
             'fps_counter': ('hotkey', 'renderer', 'disabled', 'unavailable'),
             'diagnostic_mode': ('off','present','sdl','glx','ddraw'),
             'presentation_capture': ('ready','unavailable'),

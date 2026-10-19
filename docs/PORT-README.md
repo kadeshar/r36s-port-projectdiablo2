@@ -2,7 +2,7 @@
 
 ## Native 640×480 and controller casting
 
-Fresh settings, settings without `game_resolution`, and the Performance entries now default to **640×480 internally**, matching the LCD. Explicit saved resolutions and environment overrides remain respected; `native` still means the original **1068×600**, not LCD-native rendering. The older 800×600-only notes below describe earlier versions.
+Fresh settings, settings without `game_resolution`, now default to **640×480 internally**, matching the LCD. Explicit saved resolutions and environment overrides remain respected; `native` still means the original **1068×600**, not LCD-native rendering. The older 800×600-only notes below describe earlier versions.
 
 The R2/A failure at 640×480 was a stale mouse coordinate, not missing trigger input: the native controller could leave game `mouseY=547`. The original attack/skill sender rejects `mouseY > renderHeight - 49`: 547 passes at 600 pixels but fails at 480. On the R36S, changing only the temporary Y coordinate to 240 restored Charged Bolt without movement or a selected monster. The previous coordinate was restored after that diagnostic test.
 
@@ -10,7 +10,7 @@ The [local builder](<../sdcard/ports/projectdiablo2/scripts/native_cast.py>) red
 
 [Layout preparation](<../sdcard/ports/projectdiablo2/scripts/layout.py>) creates the derivative locally in the user's compatibility cache, only for native input at 640×480. Source size/SHA-256, exact instruction preimages, PE structure and output size/SHA-256 must all match. Unknown sources or corrupted caches fail closed. Imported game DLLs, saves and user configurations are never patched; the payload contains Python source, not proprietary DLLs. Selecting 800×600, 1024×768 or `native` uses the original ProjectDiablo DLL.
 
-Deploy the updated [scripts directory](<../sdcard/ports/projectdiablo2/scripts>) and, if used, the [Performance GDI entry](<../sdcard/ports/Project Diablo 2 - Performance GDI.sh>) / [Performance OpenGL entry](<../sdcard/ports/Project Diablo 2 - Performance OpenGL.sh>) directly from the payload. Do not overwrite user config, game data or saves. After updating: test R2 and A outside town, enter/leave inventory and stash, recheck casting, verify the town restriction, then compare 800×600 and exit normally. The causal cursor test passed on hardware. After manual deployment, the user also confirmed R2 outside town without movement/target, ordinary A attack, and R2 after opening/closing inventory on the R36S. Stash, town restriction and the 800×600 comparison remain recommended additional checks.
+Deploy the updated [scripts directory](<../sdcard/ports/projectdiablo2/scripts>) directly from the payload. Do not overwrite user config, game data or saves. After updating: test R2 and A outside town, enter/leave inventory and stash, recheck casting, verify the town restriction, then compare 800×600 and exit normally. The causal cursor test passed on hardware. After manual deployment, the user also confirmed R2 outside town without movement/target, ordinary A attack, and R2 after opening/closing inventory on the R36S. Stash, town restriction and the 800×600 comparison remain recommended additional checks.
 
 ### Startup failure with imported engine cache
 
@@ -18,30 +18,21 @@ A startup returning to Ports with `invalid_layout` immediately after `volatile_w
 
 The SSH repair backed up and replaced only the layout script. Isolated on-device preflight passed with the pinned native-cast DLL, unchanged persistent configuration and unchanged imported cache. The subsequent normal session reached `volatile_work_ready`, reported `640x480` and native movement, and entered the game; the user confirmed R2 worked. Thirty-nine layout tests passed, including canonical/mixed-case imported cache/log regressions in both work modes.
 
-## PortMaster adaptation — isolated GLX trial
+## Current deployment and renderer
 
-Deploy directly from `sdcard/ports/`: copy the launcher scripts and updated `projectdiablo2/` payload into the existing Ports directory. **Do not build an update ZIP, delete game data, reset the prefix, or overwrite user configurations.**
+Deploy directly from `sdcard/ports/`: copy the production launcher and updated `projectdiablo2/` payload into the existing Ports directory. **Do not build an update ZIP, delete game data, reset the prefix, or overwrite user configurations.**
 
-- The [regular launcher](<../sdcard/ports/Project Diablo 2.sh>) remains GDI by default, with the existing visible menu and audio defaults. All wrappers share its host cleanup.
-- Production GDI keeps the verified `CRUSTY_BLOCK_INPUT=0` compositor environment. Only the explicit `crusty_glx_gl4es` experiment sets `CRUSTY_BLOCK_INPUT=1`; never apply this experiment globally to the DRM compositor. The reported GDI startup failure occurs after EGL/GL initialization and before menu/Wine; target-device confirmation of this rollback remains required.
-- Wine/Box86 receives `BOX86_SDL2_JGUID=1`, `BOX86_ALLOWMISSINGLIBS=1`, and `BOX86_DLSYM_ERROR=1`. Required native libraries still undergo preflight validation. Diagnostic output still passes through the existing privacy-filtered logger; these flags do not enable raw traces.
-- After the session's compositor stops, the adapter resets `/dev/tty0` and `/dev/tty1` where available. Main-launcher host restoration/service-restart additions have been rolled back; firmware cleanup remains delegated to the existing PortMaster `pm_finish` hook.
+The [regular launcher](<../sdcard/ports/Project Diablo 2.sh>) uses GDI with the visible menu and existing audio defaults. GDI is the only supported game renderer. Earlier GPU/GLES2, Performance GDI/OpenGL, PortMaster GLX and tuning experiments, plus optional A35 runtime selection, were removed. Remove their obsolete launcher copies from existing SD cards; copying an update does not remove old files. Keep game data, settings, prefix and saves.
 
-### Experimental PortMaster GLX
-
-Select **Project Diablo 2 - PortMaster GLX** in Ports. The separate [launcher](<../sdcard/ports/Project Diablo 2 - PortMaster GLX.sh>) opts into `crusty_glx_gl4es` and an OpenGL session-only INI, bypassing the invisible headless menu. It uses stock cnc-ddraw, not the GLES2 replacement, and keeps safe dynarec flags (`SAFEFLAGS=1`, `CALLRET=0`).
-
-The experiment uses ARMHF `graphics/crusty_glx/libcrusty.so` as the Wine/Box86 preload and `graphics/gl4es_glxpass/libGL.so.1` as the GL backend from the already hash-pinned Westonpack runtime. No extra compat library is downloaded or added; runtime manifests remain unchanged. Required ARMHF providers and GLX libraries must pass validation before headless/noop Weston is allowed. ARMHF preload is never installed in the AArch64 compositor environment. Crusty is responsible for direct KMS scanout; headless Weston alone does not display game frames.
-
-**Unverified on R36S:** a successful library probe or automated test does not establish a working GPU context, scanout, improved FPS, or resolved black screen. Compare identical resolution/scene against GDI: startup/menu bypass, visible image/colors/cursor, all controller buttons, sound, inventory/stash, and return to EmulationStation with volume/brightness/suspend keys restored. Test normal quit, menu cancellation in GDI, and interrupted launch. If GLX is black, quit and use the regular GDI entry; do not modify drivers or reset game data. Stored user renderer configuration is not changed by this session-only trial.
-
-Legacy risky CallRet/FastFlags entries below predate this adaptation. They are not enabled by the regular or PortMaster GLX launcher and are not part of its acceptance tests.
+The verified `CRUSTY_BLOCK_INPUT=0` DRM compositor environment remains required. Weston still handles display composition through the Mali GPU; this is not GPU offloading of the game engine. Test image, controls, sound, inventory/stash, and clean return to Ports after deployment.
 
 ## Diagnostics-1 — Current Stage: Measurement Over New Flags
 
 [New tests A–F and log export guide](<DIAGNOSTICS-1.md>). Previous Forward512/FastFlags tests did not improve FPS, KMS/Auto remained black screens, and CALLRET failed before reaching gameplay. The new package introduces a lightweight counter without HUD overhead, granular setup stages, CPU/RAM/swap/PSI metrics, and isolated attempts for SDL → GLX/Crusty → Wine/DirectDraw. The regular launcher does not enable the new counter. We make no claims of performance improvements or working OpenGL without verified hardware testing on the R36S. The legacy tuning-1 notes below remain for historical reference.
 
-## Tuning-1 Package — Six Tests Following the OpenGL Black Screen
+## History: Tuning-1 — Removed Experiments
+
+**Historical only. These profiles and test launchers are removed; archived installation, launch, and rollback instructions below do not apply to current payloads.**
 
 Extract the `projectdiablo2-tuning-1.zip` update into the existing `ports` folder with overwrite enabled, without wiping game data, configs, or prefix. The update does not replace Wine/Box86 or game data. The standard launcher continues to work as before. Each new test uses: **800×600, BIGBLOCK=1, FPS ON, bypassing port menu**, with diagnostic sampling every 5 s. Selecting an entry launches the game immediately. To disable the HUD overlay, change `${PD2_FPS:-1}` to `${PD2_FPS:-0}` in the launcher script; always compare identical counter settings.
 
@@ -68,7 +59,9 @@ Rolling back without uninstalling: select the normal entry. Complete code rollba
 
 Sources: [WestonPack — ArkOS/Mali modes, headless, and SDL/Crusty](https://github.com/binarycounter/Westonpack/wiki), [Box86 — Option documentation and risks](https://github.com/ptitSeb/box86/blob/fa59e74/docs/USAGE.md). These references describe the stack on similar hardware, not game-specific benchmarks. Local test passes do not substitute for R36S hardware validation.
 
-## History: 0.1.18 — Experimental Performance Profiles
+## History: 0.1.18 — Removed Experimental Performance Profiles
+
+**Historical only. Both Performance launchers and their profiles were removed. Following notes describe past releases, not current instructions.**
 
 This update adds two separate entries in Ports; the normal `Project Diablo 2.sh` retains existing behavior. We do not promise an increase from 10–15 to 25/30 FPS without R36S hardware measurement.
 
@@ -341,7 +334,9 @@ During gameplay, game data is mounted **read-only**. The working directory conta
 
 The prefix is private Wine state — it contains the registry and installer artifacts. It is not intended for redistribution. Do not modify directories or settings while the game is running.
 
-## 3. Video and Performance
+## 3. Historical Video and Performance (0.1.7)
+
+**Archived settings below are not current configuration instructions. Current launches use GDI only; the old `opengl` profile and OpenGL template were removed. See current deployment above.**
 
 Defaults from 0.1.7: **800×600** game rendering (local copy of SGD library; see above), Wine desktop / Crusty / output **640×480** (R36S 4:3 screen), **GDI** renderer, presentation cap **30 FPS**, no shaders. cnc-ddraw 7.1.0.0 handles borderless downscaling: `windowed=true`, `fullscreen=true`, `maintas=true`, `adjmouse=true`, `inject_resolution=1024x768`. `maintas` preserves aspect ratio, filling the 4:3 screen, while original DLL (~16:9, 1068×600) letterboxes. `adjmouse` recalculates cursor positioning for scaling. In this PD2 build, in-game resolution selection is inactive, and `SGD2FreeResolution.json` does not affect gameplay — display output is governed by `game_resolution` in `config/settings.json`. Compatibility of 800×600 and framerates require hardware validation. The limit is not a 30 FPS guarantee and does not alter Diablo II simulation ticks. No Vulkan, DXVK, or D2GL.
 
@@ -424,7 +419,7 @@ After closing the game, run from the console terminal within `ports/projectdiabl
 python3 scripts/safe_log.py export --dir logs --manifest runtime-manifest.json
 ```
 
-This generates `logs/diagnostic-export.zip`, containing re-validated logs with anonymized filenames and runtime version projections. **Share only this export archive**, never the entire directory, raw D2 files, Windows configs, wineprefix, CD keys, or character saves. Report: GDI/OpenGL profile, whether menu displayed, video/audio status, gamepad responsiveness, and the moment of failure.
+This generates `logs/diagnostic-export.zip`, containing re-validated logs with anonymized filenames and runtime version projections. **Share only this export archive**, never the entire directory, raw D2 files, Windows configs, wineprefix, CD keys, or character saves. Report: launcher name, whether menu displayed, video/audio status, gamepad responsiveness, and the moment of failure.
 
 Common error categories:
 * `missing_library`: Required ARMHF library absent; follow recommendations for your firmware/PortMaster version.
@@ -443,7 +438,7 @@ Common error categories:
 4. Saving game and returning cleanly to Ports; relaunching and loading character save.
 5. In standard keyboard/mouse entry, test Start+Select return to menu on a test character. The built-in native mapper (0.1.11) does not implement this hotkey — exit via game menu; Controller Test exits after 45 s. Do not hard power off to test.
 6. Overwriting with port code, preserving configs, and reloading saves.
-7. Export diagnostics; if GDI fails, evaluate OpenGL separately.
+7. Export diagnostics if GDI fails; do not switch to removed renderer profiles.
 
 ## Sources and Licenses
 

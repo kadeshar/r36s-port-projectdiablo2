@@ -65,16 +65,10 @@ Mali-G31 GPU / KMS DRM
   3. The game and `cnc-ddraw` render frames in software into a DIB buffer (GDI), which is passed through X11/Xwayland to Weston. Weston scales the buffer in hardware to 640×480 and outputs it to the display.
   4. **This mode ALWAYS guarantees a stable, tear-free image.**
 
-### B. Critical Bug: Black Screen with OpenGL Profile
-- **Observed Behavior:** Selecting the `opengl` profile resulted in the game starting and audio playing normally, but the screen stayed completely black.
-- **Root Cause in Code:** In `weston-session.sh`, the `opengl` profile enforced:
-  `weston_args=(-B headless --renderer=noop);preload=;backendlib=`
-  The `headless` mode with a `noop` renderer **does not open the DRM display device and drops all presented frames**.
-- **Architectural Takeaway:** On the R36S console, the Weston compositor **must never run in headless/noop mode**, unless a verified native KMS scanout renderer exists. Because ArkOS lacks 32-bit GLX drivers for the Mali GPU, standard OpenGL in cnc-ddraw cannot render to the screen without an active DRM compositor.
-
-### C. Advanced GPU Variant (GLES2)
-- The `compat/gles2-renderer/` directory contains an experimental `ddraw.dll` build optimized for GLES2 / GLSL 1.10 shaders (launched via [`Project Diablo 2 - GPU.sh`](sdcard/ports/Project%20Diablo%202%20-%20GPU.sh)).
-- It offloads 8-bit palette color conversion to the GPU, relieving the CPU from calculating color transforms per-frame in software.
+### B. Display Safety
+- GDI is the only supported game renderer. Weston still uses the Mali GPU for composition and display scaling; this does not imply GPU rendering of the game engine.
+- Weston must retain the active DRM compositor. Headless/noop alone does not scan out game frames.
+- Earlier OpenGL/GLES2 and Performance experiments were removed. Historical records are not deployment or configuration instructions.
 
 ---
 
@@ -106,12 +100,9 @@ The Cortex-A35 processor is the primary bottleneck. To achieve smooth gameplay i
 ```bash
 export BOX86_DYNAREC=1
 export BOX86_DYNAREC_BIGBLOCK=2     # Large JIT translation basic blocks
-export BOX86_DYNAREC_FORWARD=256    # Deep forward jump lookahead
-export BOX86_DYNAREC_FASTROUND=1    # Hardware ARM rounding instructions
-export BOX86_DYNAREC_FASTNAN=1      # Fast IEEE NaN handling
 export BOX86_DYNAREC_SAFEFLAGS=1    # Safe processor flags (do not disable for Diablo!)
 export BOX86_DYNAREC_STRONGMEM=0    # Relaxed memory ordering model (no unnecessary barriers)
-export BOX86_DYNAREC_X87DOUBLE=0    # Hardware NEON usage instead of 80-bit x87 emulation
+export BOX86_DYNAREC_CALLRET=0      # Keep unsafe call/return optimization disabled
 ```
 
 Additionally, memory swappiness is lowered before launching the game:
@@ -134,8 +125,7 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 ├── docs/                      # Central documentation directory (no loose .md in sdcard/ports)
 │   ├── README.md              # Documentation index and overview
 │   ├── PORT-README.md         # Detailed port manual and historical changelog
-│   ├── DIAGNOSTICS-1.md       # Diagnostic test suite procedures (tests A–F)
-│   └── GPU-RUNTIME-1.md       # GPU GLES2 runtime test documentation
+│   └── DIAGNOSTICS-1.md       # Historical diagnostic procedures (tests A–F)
 ├── MEMORY.md                  # Chronological debugging history and test records
 ├── README.md                  # Project overview and setup documentation
 ├── runtime-manifest.json      # Pinned hashes and sizes of downloaded runtimes
@@ -144,9 +134,6 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 ├── sdcard/
 │   └── ports/                 # Clean distribution payload for handheld microSD
 │       ├── Project Diablo 2.sh              # MAIN PRODUCTION LAUNCHER (GDI + Dynarec)
-│       ├── Project Diablo 2 - Performance GDI.sh
-│       ├── Project Diablo 2 - GPU.sh        # Alternative GLES2 shader launcher
-│       ├── Project Diablo 2 - Performance OpenGL.sh
 │       └── projectdiablo2/
 │           ├── port.json                    # PortMaster package metadata
 │           ├── gameinfo.xml                 # EmulationStation metadata and description
@@ -158,15 +145,12 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 │           │   └── ...
 │           ├── compat/                      # Compatibility binaries and helper libraries
 │           │   ├── alsa-legacy-armhf/       # libasound.so.2 (time32)
-│           │   ├── box86-a35/               # Cortex-A35 tuned Box86 build
 │           │   ├── cnc-ddraw/               # ddraw.dll with glGetTexImage removed
-│           │   ├── gles2-renderer/          # ddraw.dll with GPU palette offloading
 │           │   └── ...
 │           └── defaults/                    # Default game configs and gamepad mappings
 ├── tools/                                   # Compilation, packaging, and diagnostic tools
 │   ├── prepare.py                           # Game data importer and validator
 │   ├── build_cnc_ddraw_ogl.py               # ddraw.dll build script (MSVC)
-│   ├── build_box86_a35.py                   # Box86 A35 build script
 │   └── ...
 └── tests/                                   # Regression and validation test suite
 ```
@@ -193,11 +177,8 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 # Configuration and layout tests:
 python -m unittest discover -s tests -p "test_layout.py"
 
-# Launcher and menu tests:
-python -m unittest discover -s tests -p "test_opengl_entry_fix.py"
-
-# GPU profile tests:
-python -m unittest discover -s tests -p "test_gpu_runtime.py"
+# Full regression suite:
+python -m unittest discover -s tests
 ```
 
 ### Rules of Code Integrity:

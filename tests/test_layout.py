@@ -106,7 +106,7 @@ class LayoutTests(unittest.TestCase):
         }).encode())
         for name in ('ProjectDiablo.cfg', 'default.filter'):
             write(self.port, 'defaults/' + name, ('default ' + name + '\n').encode())
-        for profile in ('gdi', 'opengl'):
+        for profile in ('gdi',):
             content = '[ddraw]\nrenderer=' + profile + '\n' + ''.join(key + '=' + value + '\n' for key, value in layout.DISPLAY_KEYS.items())
             write(self.port, 'defaults/ddraw-' + profile + '.ini', content.encode())
         self.wrapper = write(self.port, 'compat/cnc-ddraw/ddraw.dll', pe() + b'new companion')
@@ -155,40 +155,40 @@ class LayoutTests(unittest.TestCase):
     def session(self):
         return json.loads((self.state / 'session-layout.json').read_text())
 
-    def test_performance_profiles_are_session_only_and_sync_preserves_ini(self):
+    def test_production_gdi_template_is_session_only_and_sync_preserves_ini(self):
         self.prepare()
         settings = self.port / 'config/settings.json'
         original_settings = settings.read_bytes()
-        for backend in ('opengl', 'gdi'):
-            with self.subTest(backend=backend), mock.patch.dict(os.environ, {'PD2_PERFORMANCE': backend}):
-                before = digest_tree(self.port / 'config')
-                result = self.prepare()
-                self.assertEqual(result['profile'], backend)
-                self.assertEqual(result['performance'], backend)
-                content = (self.state / 'game/ProjectD2/ddraw.ini').read_text()
-                self.assertIn('renderer=' + backend, content)
-                self.assertIn('shader=Nearest neighbor', content)
-                self.assertIn('inject_resolution=640x480', content)
-                self.assertIn('maxgameticks=-1', content)
-                self.assertEqual(layout.sync_config(self.port, self.state), 0)
-                self.assertEqual(before, digest_tree(self.port / 'config'))
-                self.assertEqual(settings.read_bytes(), original_settings)
-                self.assertEqual(self.original_data, digest_tree(self.data))
-        # Returning to ordinary mode regenerates the normal volatile template.
-        with mock.patch.dict(os.environ, {'PD2_PERFORMANCE': 'off'}):
-            result = self.prepare()
+        before = digest_tree(self.port / 'config')
+        result = self.prepare()
+        self.assertEqual(result['profile'], 'gdi')
         self.assertNotIn('performance', result)
-        self.assertEqual((self.state / 'game/ProjectD2/ddraw.ini').read_bytes(),
-                         (self.port / 'config/ddraw-gdi.ini').read_bytes())
+        content = (self.state / 'game/ProjectD2/ddraw.ini').read_text()
+        for value in ('renderer=gdi', 'shader=Nearest neighbor', 'inject_resolution=640x480',
+                      'maxfps=30', 'minfps=0', 'vsync=false', 'singlecpu=false', 'maxgameticks=-1'):
+            self.assertIn(value, content)
+        (self.state / 'game/ProjectD2/ddraw.ini').write_text('[ddraw]\nrenderer=opengl\n')
+        self.assertEqual(layout.sync_config(self.port, self.state), 0)
+        self.assertEqual(before, digest_tree(self.port / 'config'))
+        self.assertEqual(settings.read_bytes(), original_settings)
+        self.assertEqual(self.original_data, digest_tree(self.data))
 
-    def test_invalid_performance_profile_is_rejected(self):
-        with mock.patch.dict(os.environ, {'PD2_PERFORMANCE': '../unsafe'}):
-            with self.assertRaises(layout.LayoutError):
-                self.prepare()
+    def test_production_template_ignores_user_renderer_sections_without_rewriting_them(self):
+        self.prepare()
+        active = self.port / 'config/ddraw-gdi.ini'
+        custom = b'[ddraw]\nrenderer=opengl\nmaxfps=7\n[Game.exe]\nrenderer=opengl\n'
+        active.write_bytes(custom)
+        self.prepare()
+        work = (self.state / 'game/ProjectD2/ddraw.ini').read_bytes()
+        self.assertIn(b'renderer=gdi', work)
+        self.assertIn(b'maxfps=30', work)
+        self.assertNotIn(b'[Game.exe]', work)
+        self.assertEqual(active.read_bytes(), custom)
+        self.assertEqual(layout.sync_config(self.port, self.state), 0)
+        self.assertEqual(active.read_bytes(), custom)
 
-    def test_performance_still_syncs_other_user_changes(self):
-        with mock.patch.dict(os.environ, {'PD2_PERFORMANCE': 'opengl'}):
-            self.prepare()
+    def test_gdi_still_syncs_other_user_changes(self):
+        self.prepare()
         (self.state / 'game/ProjectD2/default.filter').write_bytes(b'user change\n')
         self.assertEqual(layout.sync_config(self.port, self.state), 1)
         self.assertEqual((self.port / 'config/default.filter').read_bytes(), b'user change\n')
@@ -205,7 +205,10 @@ class LayoutTests(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertFalse(path.is_symlink())
             active = 'ddraw-gdi.ini' if name == 'ddraw.ini' else name
-            self.assertEqual(path.read_bytes(), (self.port / 'config' / active).read_bytes())
+            if name != 'ddraw.ini':
+                self.assertEqual(path.read_bytes(), (self.port / 'config' / active).read_bytes())
+            else:
+                self.assertIn(b'renderer=gdi', path.read_bytes())
             self.assertNotIn(str(path), self.links)
         self.assertEqual(self.links[str(self.state / 'game/d2data.mpq')], str(self.data / 'd2data.mpq'))
         self.assertFalse((self.port / 'config/game-state').exists())
@@ -277,7 +280,7 @@ class LayoutTests(unittest.TestCase):
             copies.assert_not_called()
             tar.assert_not_called()
         self.assertEqual(before, digest_tree(self.port / 'config'))
-        self.assertEqual(result['profile'], 'opengl')
+        self.assertEqual(result['profile'], 'gdi')
         self.assertTrue(result['swap_ab'])
         self.assertEqual((self.state / 'game/ProjectD2/ProjectDiablo.cfg').read_bytes(), b'user configuration\n')
         self.assertEqual(self.original_data, digest_tree(self.data))
@@ -311,15 +314,15 @@ class LayoutTests(unittest.TestCase):
         self.assertFalse(list((self.port / 'config').rglob('*.new')))
         self.assertEqual(self.original_data, digest_tree(self.data))
 
-    def test_sync_uses_session_profile_not_changed_settings(self):
+    def test_sync_never_persists_session_renderer_even_if_settings_change(self):
         self.prepare()
-        before_opengl = (self.port / 'config/ddraw-opengl.ini').read_bytes()
+        before = (self.port / 'config/ddraw-gdi.ini').read_bytes()
         (self.port / 'config/settings.json').write_text(json.dumps({'schema_version': 1, 'profile': 'opengl', 'swap_ab': False}))
         (self.state / 'game/ProjectD2/ddraw.ini').write_bytes(b'new session gdi configuration\n')
-        self.assertEqual(layout.sync_config(self.port, self.state), 1)
-        self.assertEqual((self.port / 'config/ddraw-gdi.ini').read_bytes(), b'new session gdi configuration\n')
-        self.assertEqual((self.port / 'config/ddraw-opengl.ini').read_bytes(), before_opengl)
-        self.assertTrue((self.port / 'config/backups/ddraw-gdi.ini').exists())
+        self.assertEqual(layout.sync_config(self.port, self.state), 0)
+        self.assertEqual((self.port / 'config/ddraw-gdi.ini').read_bytes(), before)
+        self.assertFalse((self.port / 'config/ddraw-opengl.ini').exists())
+        self.assertFalse((self.port / 'config/backups/ddraw-gdi.ini').exists())
 
     def test_sync_ignores_engine_logs_data_saves_and_unknown_files(self):
         self.prepare()
@@ -536,7 +539,7 @@ class LayoutTests(unittest.TestCase):
     def test_display_migration_preserves_comments_sections_renderer_and_custom_keys(self):
         originals = {}
         untouched = '; width=800 height=600 fullscreen=false hook=2\r\n[custom]\r\nwidth=8000\r\nheight=6000\r\nfullscreen=false\r\nhook=2\r\n'
-        for profile in ('gdi', 'opengl'):
+        for profile in ('gdi',):
             originals[profile] = ('; width=640 not a setting\r\n[ddraw]\r\n'
                                   ' WIDTH = 1024 ; custom width comment\r\nheight=768\r\n'
                                   'fullscreen=false\r\nmaintas=false\r\nadjmouse=false\r\n'
@@ -567,27 +570,27 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(mtimes, {p: p.stat().st_mtime_ns for p in mtimes})
         self.assertEqual(self.original_data, digest_tree(self.data))
 
-    def test_migration_prevalidates_both_profiles_without_partial_rewrite(self):
+    def test_migration_prevalidates_gdi_without_partial_rewrite(self):
         original = b'[ddraw]\nwidth=1024\nheight=768\n'
         write(self.port, 'config/ddraw-gdi.ini', original)
         invalids = (b'\xff', b'[other]\nwidth=800\n', b'[ddraw]\n[ddraw]\n', b'[ddraw]\n[malformed\n')
         for invalid in invalids:
-            write(self.port, 'config/ddraw-opengl.ini', invalid)
+            write(self.port, 'config/ddraw-gdi.ini', invalid)
             with self.assertRaises(layout.LayoutError):
                 self.prepare()
-            self.assertEqual((self.port / 'config/ddraw-gdi.ini').read_bytes(), original)
+            self.assertEqual((self.port / 'config/ddraw-gdi.ini').read_bytes(), invalid)
             self.assertFalse((self.port / 'config/backups').exists())
             self.assertFalse((self.port / 'config' / layout.DISPLAY_MARKER).exists())
         self.assertEqual(self.original_data, digest_tree(self.data))
 
     def test_interrupted_migration_retains_original_backups_on_retry(self):
         originals = {}
-        for profile in ('gdi', 'opengl'):
+        for profile in ('gdi',):
             originals[profile] = ('[ddraw]\nrenderer=' + profile + '\nwidth=1024\nheight=768\n').encode()
             write(self.port, 'config/ddraw-' + profile + '.ini', originals[profile])
         real_atomic = layout.atomic_bytes
         def interrupt(path, content):
-            if path == self.port / 'config/ddraw-opengl.ini':
+            if path == self.port / 'config' / layout.DISPLAY_MARKER:
                 raise OSError('simulated interruption')
             return real_atomic(path, content)
         with mock.patch.object(layout, 'atomic_bytes', side_effect=interrupt):

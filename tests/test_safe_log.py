@@ -56,14 +56,20 @@ class ObservedInput(io.BytesIO):
 
 
 class SafeLogTests(unittest.TestCase):
-    def test_performance_statuses_are_closed(self):
-        for check, statuses in (('performance_profile', ('off', 'gdi', 'opengl')),
-                                ('dynarec_bigblock', ('1', '2'))):
+    def test_dynarec_statuses_are_closed(self):
+        for check, statuses in (('dynarec_bigblock', ('1', '2')),):
             for status in statuses:
                 value = dict(event='session_probe', phase='launch', check=check, status=status)
                 self.assertEqual(safe_log.validate_event(value), value)
                 self.assertIsNone(safe_log.validate_event(dict(value, raw='secret')))
             self.assertIsNone(safe_log.validate_event(dict(value, status='arbitrary')))
+
+    def test_retired_variant_events_are_rejected(self):
+        for check, status in (('performance_profile', 'opengl'), ('renderer_variant', 'gles2'),
+                              ('box_variant', 'a35'), ('tuning_profile', 'gl-kms'),
+                              ('client_drm_access', 'ready')):
+            self.assertIsNone(safe_log.validate_event(dict(
+                event='session_probe', phase='launch', check=check, status=status)))
 
     def test_controller_mapper_closed_schema(self):
         for status in ('ready', 'missing', 'denied', 'invalid', 'fallback'):

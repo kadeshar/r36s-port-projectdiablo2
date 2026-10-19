@@ -1,14 +1,8 @@
 #!/bin/bash
 set -u
 ulimit -c 0
-source "$PD2_PORT/scripts/tuning.sh" || exit 1
-pd2_validate_tuning || exit 1
 case "${PD2_DIAGNOSTIC:-off}" in off|present|sdl|glx|ddraw) ;; *) exit 1;; esac
 PD2_GAME_TUNING_ACTIVE=0
-if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 ]]; then
- # No inherited capability spoofing/error suppression/texture hacks in GL2.
- for key in ${!LIBGL_@}; do unset "$key"; done
-fi
 export HOME="$PD2_HOME"
 export WINEPREFIX="$PD2_PREFIX" WINEARCH=win32 WINEDEBUG=-all
 export WINEDLLOVERRIDES='ddraw=n,b;winegstreamer=;winemenubuilder=;mscoree=;mshtml=;winepulse.drv='
@@ -16,16 +10,12 @@ export BOX86_LOG=1 BOX86_NORCFILES=1 BOX86_TRACE=0 BOX86_TRACE_INIT=0 BOX86_DUMP
 # PortMaster compatibility: stable SDL GUIDs and optional-library diagnostics.
 # Required native libraries are still validated by the privileged adapter.
 export BOX86_SDL2_JGUID=1 BOX86_ALLOWMISSINGLIBS=1 BOX86_DLSYM_ERROR=1
-# The main launcher intentionally clears inherited BOX86_* variables. Reapply
-# only this validated experiment, never arbitrary tracing/unsafe overrides.
-case "${PD2_BIGBLOCK:-1}" in 1|2) ;; *) exit 1;; esac
-if [[ ${PD2_PERFORMANCE:-off} != off ]]; then
- export BOX86_DYNAREC=1 BOX86_DYNAREC_BIGBLOCK="${PD2_BIGBLOCK:-1}"
- export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET=0
-fi
+# Preserve the production GDI dynarec defaults; setup/recovery use smaller blocks.
+export BOX86_DYNAREC=1 BOX86_DYNAREC_BIGBLOCK=2
+export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET=0
 export SDL_GAMECONTROLLERCONFIG="$PD2_CONTROLLER_CONFIG" SDL_VIDEODRIVER=x11
 export FONTCONFIG_FILE="$PD2_WESTON/fonts/fonts.conf"
-mapper_pid=; mapper_metrics_pid=; navigator_pid=; game_pid=; metrics_pid=; fps_pid=; renderer_pid=; audio_probe_pid=; audio_capture_pid=; wine_ready=0
+mapper_pid=; mapper_metrics_pid=; navigator_pid=; game_pid=; metrics_pid=; fps_pid=; audio_probe_pid=; audio_capture_pid=; wine_ready=0
 winebus_restore_attempted=0; audio_restore_attempted=0; dsound_restore_attempted=0
 winebus_restore_file="$PD2_PREFIX/drive_c/pd2-winebus-restore.reg"
 audio_restore_file="$PD2_PREFIX/drive_c/pd2-audio-restore.reg"
@@ -47,10 +37,9 @@ refresh_box_env() {
  if [[ -n "${ALSA_CONFIG_PATH:-}" ]]; then
   box_env+=(ALSA_CONFIG_PATH="$ALSA_CONFIG_PATH")
  fi
- if [[ ${PD2_GAME_TUNING_ACTIVE:-0} == 0 && ${PD2_PERFORMANCE:-off} != off ]]; then
+ if [[ ${PD2_GAME_TUNING_ACTIVE:-0} == 0 ]]; then
   box_env+=(BOX86_DYNAREC_BIGBLOCK=1 BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_CALLRET=0)
  fi
- pd2_tune_box_env
 }
 refresh_box_env
 wine_cmd() { "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" "$@"; }
@@ -242,7 +231,7 @@ run_audio_probe() {
 }
 cleanup() {
  local rc=$?;trap - EXIT INT TERM
- # Recovery must run with conservative flags even after a risky game trial.
+ # Recovery always runs with conservative setup flags.
  PD2_GAME_TUNING_ACTIVE=0
  refresh_box_env
  stop_owned "$metrics_pid"
@@ -253,7 +242,6 @@ cleanup() {
   wait "$audio_capture_pid" 2>/dev/null || true
  fi
  stop_owned "$fps_pid"
- stop_owned "$renderer_pid"
  stop_owned "$navigator_pid"
  stop_owned "$mapper_pid"
  stop_owned "$game_pid"
@@ -287,22 +275,12 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 phase launch
-printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"renderer_variant","status":"%s"}\n' "${PD2_RENDERER_VARIANT:-stock}"
-printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"box_variant","status":"%s"}\n' "${PD2_BOX_VARIANT:-stock}"
-if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 ]]; then export PD2_METRICS=1; fi
-printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"tuning_profile","status":"%s"}\n' "${PD2_TUNING:-off}"
-if [[ ${PD2_TUNING:-off} != off ]]; then export PD2_METRICS=1; fi
-case "${PD2_TUNING:-off}" in gl-auto|gl-kms|crusty_glx_gl4es)
- python3 -B "$PD2_PORT/scripts/client_graphics_probe.py" || true
- ;; esac
-case "${PD2_PERFORMANCE:-off}" in off|gdi|opengl) ;; *) error invalid_profile 1; exit 1;; esac
-printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"performance_profile","status":"%s"}\n' "${PD2_PERFORMANCE:-off}"
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"diagnostic_mode","status":"%s"}\n' "${PD2_DIAGNOSTIC:-off}"
 if [[ ${PD2_DIAGNOSTIC:-off} != off ]]; then export PD2_METRICS=1; fi
 case "${PD2_DIAGNOSTIC:-off}" in sdl|glx)
  source "$PD2_PORT/scripts/run-layer.sh" || exit 1
  pd2_run_layer "$PD2_DIAGNOSTIC"; exit $?;; esac
-printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"dynarec_bigblock","status":"%s"}\n' "${PD2_BIGBLOCK:-1}"
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"dynarec_bigblock","status":"%s"}\n' 2
 input_mode="${PD2_INPUT_MODE:-mapper}"
 controller_test="${PD2_CONTROLLER_TEST:-0}"
 fps_enabled="${PD2_FPS:-0}"
@@ -316,7 +294,7 @@ case "$audio_sdl" in alsa|dummy) ;; *) error invalid_profile 1; exit 1;; esac
 export SDL_AUDIODRIVER="$audio_sdl"
 [[ "$SDL_AUDIODRIVER" == "$audio_sdl" ]] || { error invalid_profile 1; exit 1; }
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_sdl","status":"%s"}\n' "$audio_sdl"
-# Opt-in PCM telemetry for the default (non-GPU) launch: measurement only.
+# Opt-in PCM telemetry: measurement only.
 audio_metrics_enabled="${PD2_AUDIO_METRICS:-0}"
 [[ "$audio_metrics_enabled" == 0 || "$audio_metrics_enabled" == 1 ]] || { error invalid_profile 1; exit 1; }
 # Opt-in DirectSound HelBuflen A/B; every applied value is backed up and restored.
@@ -570,9 +548,7 @@ if [[ "$controller_test" == 0 && "$audio_test" == 1 && "$audio_probe" == 1 ]]; t
  run_audio_probe
 fi
 if [[ "$controller_test" == 0 ]]; then
- if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 ]]; then
-  python3 -B "$PD2_PORT/scripts/gles2_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" || { error invalid_layout 1; exit 1; }
- elif [[ ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
+ if [[ ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
   if python3 -B "$PD2_PORT/scripts/present_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" >/dev/null; then
    printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"presentation_capture","status":"ready"}\n'
   else
@@ -590,7 +566,7 @@ if [[ "$controller_test" == 0 ]]; then
 fi
 # Attach the observer only after setup, with no old Wine process retaining ALSA.
 audio_game_wrapper=()
-if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 || "$audio_metrics_enabled" == 1 ]]; then
+if [[ "$audio_metrics_enabled" == 1 ]]; then
  stop_wine || { error timeout 1; exit 1; }
  if python3 -B "$PD2_PORT/scripts/audio_metrics.py" prepare --port "$PD2_PORT" --work "$PD2_WORK"; then
   export PD2_NATIVE_LIBS="$PD2_WORK/.alsa-audio-metrics:$PD2_NATIVE_LIBS"
@@ -601,11 +577,7 @@ step game_start
 PD2_GAME_TUNING_ACTIVE=1
 refresh_box_env
 phase game
-if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 ]]; then
- setsid python3 -B "$PD2_PORT/scripts/gles2_renderer.py" --watch --work "$PD2_WORK" --pid "$BASHPID" & renderer_pid=$!
- printf '%s\n' "$renderer_pid" > "$PD2_RUN/renderer-metrics.pid"
-fi
-if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 || ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
+if [[ ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
  setsid python3 -B "$PD2_PORT/scripts/presentation_watch.py" --work "$PD2_WORK" --pid "$BASHPID" & fps_pid=$!
  printf '%s\n' "$fps_pid" > "$PD2_RUN/fps.pid"
 fi
@@ -642,12 +614,4 @@ if [[ "$rc" == 0 ]]; then
   python3 -B "$PD2_PORT/scripts/xinput_result.py" --work "$PD2_WORK" || rc=1
  fi
 else error nonzero_exit "$rc";fi
-if [[ ${PD2_RENDERER_VARIANT:-stock} == gles2 ]]; then
- python3 -B "$PD2_PORT/scripts/gles2_renderer.py" --result --work "$PD2_WORK"; renderer_rc=$?
- # An explorer exit code cannot hide a failed or absent GL2 presentation.
- if [[ "$renderer_rc" != 0 ]]; then
-  [[ "$rc" == 0 || "$renderer_rc" == 86 ]] && rc=$renderer_rc
-  error gl_context_failed "$renderer_rc"
- fi
-fi
 exit "$rc"

@@ -312,15 +312,7 @@ def validate_release_path(value: object) -> PurePosixPath:
         return path
     if any(part.casefold() in FORBIDDEN_PARTS for part in parts) or path.name.casefold() in FORBIDDEN_RELEASE_FILES or path.suffix.casefold() in FORBIDDEN_RELEASE_SUFFIXES:
         raise PrepareError("Forbidden update path")
-    if value in ("Project Diablo 2.sh", "Project Diablo 2 - GPU.sh", "Project Diablo 2 - Performance GDI.sh", "Project Diablo 2 - Performance OpenGL.sh",
-                 "Project Diablo 2 - Test 1 GDI Baseline.sh", "Project Diablo 2 - Test 2 GDI Forward512.sh",
-                 "Project Diablo 2 - Test 3 GDI CallRet RISK.sh", "Project Diablo 2 - Test 4 GDI FastFlags RISK.sh",
-                 "Project Diablo 2 - Test 5 OpenGL KMS.sh", "Project Diablo 2 - Test 6 OpenGL Auto.sh",
-                 "Project Diablo 2 - Diag A GDI Stock.sh", "Project Diablo 2 - Diag B GDI Measure.sh",
-                 "Project Diablo 2 - Diag C SDL RGB.sh", "Project Diablo 2 - Diag D GLX RGB.sh",
-                 "Project Diablo 2 - Diag E Wine RGB.sh", "Project Diablo 2 - Diag F OpenGL Measure.sh",
-                  "Project Diablo 2 - Audio Buffer.sh", "Project Diablo 2 - Audio Dmix.sh",
-                  "Project Diablo 2 - PortMaster GLX.sh"):
+    if value == "Project Diablo 2.sh":
         return path
     if len(parts) < 2 or parts[0] != "projectdiablo2":
         raise PrepareError("Update path is outside the static allowlist")

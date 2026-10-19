@@ -1,4 +1,6 @@
-# Diagnostics-1 — PD2 / R36S
+# Diagnostics-1 — PD2 / R36S (Historical)
+
+**Archived procedure, not current deployment instructions. Game OpenGL/tuning profiles and their launchers were removed; do not run the archived GL game tests below. Generic native graphics probes and diagnostic tools remain available. Current gameplay uses the production GDI launcher, deployed directly from `sdcard/ports/`, not update ZIPs.**
 
 This is an **instrumentation/measurement package, not a promise of increased FPS or an OpenGL fix**. Previous Forward512/FastFlags tests did not improve 10–15 FPS, KMS/Auto remained black screens, and CALLRET failed before reaching gameplay. We are not blindly introducing another set of random flags or new runtimes.
 

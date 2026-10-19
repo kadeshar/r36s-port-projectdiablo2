@@ -12,8 +12,8 @@ PORT = ROOT / 'sdcard/ports/projectdiablo2'
 
 
 class DisplayTests(unittest.TestCase):
-    def test_borderless_downscale_and_mouse_for_both_profiles(self):
-        for renderer in ('gdi', 'opengl'):
+    def test_borderless_downscale_and_mouse_for_production_profile(self):
+        for renderer in ('gdi',):
             cfg = configparser.ConfigParser()
             cfg.read(PORT / ('defaults/ddraw-' + renderer + '.ini'))
             values = cfg['ddraw']
@@ -35,7 +35,10 @@ class DisplayTests(unittest.TestCase):
 
     def test_wine_and_compositor_are_native_not_fake_downscalers(self):
         source = (PORT / 'scripts/weston-session.sh').read_text()
-        self.assertIn('CRUSTY_RESOLUTION=640x480 WESTON_HEADLESS_WIDTH=640 WESTON_HEADLESS_HEIGHT=480', source)
+        self.assertIn('export CRUSTY_RESOLUTION=640x480', source)
+        self.assertIn('weston_args=(-B drm --drm-device card0 --renderer=gl)', source)
+        self.assertNotIn('WESTON_HEADLESS_', source)
+        self.assertNotIn('-B headless', source)
         self.assertNotIn('CRUSTY_RESOLUTION=1024x768', source)
         game = (PORT / 'scripts/run-game.sh').read_text()
         desktop = next(line for line in game.splitlines() if '/v Default /t REG_SZ' in line)

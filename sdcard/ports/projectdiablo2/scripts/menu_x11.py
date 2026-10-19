@@ -386,19 +386,9 @@ class Screen:
         resolution = self.labels[menu.resolution]
         if menu.resolution == 0:
             inherited = getattr(menu, 'inherited_resolution', '640x480')
-            if len(self.labels) == 5:
-                label_map = {
-                    '640x480': 'LCD 640X480',
-                    '800x600': '800X600',
-                    '1024x768': '1024X768',
-                    'native': 'PD2 1068X600',
-                }
-                resolution = label_map.get(inherited, inherited.upper())
-            else:
-                resolution = 'NATIVE 1068X600' if inherited == 'native' else inherited.upper()
+            resolution = '1068x600' if inherited == 'native' else inherited
         fps = menu.fps if menu.fps_changed else getattr(menu, 'inherited_fps', False)
-        # Even the longest row, '> RESOLUTION: NATIVE 1068X600', fits the
-        # 548-pixel text area at the existing 3x font scale (501 pixels).
+        # Plain numeric resolution names fit the 548-pixel text area.
         rows = (
             'RESOLUTION: ' + resolution,
             'FPS COUNTER: ' + ('ON' if fps else 'OFF'),

@@ -17,7 +17,7 @@ import menu_x11 as x11
 
 FONT = {' ': '00000000000000', '>': '08040201020408',
         'A': '0E11111F111111'}
-LABELS = ('LCD 640X480', 'LCD 640X480', '800X600', '1024X768', 'PD2 1068X600')
+LABELS = ('640x480', '640x480', '800x600', '1024x768', '1068x600')
 
 
 def setup_body():
@@ -218,8 +218,8 @@ class ProtocolTests(unittest.TestCase):
         with mock.patch.object(screen, '_text') as text:
             screen.draw(Menu())
         labels = [call.args[2] for call in text.call_args_list]
-        self.assertIn('  RESOLUTION: LCD 640X480', labels)
-        self.assertNotIn('  RESOLUTION: 800X600', labels)
+        self.assertIn('  RESOLUTION: 640x480', labels)
+        self.assertNotIn('  RESOLUTION: 800x600', labels)
 
     def test_current_four_row_labels_and_selection_bounds(self):
         import start_menu
@@ -232,7 +232,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn('> ENTER SANCTUARY / LAUNCH', labels)
         self.assertIn('  EXIT TO SYSTEM', labels)
         self.assertIn('  FPS COUNTER: OFF', labels)
-        self.assertIn('  RESOLUTION: 800X600', labels)
+        self.assertIn('  RESOLUTION: 800x600', labels)
         self.assertFalse(any('DEFAULT' in label for label in labels))
         for row in range(4):
             menu.row = row
@@ -252,7 +252,7 @@ class ProtocolTests(unittest.TestCase):
                 with mock.patch.object(screen, '_text') as text:
                     screen.draw(menu)
                 labels = [call.args[2] for call in text.call_args_list]
-                expected = 'PD2 1068X600' if inherited == 'native' else ('LCD 640X480' if inherited == '640x480' else inherited.upper())
+                expected = '1068x600' if inherited == 'native' else inherited
                 self.assertIn('  RESOLUTION: ' + expected, labels)
                 self.assertIn('  FPS COUNTER: ' + ('ON' if fps == '1' else 'OFF'), labels)
                 for resolution in range(len(screen.labels)):
