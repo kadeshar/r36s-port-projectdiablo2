@@ -20,7 +20,9 @@ def valid_native(path,arch,weston):
   if not p.is_absolute() or not p.is_file():return None
   p=p.resolve()
   # Do not hand a Crusty/Mesa proxy back to Crusty as its REAL SDL/EGL/GBM.
-  if p.is_relative_to(pathlib.Path(weston).resolve()/'lib_aarch64/graphics') or p.is_relative_to(pathlib.Path(weston).resolve()/'lib_armhf/graphics'):return None
+  # ArkOS ships Python 3.7: Path.is_relative_to requires Python 3.9.
+  root=pathlib.Path(weston).resolve()
+  if any(directory==p or directory in p.parents for directory in (root/'lib_aarch64/graphics',root/'lib_armhf/graphics')):return None
   with p.open('rb') as f:header=f.read(20)
   cls,machine=ARCH[arch]
   if len(header)!=20 or header[:4]!=b'\x7fELF' or header[4]!=cls or header[5]!=1 or struct.unpack_from('<H',header,18)[0]!=machine:return None

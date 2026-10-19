@@ -55,6 +55,7 @@
   "projectdiablo2/defaults/controls-native.gptk",
   "projectdiablo2/port.json",
   "projectdiablo2/gameinfo.xml",
+  "projectdiablo2/screenshot.jpg",
   "projectdiablo2/runtime-manifest.json",
   "projectdiablo2/compat/cnc-ddraw/ddraw.dll",
   "projectdiablo2/compat/cnc-ddraw/manifest.json",

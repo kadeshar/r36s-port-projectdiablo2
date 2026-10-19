@@ -245,7 +245,11 @@ class ButtonObserver:
         finally:
             if temporary is not None:
                 # Only this exact file created above, never a caller-supplied path.
-                temporary.unlink(missing_ok=True)
+                # Python 3.7 on ArkOS has no unlink(missing_ok=...).
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
 
     def process(self, kind, code, value):
         if kind != EV_KEY or value not in (0, 1) or not 0 <= code <= KEY_MAX:

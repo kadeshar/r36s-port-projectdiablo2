@@ -1,5 +1,6 @@
 """Synthetic graphics-provider/diagnostic tests, never load a GPU or game."""
 import importlib.util,io,json,pathlib,shutil,struct,sys,unittest,uuid
+from unittest import mock
 from types import SimpleNamespace
 ROOT=pathlib.Path(__file__).resolve().parents[1];SCRIPTS=ROOT/'sdcard/ports/projectdiablo2/scripts'
 sys.path.insert(0,str(SCRIPTS))
@@ -25,6 +26,18 @@ class GraphicsProbeTests(unittest.TestCase):
   self.assertIsNone(probe.valid_native('relative.so','aarch64',self.weston))
   fake=self.base/'native/not-elf';fake.write_text('private-secret');self.assertIsNone(probe.valid_native(str(fake),'aarch64',self.weston))
   shim=self.elf(self.weston/'lib_aarch64/graphics/crusty_gbm/libcrusty.so');self.assertIsNone(probe.valid_native(str(shim),'aarch64',self.weston))
+ def test_python37_provider_validation_preserves_proxy_boundary(self):
+  native=self.elf(self.base/'native/libEGL.so')
+  shims=[self.elf(self.weston/arch/'graphics/crusty_gbm/libEGL.so') for arch in ('lib_aarch64','lib_armhf')]
+  sibling=self.elf(self.weston/'lib_aarch64/graphics-native/libEGL.so')
+  link=self.base/'native/proxy.so'
+  try:link.symlink_to(shims[0])
+  except OSError:link=None  # Windows without symlink privileges.
+  with mock.patch.object(pathlib.Path,'is_relative_to',side_effect=AttributeError('Python 3.7'),create=True):
+   self.assertEqual(probe.valid_native(native,'aarch64',self.weston),str(native.resolve()))
+   self.assertEqual(probe.valid_native(sibling,'aarch64',self.weston),str(sibling.resolve()))
+   for shim in shims:self.assertIsNone(probe.valid_native(shim,'aarch64',self.weston))
+   if link is not None:self.assertIsNone(probe.valid_native(link,'aarch64',self.weston))
  def test_optional_missing_and_probe_failure_have_no_raw_exception(self):
   missing=lambda *a,**k:SimpleNamespace(returncode=1,stdout='')
   self.assertEqual(probe.resolve(self.weston,'gbm','aarch64','',missing),(None,'missing'))

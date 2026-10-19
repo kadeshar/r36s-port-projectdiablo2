@@ -1,4 +1,6 @@
-# Project Diablo 2 on R36S / dArkOSen — Version 0.1.18
+# Project Diablo 2 on R36S / ArkOS / dArkOS / dArkOSen — Version 0.1.18
+
+**Compatibility confirmed:** start menu and game launch work on ArkOS, dArkOS, and dArkOSen.
 
 ## Native 640×480 and controller casting
 

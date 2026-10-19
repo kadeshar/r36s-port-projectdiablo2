@@ -8,11 +8,12 @@ The project combines **PortMaster**, the **Westonpack Wayland/X11** compositor, 
 
 ## 🚀 Key Production Features
 
-- **Stable Display on 640×480 LCD:** Weston compositor optimized for DRM/KMS with Mali-G31 GPU acceleration and safe GDI / DirectDraw rendering.
-- **CPU Performance Optimization:** Stock Box86 with production dynarec settings (`BIGBLOCK=2`, `SAFEFLAGS=1`, `STRONGMEM=0`, `CALLRET=0`); conservative `BIGBLOCK=1` during setup and recovery.
-- **RAM Protection:** Reduced swappiness (`vm.swappiness=10`) and system buffer cache flushing to prevent memory thrashing on slow microSD storage.
-- **Full Gamepad Controls:** Integrated virtual Xbox 360 controller translator supporting all 17 physical R36S buttons and analog sticks (including L3, R3, Select, Start, and FN/Menu).
-- **Themed Start Menu:** Diablo II styled start menu with plain resolution names (`640x480`, `800x600`, `1024x768`, `1068x600`), default `800x600`, and optional FPS counter toggle.
+- **Verified OS Compatibility:** Start menu and game launch confirmed on all three tested systems: ArkOS, dArkOS, and dArkOSen.
+- **Stable Display on 640×480 LCD:** Weston compositor uses DRM/KMS with Mali-G31 acceleration for composition; game rendering remains safe GDI / DirectDraw.
+- **CPU Performance Optimization:** Box86 production dynarec settings (`BIGBLOCK=2`, `SAFEFLAGS=1`, `STRONGMEM=0`, `CALLRET=0`); conservative `BIGBLOCK=1` during setup and recovery.
+- **RAM Protection:** Reduced swappiness (`vm.swappiness=10`) and system buffer cache flushing prevent memory thrashing on slow microSD storage.
+- **Full Gamepad Controls:** Bundled Xbox 360 translator maps all 17 physical R36S buttons and analog sticks, including L3, R3, Select, Start, and FN/Menu.
+- **Themed Start Menu:** Diablo II-styled X11 menu; default internal resolution is `640x480`, with `800x600`, `1024x768`, and `native` (`1068x600`) choices plus optional FPS toggle.
 
 ---
 
@@ -67,6 +68,12 @@ The production launcher uses **PD2's native controller support** through a virtu
 | **FN / Menu** | Guide button; firmware may reserve this input |
 
 Use PD2's controller settings for in-game actions. The optional FPS counter is toggled in the port's start menu, not with L3/R3.
+
+---
+
+## ⚠️ Known Issues
+
+- **Audio stutter and echo:** Sound may briefly stutter, repeat fragments, or produce echo during gameplay, especially under CPU load. This remains an open issue. Keep Environmental Effects (EAX 3D) disabled. See the [audio diagnostic protocol](docs/AUDIO-FIX-1.md) and [audio fix plan](plan/audio_fix.md).
 
 ---
 
