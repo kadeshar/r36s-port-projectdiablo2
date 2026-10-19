@@ -67,8 +67,6 @@ The production launcher uses **PD2's native controller support** through a virtu
 | **L3 / R3** | Left / Right stick click |
 | **FN / Menu** | Guide button; firmware may reserve this input |
 
-Use PD2's controller settings for in-game actions. The optional FPS counter is toggled in the port's start menu, not with L3/R3.
-
 ---
 
 ## ⚠️ Known Issues
