@@ -10,6 +10,7 @@ import re
 import shutil
 import stat
 import tarfile
+import tempfile
 
 VERSION = '0.1.18'
 CONFIG_LIMIT = 512 * 1024
@@ -105,6 +106,30 @@ def atomic_bytes(path, content):
 
 def atomic_json(path, value):
     atomic_bytes(path, (json.dumps(value, indent=2) + '\n').encode('utf-8'))
+
+
+def atomic_session_json(path, value):
+    """Replace disposable session state without reusing interrupted temp files.
+
+    Persistent configs retain the strict fixed-.new recovery checks above.
+    Session state is regenerated under the launcher's session lock each start.
+    """
+    no_links(path)
+    if path.exists():
+        regular(path)
+    pending = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='wb', dir=path.parent,
+                                         prefix=path.name + '.', suffix='.tmp',
+                                         delete=False) as stream:
+            pending = pathlib.Path(stream.name)
+            stream.write((json.dumps(value, indent=2) + '\n').encode('utf-8'))
+            stream.flush()
+            os.fsync(stream.fileno())
+        pending.replace(path)
+    finally:
+        if pending is not None:
+            pending.unlink(missing_ok=True)
 
 
 def sha(path):
@@ -777,7 +802,7 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     result = {'wine': str(wine), 'box': str(box), 'prefix': str(prefix), 'work': str(work), 'profile': opts['profile'], 'swap_ab': opts['swap_ab'], 'game_resolution': resolution, 'volatile_work': bool(volatile_work)}
     if input_mode is not None:
         result['input_mode'] = input_mode
-    atomic_json(state / 'session-layout.json', result)
+    atomic_session_json(state / 'session-layout.json', result)
     return result
 
 

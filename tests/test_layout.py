@@ -155,6 +155,35 @@ class LayoutTests(unittest.TestCase):
     def session(self):
         return json.loads((self.state / 'session-layout.json').read_text())
 
+    def test_session_state_recovers_after_interrupted_write(self):
+        self.prepare()
+        stale = write(self.state, 'session-layout.json.new', b'{"volatile_work":')
+        orphan = write(self.state, 'session-layout.json.interrupted.tmp', b'partial')
+        self.prepare(volatile=False)
+        self.assertFalse(self.session()['volatile_work'])
+        self.assertEqual(stale.read_bytes(), b'{"volatile_work":')
+        self.assertEqual(orphan.read_bytes(), b'partial')
+        self.assertEqual(list(self.state.glob('session-layout.json.*.tmp')), [orphan])
+        self.assertEqual(digest_tree(self.data), self.original_data)
+
+    def test_session_write_failure_preserves_previous_state_and_cleans_temp(self):
+        path = write(self.state, 'session-layout.json', b'{"previous": true}\n')
+        original = path.read_bytes()
+        for operation in ('fsync', 'replace'):
+            with self.subTest(operation=operation):
+                target = mock.patch.object(layout.os, 'fsync', side_effect=OSError('interrupted')) if operation == 'fsync' else mock.patch.object(Path, 'replace', side_effect=OSError('interrupted'))
+                with target, self.assertRaises(OSError):
+                    layout.atomic_session_json(path, {'next': True})
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(list(self.state.glob('session-layout.json.*.tmp')), [])
+
+    def test_session_state_rejects_link_destination(self):
+        path = self.state / 'session-layout.json'
+        with mock.patch.object(layout, 'no_links', side_effect=layout.LayoutError('invalid_layout')):
+            with self.assertRaises(layout.LayoutError):
+                layout.atomic_session_json(path, {'next': True})
+        self.assertEqual(list(self.state.iterdir()), [])
+
     def test_production_gdi_template_is_session_only_and_sync_preserves_ini(self):
         self.prepare()
         settings = self.port / 'config/settings.json'
