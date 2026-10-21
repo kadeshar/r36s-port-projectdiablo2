@@ -23,6 +23,11 @@ The project combines **PortMaster**, the **Westonpack Wayland/X11** compositor, 
 ### Required Game Files:
 This port requires original game files from **Diablo II: Lord of Destruction** (version 1.13c or 1.14) with the **Project Diablo 2** mod installed.
 
+Buy the original game and expansion, then download the mod:
+- **[Diablo II](https://us.shop.battle.net/en-us/product/diablo-ii#optLogin=true)** — original game on Battle.net (not Diablo II: Resurrected).
+- **[Diablo II: Lord of Destruction](https://us.shop.battle.net/en-us/product/diablo-ii-lord-of-destruction)** — required expansion on Battle.net.
+- **[Project Diablo 2 download](https://www.projectdiablo2.com/download)** — mod installer from the official website.
+
 ### Step by Step:
 1. Copy the contents of the `sdcard/ports/` directory to the `ports/` directory on your console SD card (`EASYROMS` partition or secondary SD card):
    ```
@@ -80,7 +85,18 @@ If you enjoy this port, you can support its development by buying me a coffee.
 
 ## 📜 Licenses and Credits
 
-This project utilizes Open Source components:
+### Original Game
+
+Thank you to **Blizzard North**, part of [Blizzard Entertainment](https://www.blizzard.com/en-us/), for creating Diablo II and Lord of Destruction.
+
+### Project Diablo 2
+
+Thank you to the [Project Diablo 2 team](https://www.projectdiablo2.com/) for maintaining the mod.
+
+### Runtime and Porting Components
+
+Thank you to the maintainers and contributors of the components that make this handheld port possible:
+
 - **Westonpack** (Wayland / Xwayland) — MIT License
 - **Box86** by Sébastien Chevalier (ptitSeb) — MIT License
 - **Wine** — LGPL v2.1+
