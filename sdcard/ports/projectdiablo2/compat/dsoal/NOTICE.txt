@@ -1,0 +1,11 @@
+Project Diablo 2 production audio: DSOAL / OpenAL Soft WinMM.
+DSOAL: Chris Robinson and contributors; LGPL 2.1 (see dsoal-LICENSE.txt).
+OpenAL Soft: OpenAL Soft authors and contributors; LGPL 2 or later (see openal-soft-LICENSE.txt and source file notices).
+Complete pinned upstream source archives, local patch and build script are in sources/.
+Local modification: Project Diablo 2 port, 2026-10-20 UTC; DSOAL playback opens default
+OpenAL device instead of MMDevice endpoint GUID, since WinMM cannot accept GUID names.
+Compatibility fix: src/propset.cpp explicitly includes <string> for std::wstring.
+Both source changes are recorded in sources/dsoal-default-winmm-device.patch.
+Playback only: capture endpoint mapping is unchanged. No hardware/game compatibility
+claim. Users may replace these dynamically loaded DLLs with compatible modified builds.
+Static /MT refers only to Microsoft CRT; OpenAL remains a replaceable shared DLL.

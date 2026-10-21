@@ -189,6 +189,7 @@ def validate_event(value, allow_summary=False):
             'audio_config_path': ('active', 'default', 'missing'),
             'audio_device': ('ready', 'missing', 'denied'),
             'audio_backend': ('alsa', 'restored'),
+            'audio_output': ('dsoal_winmm', 'winmm_opened', 'unconfirmed'),
             'audio_sdl': ('alsa', 'dummy'),
             'audio_variant': ('A', 'B', 'C', 'D', 'buffer', 'dmix', 'stock'),
             'audio_schema': ('v1', 'v2'),
@@ -279,7 +280,8 @@ def validate_event(value, allow_summary=False):
             fields.add('detail')
             if value.get('detail') not in ('no_log', 'silent', 'libasound', 'load_error', 'alsa_error', 'unknown', 'capture_error', 'capture_timeout'):
                 return None
-        if value.get('phase') != 'launch' or set(value) != fields:
+        phases = ('launch', 'shutdown') if check == 'audio_output' else ('launch',)
+        if value.get('phase') not in phases or set(value) != fields:
             return None
     if event == 'x11_probe':
         check, status = value.get('check'), value.get('status')

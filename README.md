@@ -13,6 +13,7 @@ The project combines **PortMaster**, the **Westonpack Wayland/X11** compositor, 
 - **CPU Performance Optimization:** Box86 production dynarec settings (`BIGBLOCK=2`, `SAFEFLAGS=1`, `STRONGMEM=0`, `CALLRET=0`); conservative `BIGBLOCK=1` during setup and recovery.
 - **RAM Protection:** Reduced swappiness (`vm.swappiness=10`) and system buffer cache flushing prevent memory thrashing on slow microSD storage.
 - **Full Gamepad Controls:** Bundled Xbox 360 translator maps all 17 physical R36S buttons and analog sticks, including L3, R3, Select, Start, and FN/Menu.
+- **Smooth Audio:** DSOAL + OpenAL Soft routes sound through Wine's waveOut backend, with lag-free playback confirmed in gameplay testing on R36S.
 - **Themed Start Menu:** Diablo II-styled X11 menu; default internal resolution is `640x480`, with `800x600`, `1024x768`, and `native` (`1068x600`) choices plus optional FPS toggle.
 
 ---
@@ -69,9 +70,11 @@ The production launcher uses **PD2's native controller support** through a virtu
 
 ---
 
-## ⚠️ Known Issues
+## ☕ Support
 
-- **Audio stutter and echo:** Sound may briefly stutter, repeat fragments, or produce echo during gameplay, especially under CPU load. This remains an open issue. Keep Environmental Effects (EAX 3D) disabled. See the [audio diagnostic protocol](docs/AUDIO-FIX-1.md) and [audio fix plan](plan/audio_fix.md).
+If you enjoy this port, you can support its development by buying me a coffee.
+
+<a href="https://buymeacoffee.com/kadeshar"><img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee" width="174" height="41"></a>
 
 ---
 
@@ -81,5 +84,7 @@ This project utilizes Open Source components:
 - **Westonpack** (Wayland / Xwayland) — MIT License
 - **Box86** by Sébastien Chevalier (ptitSeb) — MIT License
 - **Wine** — LGPL v2.1+
+- **DSOAL** by Chris Robinson and contributors — LGPL v2.1
+- **OpenAL Soft** — LGPL v2+
 - **cnc-ddraw** by FunkyFr3sh — GNU General Public License v3.0
 - **ALSA Library (alsa-lib)** — LGPL v2.1

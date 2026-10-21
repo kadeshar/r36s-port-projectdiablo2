@@ -3,6 +3,9 @@ set -u
 ulimit -c 0
 case "${PD2_DIAGNOSTIC:-off}" in off|present|sdl|glx|ddraw) ;; *) exit 1;; esac
 PD2_GAME_TUNING_ACTIVE=0
+PD2_DSOAL_STAGED=0
+# Setup tools must not inherit an external OpenAL configuration or output route.
+unset ALSOFT_DRIVERS ALSOFT_CONF ALSOFT_LOGFILE ALSOFT_LOGLEVEL DSOAL_LOGFILE DSOAL_LOGLEVEL
 export HOME="$PD2_HOME"
 export WINEPREFIX="$PD2_PREFIX" WINEARCH=win32 WINEDEBUG=-all
 export WINEDLLOVERRIDES='ddraw=n,b;winegstreamer=;winemenubuilder=;mscoree=;mshtml=;winepulse.drv='
@@ -230,7 +233,7 @@ run_audio_probe() {
  fi
 }
 cleanup() {
- local rc=$?;trap - EXIT INT TERM
+ local rc=$? wine_stopped=0;trap - EXIT INT TERM
  # Recovery always runs with conservative setup flags.
  PD2_GAME_TUNING_ACTIVE=0
  refresh_box_env
@@ -261,9 +264,21 @@ cleanup() {
  fi
  # Prefix-specific shutdown AND wait. Retain failure status if it cannot quiesce.
  step prefix_shutdown
- if [[ ${PD2_DIAGNOSTIC:-off} != sdl && ${PD2_DIAGNOSTIC:-off} != glx ]] && ! stop_wine; then
-  error timeout 1
-  [[ "$rc" == 0 ]] && rc=1
+ if [[ ${PD2_DIAGNOSTIC:-off} != sdl && ${PD2_DIAGNOSTIC:-off} != glx ]]; then
+  if stop_wine; then
+   wine_stopped=1
+  else
+   error timeout 1
+   [[ "$rc" == 0 ]] && rc=1
+  fi
+ fi
+ # Inspect backend evidence only after Wine is fully stopped. Logs stay in the
+ # user's own prefix, separate from safe_log and the read-only game import.
+ if [[ "$PD2_DSOAL_STAGED" == 1 && "$wine_stopped" == 1 ]]; then
+  if ! python3 -B "$PD2_PORT/scripts/audio_dsoal.py" collect --prefix "$PD2_PREFIX" --work "$PD2_WORK"; then
+   error invalid_layout 1
+   [[ "$rc" == 0 ]] && rc=1
+  fi
  fi
  # Persist only prevalidated tiny configuration files, never raw engine logs.
  python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --sync-config || true
@@ -288,9 +303,11 @@ audio_test="${PD2_AUDIO_TEST:-1}"
 [[ "$audio_test" == 0 || "$audio_test" == 1 ]] || { error invalid_profile 1; exit 1; }
 audio_probe="${PD2_AUDIO_PROBE:-0}"
 [[ "$audio_probe" == 0 || "$audio_probe" == 1 ]] || { error invalid_profile 1; exit 1; }
-# Opt-in SDL audio driver selection: defaults to alsa, dummy allowed for A/B tests.
-audio_sdl="${PD2_AUDIO_SDL:-alsa}"
+# Production uses the user-validated DSOAL/WinMM path. SDL must not compete
+# with Wine for the PCM. Explicit legacy diagnostic variants retain their knobs.
+audio_sdl="${PD2_AUDIO_SDL:-dummy}"
 case "$audio_sdl" in alsa|dummy) ;; *) error invalid_profile 1; exit 1;; esac
+if [[ ${PD2_AUDIO_VARIANT:-stock} == stock ]]; then audio_sdl=dummy; fi
 export SDL_AUDIODRIVER="$audio_sdl"
 [[ "$SDL_AUDIODRIVER" == "$audio_sdl" ]] || { error invalid_profile 1; exit 1; }
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_sdl","status":"%s"}\n' "$audio_sdl"
@@ -572,6 +589,19 @@ if [[ "$audio_metrics_enabled" == 1 ]]; then
   export PD2_NATIVE_LIBS="$PD2_WORK/.alsa-audio-metrics:$PD2_NATIVE_LIBS"
   audio_game_wrapper=(python3 -B "$PD2_PORT/scripts/audio_metrics.py" run --)
  fi
+fi
+# Promote the validated Audio B stack for normal gameplay. Keep native DLLs
+# out of the immutable import and select them only after Wine setup completes.
+if [[ "$controller_test" == 0 && "$audio_variant" == stock && ( ${PD2_DIAGNOSTIC:-off} == off || ${PD2_DIAGNOSTIC:-off} == present ) ]]; then
+ DSOAL_SESSION=$(python3 -B "$PD2_PORT/scripts/audio_dsoal.py" stage --port "$PD2_PORT" --prefix "$PD2_PREFIX" --work "$PD2_WORK") || { error invalid_layout 1; exit 1; }
+ [[ "$DSOAL_SESSION" =~ ^[0-9a-f]{32}$ ]] || { error invalid_layout 1; exit 1; }
+ PD2_DSOAL_STAGED=1
+ export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;dsound=n;dsoal-aldrv=n"
+ export ALSOFT_DRIVERS=winmm ALSOFT_LOGLEVEL=3 DSOAL_LOGLEVEL=1
+ export ALSOFT_CONF="C:\\pd2-audio\\$DSOAL_SESSION\\openal.ini"
+ export ALSOFT_LOGFILE="C:\\pd2-audio\\$DSOAL_SESSION\\openal.log"
+ export DSOAL_LOGFILE="C:\\pd2-audio\\$DSOAL_SESSION\\dsoal.log"
+ printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_output","status":"dsoal_winmm"}\n'
 fi
 step game_start
 PD2_GAME_TUNING_ACTIVE=1

@@ -6,7 +6,6 @@ This directory centralizes technical guides, diagnostic procedures, and historic
 
 - **[`PORT-README.md`](PORT-README.md):** Comprehensive port manual and technical history covering versions 0.1.0 through 0.1.18, PortMaster installation steps, directory mapping, video configuration, and controls. Includes current GDI deployment and hardware acceptance checks; older experimental profiles are explicitly historical.
 - **[`DIAGNOSTICS-1.md`](DIAGNOSTICS-1.md):** Historical diagnostic battery (tests A–F), rendering-pipeline investigations, and safe log export procedures; removed GL game profiles are not current instructions.
-- **[`AUDIO-FIX-1.md`](AUDIO-FIX-1.md):** Audio testing protocol, A/B comparison matrix (Variants A–D), DirectSound buffer tuning, and PCM underrun telemetry analysis on R36S.
 
 - **[`PAYLOAD-AUDIT.md`](PAYLOAD-AUDIT.md):** Pełny audyt plików karty SD, usunięte warianty, duże wymagane artefakty i możliwości dalszego odchudzenia.
 

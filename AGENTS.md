@@ -79,17 +79,10 @@ Mali-G31 GPU / KMS DRM
 - Modern Linux distribution builds of `libasound.so.2` are compiled with 64-bit `time_t` (time64, `ioctl 0xC0884123`), which the kernel rejected with error `-25 ENOTTY`.
 - **Solution:** A dedicated build of `alsa-lib 1.2.8` compiled without time64 flags is provided in `compat/alsa-legacy-armhf/libasound.so.2`, preloaded on the fly into RAM (`$PD2_WORK/.alsa-legacy-armhf`).
 
-### B. Audio Stutter / Underruns Issue and Its Solution
-- Initial workarounds routed ALSA directly to the raw hardware node:
-  `slave.pcm "hw:CARD=rk817...,DEV=0"`
-- The raw `hw:` node has a tiny hardware buffer (~20 ms). Under high Box86 emulation load, the buffer ran dry, causing crackling, stutter, and underruns.
-- **Key fixes implemented in `run-game.sh`:**
-  1. `export SDL_AUDIODRIVER=dummy` — prevents SDL2 companion libraries from locking the ALSA node away from Wine.
-  2. Wine DirectSound registry tuning:
-     - `HelBuflen = 8192` (DirectSound emulation buffer increased to ~90 ms headroom).
-     - `MaxHardwareChannels = 16` (capped mixed software channels from 32/64 down to 16, saving up to 40% CPU load).
-     - `DefaultSampleRate = 44100` (matches native sample rate, eliminating on-the-fly software resampling).
-  3. Inside the game options, **Environmental Effects (EAX 3D)** must remain **DISABLED**.
+### B. Production Audio
+- **D2Sound → DSOAL → OpenAL Soft WinMM → Wine waveOut → winealsa → ALSA/RK817**. The [runner](<sdcard/ports/projectdiablo2/scripts/run-game.sh>) selects native-only DLLs after Wine setup; the [helper](<sdcard/ports/projectdiablo2/scripts/audio_dsoal.py>) authenticates/stages them into volatile work and verifies WinMM after shutdown.
+- Preserve `ALSOFT_DRIVERS=winmm`, SDL audio `dummy`, baseline ALSA and legacy time32 compatibility. **Environmental Effects / EAX stays disabled.** Required source archives, patches and LGPL notices accompany the DLLs.
+- Preserve production config/prefix/saves and separate A/B save backups. Investigation history and rejected approaches belong only in [MEMORY.md](<MEMORY.md>).
 
 ---
 

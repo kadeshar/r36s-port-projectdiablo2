@@ -57,6 +57,19 @@ print('PD2_EVENT '+json.dumps(v,separators=(',',':')))
     route_call=('route(args.run, proc_root=Path(%r), snd_root=Path(%r), alsa_base=Path(%r), device_status=lambda p: "ready", profile=args.profile).items()' % (str(self.mock_proc),str(self.mock_snd),str(self.base/'mock-alsa.conf')))
     code=code.replace('route(args.run, profile=args.profile).items()', route_call)
    (self.port/'scripts'/helper).write_text(code)
+  (self.port/'scripts/audio_dsoal.py').write_text('''import json,os,pathlib,sys,time
+args=sys.argv[1:]
+operation=args[0]
+keys=('WINEDLLOVERRIDES','ALSOFT_DRIVERS','ALSOFT_CONF','ALSOFT_LOGFILE','ALSOFT_LOGLEVEL','DSOAL_LOGFILE','DSOAL_LOGLEVEL','SDL_AUDIODRIVER')
+record={'operation':operation,'args':args,'time':time.monotonic_ns(),'environment':{key:os.environ.get(key) for key in keys}}
+with open(pathlib.Path(os.environ['PD2_RUN'])/'dsoal-calls.jsonl','a') as stream:stream.write(json.dumps(record)+'\\n')
+if operation=='stage':
+ if os.environ.get('MOCK_DSOAL_STAGE_FAIL'):raise SystemExit(1)
+ print(os.environ.get('MOCK_DSOAL_STAGE_SESSION','a'*32))
+elif operation=='collect':
+ if os.environ.get('MOCK_DSOAL_COLLECT_FAIL'):raise SystemExit(1)
+else:raise SystemExit(1)
+''')
   (self.port/'scripts/metrics.py').write_text('# synthetic-only metrics\n')
   (self.port/'scripts/audio_metrics.py').write_text('''import json,os,pathlib,sys
 args=sys.argv[1:]
@@ -102,6 +115,7 @@ call={'args':args,'pid':os.getpid(),'pgid':os.getpgrp(),'time':time.monotonic_ns
 call['dynarec']={name:os.environ.get(name) for name in ('BOX86_DYNAREC','BOX86_DYNAREC_BIGBLOCK','BOX86_DYNAREC_SAFEFLAGS','BOX86_DYNAREC_STRONGMEM')}
 call['portmaster']={name:os.environ.get(name) for name in ('BOX86_SDL2_JGUID','BOX86_ALLOWMISSINGLIBS','BOX86_DLSYM_ERROR')}
 call['tuning']={name:os.environ.get(name) for name in ('BOX86_DYNAREC_FORWARD','BOX86_DYNAREC_CALLRET','SDL_VIDEODRIVER','SDL_VIDEO_EGL_DRIVER','XDG_SESSION_TYPE','SDL_AUDIODRIVER')}
+call['audio']={name:os.environ.get(name) for name in ('WINEDLLOVERRIDES','ALSOFT_DRIVERS','ALSOFT_CONF','ALSOFT_LOGFILE','ALSOFT_LOGLEVEL','DSOAL_LOGFILE','DSOAL_LOGLEVEL')}
 if len(args)>2 and args[1:3]==['reg.exe','import']:
  kind='dsound' if args[-1].endswith('pd2-dsound-restore.reg') else ('audio' if args[-1].endswith('pd2-audio-restore.reg') else 'winebus')
  call['restore_kind']=kind
@@ -114,6 +128,7 @@ if pathlib.Path(args[0]).name=='wineserver' and '-w' in args:
   pid=json.loads(record.read_text())['pid']; status=pathlib.Path('/proc')/str(pid)/'stat'
   call['fps_alive']=status.exists() and status.read_text().split()[2]!='Z'
 with open(os.environ['MOCK_CALLS'],'a') as f:f.write(json.dumps(call)+'\\n')
+if pathlib.Path(args[0]).name=='wineserver' and '-k' in args and os.environ.get('MOCK_STOP_AFTER_GAME_FAIL') and (release.parent/'game-started').exists():raise SystemExit(2)
 prog=pathlib.Path(args[0]).name
 if prog=='wine' and len(args)>1:
  if args[1]=='reg.exe' and '640x480' in args and os.environ.get('MOCK_DESKTOP_FAIL'):raise SystemExit(1)
@@ -167,6 +182,7 @@ if prog=='wine' and len(args)>1:
     os.close(1)
     if os.environ.get('MOCK_AUDIO_HELD_STDERR'):
      time.sleep(10)
+     (release.parent/'audio-stderr-child-completed').touch()
      os._exit(0)
     for _ in range(500):
      if release.exists():
@@ -181,6 +197,7 @@ if prog=='wine' and len(args)>1:
   (pathlib.Path(os.environ['MOCK_CALLS']).parent/'fps.json').write_text(json.dumps(call))
   time.sleep(120)
  if any(a.endswith('Game.exe') for a in args[1:]):
+  (release.parent/'game-started').touch()
   if os.environ.get('MOCK_GAME_DELAY'):time.sleep(float(os.environ['MOCK_GAME_DELAY']))
   if os.environ.get('MOCK_GAME_SLEEP'):time.sleep(120)
   print('secret-CD-key-ABCD-EFGH private account player-name')
@@ -218,12 +235,39 @@ os.execvp(args[0],args)
    'PATH':str(self.base/'bin')+os.pathsep+os.environ['PATH']})
   # Mapper path deliberately has no spaces: PortMaster command macro is split.
  def executable(self,path,text):path.write_text(text);path.chmod(0o755)
- def tearDown(self):self.temp.cleanup()
+ def owned_mock_pids(self):
+  # Exact fixture nonce + UID only; never use names, Wine prefixes or groups.
+  expected=b'MOCK_CALLS='+os.fsencode(str(self.calls))
+  result=[]
+  try:entries=list(pathlib.Path('/proc').iterdir())
+  except OSError:return result
+  for item in entries:
+   if not item.name.isdigit() or int(item.name)==os.getpid():continue
+   try:
+    if item.stat().st_uid!=os.getuid():continue
+    if expected in (item/'environ').read_bytes().split(b'\0'):result.append(int(item.name))
+   except OSError:continue
+  return result
+ def tearDown(self):
+  # Assertions above still inspect normal cleanup first. Retire only leftover
+  # synthetic children after failures, including subprocess.TimeoutExpired.
+  for sig in (signal.SIGTERM,signal.SIGKILL):
+   owned=self.owned_mock_pids()
+   for pid in owned:
+    try:os.kill(pid,sig)
+    except OSError:pass
+   if owned:time.sleep(.1)
+  self.temp.cleanup()
  def execute(self,extra=None):
   env=dict(self.env);env.update(extra or {})
-  started=time.monotonic();result=subprocess.run(['bash',str(SCRIPTS/'run-game.sh')],env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=15)
+  # Two-route diagnostics spawn many synthetic Python processes on native A35.
+  # Bound fixture overhead independently; production runtime deadlines unchanged.
+  started=time.monotonic();result=subprocess.run(['bash',str(SCRIPTS/'run-game.sh')],env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=45)
   return result,time.monotonic()-started
  def records(self):return [json.loads(l) for l in self.calls.read_text().splitlines()]
+ def dsoal_records(self):
+  path=self.base/'run/dsoal-calls.jsonl'
+  return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
  def mapper(self):return json.loads((self.base/'mapper.json').read_text())
  def assert_dead(self,pid):
   try:os.kill(pid,0)
@@ -276,6 +320,7 @@ while True:time.sleep(.1)
    self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args'][1:]) for v in self.records()))
    self.assertFalse(any('joy.cpl' in v['args'] for v in self.records()))
    self.assertFalse((self.base/'navigator.json').exists());self.assert_dead(self.mapper()['pid'])
+   self.assertEqual(self.dsoal_records(),[])
    self.assertIn('"check":"xinput_axes","status":"changed"',r.stdout)
    self.assertIn('"check":"xinput_buttons","status":"changed"',r.stdout)
  def test_probe_reports_no_xinput_even_when_linux_mapper_is_ready(self):
@@ -422,6 +467,83 @@ while True:time.sleep(.1)
   self.assertNotIn('OtherAudio',calls[restore]['restore'])
   self.assertFalse((self.prefix/'drive_c/pd2-audio-restore.reg').exists())
   self.assertIn('"check":"audio_backend","status":"alsa"',result.stdout)
+ def test_default_audio_uses_native_dsoal_winmm_without_fallback(self):
+  result,_=self.execute({'PD2_AUDIO_SDL':'alsa'})
+  self.assertEqual(result.returncode,0,result.stdout)
+  game=next(call for call in self.records() if any(arg.endswith('Game.exe') for arg in call['args']))
+  overrides=dict(part.split('=',1) for part in game['audio']['WINEDLLOVERRIDES'].split(';') if '=' in part)
+  self.assertEqual(overrides['dsound'],'n')
+  self.assertEqual(overrides['dsoal-aldrv'],'n')
+  self.assertEqual(game['audio']['ALSOFT_DRIVERS'],'winmm')
+  self.assertEqual(game['audio']['ALSOFT_LOGLEVEL'],'3')
+  self.assertEqual(game['audio']['DSOAL_LOGLEVEL'],'1')
+  self.assertEqual(game['tuning']['SDL_AUDIODRIVER'],'dummy')
+  folder='C:'+chr(92)+'pd2-audio'+chr(92)+'a'*32+chr(92)
+  self.assertEqual(game['audio']['ALSOFT_CONF'],folder+'openal.ini')
+  self.assertEqual(game['audio']['ALSOFT_LOGFILE'],folder+'openal.log')
+  self.assertEqual(game['audio']['DSOAL_LOGFILE'],folder+'dsoal.log')
+  self.assertIn('"check":"audio_output","status":"dsoal_winmm"',result.stdout)
+ def test_dsoal_stage_follows_wine_setup_and_collect_follows_quiescence(self):
+  result,_=self.execute()
+  self.assertEqual(result.returncode,0,result.stdout)
+  stage,collect=self.dsoal_records()
+  self.assertEqual(stage['args'],['stage','--port',str(self.port),'--prefix',str(self.prefix),'--work',str(self.work)])
+  self.assertEqual(collect['args'],['collect','--prefix',str(self.prefix),'--work',str(self.work)])
+  calls=self.records()
+  game=next(call for call in calls if any(arg.endswith('Game.exe') for arg in call['args']))
+  setup=[call for call in calls if call['time']<game['time']]
+  self.assertTrue(setup)
+  self.assertLess(max(call['time'] for call in setup),stage['time'])
+  self.assertLess(stage['time'],game['time'])
+  self.assertLess(game['time'],collect['time'])
+  stops=[call for call in calls if call['args'][0].endswith('wineserver') and '-w' in call['args']]
+  self.assertLess(max(call['time'] for call in stops),collect['time'])
+ def test_setup_clears_inherited_dsoal_and_openal_configuration(self):
+  inherited={name:'untrusted-inherited' for name in ('ALSOFT_DRIVERS','ALSOFT_CONF','ALSOFT_LOGFILE','ALSOFT_LOGLEVEL','DSOAL_LOGFILE','DSOAL_LOGLEVEL')}
+  inherited['WINEDLLOVERRIDES']='dsound=b;dsoal-aldrv=b'
+  result,_=self.execute(inherited)
+  self.assertEqual(result.returncode,0,result.stdout)
+  stage=self.dsoal_records()[0]
+  setup=[call for call in self.records() if call['time']<stage['time']]
+  self.assertTrue(setup)
+  for call in setup:
+   for key in inherited:
+    if key=='WINEDLLOVERRIDES':
+     self.assertNotIn('dsound=',call['audio'][key])
+     self.assertNotIn('dsoal-aldrv=',call['audio'][key])
+    else:self.assertIsNone(call['audio'][key],(key,call))
+  for key in inherited:
+   if key!='WINEDLLOVERRIDES':self.assertIsNone(stage['environment'][key])
+ def test_dsoal_stage_failure_or_invalid_session_prevents_game(self):
+  for options in ({'MOCK_DSOAL_STAGE_FAIL':'1'},{'MOCK_DSOAL_STAGE_SESSION':'invalid'}):
+   with self.subTest(options=options):
+    self.tearDown();self.setUp()
+    result,_=self.execute(options)
+    self.assertEqual(result.returncode,1,result.stdout)
+    self.assertEqual([record['operation'] for record in self.dsoal_records()],['stage'])
+    self.assertFalse(any(arg.endswith('Game.exe') for call in self.records() for arg in call['args']))
+ def test_dsoal_collect_failure_fails_successful_game_and_preserves_game_failure(self):
+  for game_rc in (0,42):
+   with self.subTest(game_rc=game_rc):
+    self.tearDown();self.setUp()
+    result,_=self.execute({'MOCK_DSOAL_COLLECT_FAIL':'1','MOCK_GAME_RC':str(game_rc)})
+    self.assertEqual(result.returncode,game_rc or 1,result.stdout)
+    self.assertEqual([record['operation'] for record in self.dsoal_records()],['stage','collect'])
+    self.assertIn('"event":"runtime_exit","phase":"game","rc":'+str(game_rc or 1),result.stdout)
+ def test_dsoal_collect_skipped_if_final_wine_stop_fails(self):
+  result,_=self.execute({'MOCK_STOP_AFTER_GAME_FAIL':'1'})
+  self.assertEqual(result.returncode,1,result.stdout)
+  self.assertTrue(any(arg.endswith('Game.exe') for call in self.records() for arg in call['args']))
+  self.assertEqual([record['operation'] for record in self.dsoal_records()],['stage'])
+  self.assertIn('"reason":"timeout"',result.stdout)
+ def test_explicit_legacy_audio_variant_does_not_stage_dsoal(self):
+  result,_=self.execute({'PD2_AUDIO_VARIANT':'A','PD2_AUDIO_SDL':'alsa'})
+  self.assertEqual(result.returncode,0,result.stdout)
+  self.assertEqual(self.dsoal_records(),[])
+  game=next(call for call in self.records() if any(arg.endswith('Game.exe') for arg in call['args']))
+  self.assertNotIn('dsound=',game['audio']['WINEDLLOVERRIDES'])
+  self.assertIsNone(game['audio']['ALSOFT_DRIVERS'])
+  self.assertEqual(game['tuning']['SDL_AUDIODRIVER'],'alsa')
  def test_dsound_opt_in_snapshots_forces_then_restores_only_named_values(self):
   result,_=self.execute({'PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_VARIANT':'C'});self.assertEqual(result.returncode,0,result.stdout)
   calls=self.records()
@@ -623,10 +745,11 @@ while True:time.sleep(.1)
   self.assertFalse((self.work/'audio-driver.log').exists())
  def test_audio_capture_timeout_is_not_reported_as_driver_failure_reason(self):
   try:
-   result,duration=self.execute({'PD2_AUDIO_TEST':'1','PD2_AUDIO_PROBE':'1','MOCK_AUDIO_HELD_STDERR':'1'})
+   result,_=self.execute({'PD2_AUDIO_TEST':'1','PD2_AUDIO_PROBE':'1','MOCK_AUDIO_HELD_STDERR':'1'})
    self.assertEqual(result.returncode,0,result.stdout)
    self.assertIn('"detail":"capture_timeout"',result.stdout)
-   self.assertLess(duration,9)
+   # A timeout must cut off capture without waiting for this held 10s child.
+   self.assertFalse((self.base/'audio-stderr-child-completed').exists())
    self.assertFalse((self.work/'audio-driver.log').exists())
   finally:
    child=self.base/'audio-stderr-child'
@@ -692,6 +815,7 @@ while True:time.sleep(.1)
   result,_=self.execute({'PD2_DIAGNOSTIC':'present','PD2_FPS':'1'})
   self.assertEqual(result.returncode,0,result.stdout)
   self.assertTrue((self.work/'light-selected').exists())
+  self.assertEqual([record['operation'] for record in self.dsoal_records()],['stage','collect'])
   self.assertIn('"check":"presentation_capture","status":"ready"',result.stdout)
   self.assertNotIn('"check":"fps_counter","status":"renderer"',result.stdout)
  def test_diagnostic_native_layers_do_not_start_wine_or_mapper(self):
@@ -706,6 +830,7 @@ while True:time.sleep(.1)
     result,_=self.execute({'PD2_DIAGNOSTIC':mode,'PD2_NATIVE_REAL_LIBS':'','PD2_CRUSTY_GLES':''})
     self.assertEqual(result.returncode,0,result.stdout)
     self.assertFalse(self.calls.exists())
+    self.assertEqual(self.dsoal_records(),[])
     self.assertFalse((self.base/'mapper.json').exists())
     self.assertNotIn('raw-private',result.stdout)
     self.assertIn('"check":"graphics_test_result","status":"completed"',result.stdout)
@@ -722,6 +847,7 @@ while True:time.sleep(.1)
     result,_=self.execute(env)
     self.assertEqual(result.returncode,124 if timed_out else 0,result.stdout)
     self.assertFalse(any(a.endswith('Game.exe') for call in self.records() for a in call['args']))
+    self.assertEqual(self.dsoal_records(),[])
     self.assertIn('"check":"graphics_test_result","status":"'+('timeout' if timed_out else 'completed')+'"',result.stdout)
     if not timed_out:
      probe=next(v for v in self.records() if any(a.endswith('pd2-graphics.exe') for a in v['args']))
@@ -769,7 +895,7 @@ while True:time.sleep(.1)
    ('C', {'PD2_AUDIO_VARIANT':'C','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_DSOUND':'ver2','PD2_AUDIO_METRICS':'1'}, 'dummy', 'ver2', '8192'),
    ('D', {'PD2_AUDIO_VARIANT':'D','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_DSOUND':'wine','PD2_AUDIO_METRICS':'1'}, 'dummy', 'wine', '65536'),
    ('dmix-route-only', {'PD2_AUDIO_VARIANT':'dmix','PD2_AUDIO_SDL':'dummy','PD2_AUDIO_DSOUND':'off','PD2_AUDIO_ROUTE_PROFILE':'dmix160'}, 'dummy', 'off', None),
-   ('default', {}, 'alsa', 'off', None),
+   ('default', {}, 'dummy', 'off', None),
   )
   for label, extra, expected_sdl, expected_dsound, expected_helbuflen in cases:
    with self.subTest(variant=label):

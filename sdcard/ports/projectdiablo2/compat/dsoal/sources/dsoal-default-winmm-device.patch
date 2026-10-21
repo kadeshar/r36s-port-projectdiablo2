@@ -1,0 +1,21 @@
+--- a/src/dsoundoal.cpp
++++ b/src/dsoundoal.cpp
+@@ -137,7 +137,7 @@
+     }
+ 
+     HRESULT hr{DSERR_NODRIVER};
+-    ALCdevicePtr aldev{alcOpenDevice(drv_name)};
++    ALCdevicePtr aldev{alcOpenDevice(nullptr)}; // PD2 WinMM experiment: default output only.
+     if(!aldev)
+     {
+         WARN("CreateDeviceShare Couldn't open device \"%s\", 0x%04x\n", drv_name,
+--- a/src/propset.cpp
++++ b/src/propset.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include <cstring>
+ #include <deque>
++#include <string>
+ 
+ #include <dsconf.h>
+ #include <mmdeviceapi.h>
