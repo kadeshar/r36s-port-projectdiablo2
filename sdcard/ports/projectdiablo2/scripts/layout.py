@@ -129,7 +129,10 @@ def atomic_session_json(path, value):
         pending.replace(path)
     finally:
         if pending is not None:
-            pending.unlink(missing_ok=True)
+            try:
+                pending.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def sha(path):
