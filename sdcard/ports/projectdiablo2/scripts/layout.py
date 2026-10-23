@@ -9,6 +9,7 @@ import pathlib
 import re
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
 
@@ -256,12 +257,22 @@ def native_cast_file(data, state):
             raise LayoutError('unsupported_runtime')
         return content
 
-    source = verified(sources[0], native_cast.SOURCE_SIZE, native_cast.SOURCE_SHA256)
+    source_path = regular(sources[0])
+    # Read only enough for supported builds. Unknown seasonal DLLs remain
+    # untouched and launch without this optional binary controller fix.
+    limit = max(spec['source_size'] for spec in native_cast.SUPPORTED_BUILDS)
+    with source_path.open('rb') as stream:
+        source = stream.read(limit + 1)
+    spec = native_cast.source_spec(source)
+    if spec is None:
+        print('PD2_EVENT {"event":"session_probe","phase":"preflight",'
+              '"check":"native_cast","status":"unknown_source"}', file=sys.stderr)
+        return None
     try:
         incoming = native_cast.native_cast_bytes(source)
     except ValueError:
         raise LayoutError('unsupported_runtime') from None
-    cache = pathlib.Path(state) / 'compat/pd2-native-cast-640-v1'
+    cache = pathlib.Path(state) / 'compat' / spec['cache_key']
     destination = cache / 'ProjectDiablo.dll'
     pending = destination.with_name(destination.name + '.new')
     no_links(destination)
@@ -271,7 +282,9 @@ def native_cast_file(data, state):
     if not destination.exists():
         checked_dir(cache)
         atomic_bytes(destination, incoming)
-    verified(destination, native_cast.TARGET_SIZE, native_cast.TARGET_SHA256)
+    verified(destination, spec['target_size'], spec['target_sha256'])
+    print('PD2_EVENT {"event":"session_probe","phase":"preflight",'
+          '"check":"native_cast","status":"applied"}', file=sys.stderr)
     return destination
 
 

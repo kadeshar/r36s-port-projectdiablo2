@@ -1,6 +1,9 @@
 """Private native-cast cache integration; synthetic assets only, no game run."""
 
+import contextlib
 import hashlib
+import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -24,13 +27,20 @@ class NativeCastLayoutTests(unittest.TestCase):
         self.source_bytes = self.source.read_bytes()
         self.target_bytes = self.source_bytes + b'private synthetic native-cast target'
         self.builder = mock.Mock(return_value=self.target_bytes)
-        stub = types.SimpleNamespace(
-            SOURCE_SIZE=len(self.source_bytes),
-            SOURCE_SHA256=hashlib.sha256(self.source_bytes).hexdigest(),
-            TARGET_SIZE=len(self.target_bytes),
-            TARGET_SHA256=hashlib.sha256(self.target_bytes).hexdigest(),
+        self.spec = {
+            'source_size': len(self.source_bytes),
+            'source_sha256': hashlib.sha256(self.source_bytes).hexdigest(),
+            'target_size': len(self.target_bytes),
+            'target_sha256': hashlib.sha256(self.target_bytes).hexdigest(),
+            'cache_key': 'pd2-native-cast-640-v1',
+        }
+        self.stub = types.SimpleNamespace(
+            SUPPORTED_BUILDS=(self.spec,),
+            source_spec=lambda source: next((spec for spec in self.stub.SUPPORTED_BUILDS
+                if len(source) == spec['source_size']
+                and hashlib.sha256(source).hexdigest() == spec['source_sha256']), None),
             native_cast_bytes=self.builder)
-        modules = mock.patch.dict(sys.modules, {'native_cast': stub})
+        modules = mock.patch.dict(sys.modules, {'native_cast': self.stub})
         modules.start()
         self.addCleanup(modules.stop)
         # Exercise real resolution preflight for 1024 too; only its hash is fake.
@@ -112,13 +122,16 @@ class NativeCastLayoutTests(unittest.TestCase):
                 self.assertEqual(self.links, {})
                 self.assertEqual(digest_tree(self.data), self.original_data)
 
-    def test_valid_cache_revalidates_original_size_and_hash(self):
+    def test_valid_cache_never_used_for_unknown_original_size_or_hash(self):
         layout.native_cast_file(self.data, self.state)
         cache_mtime = self.cache.stat().st_mtime_ns
-        for content in (self.source_bytes[:-1], b'X' + self.source_bytes[1:]):
+        for content in (self.source_bytes[:-1], b'X' + self.source_bytes[1:],
+                        self.source_bytes + b'new season'):
             self.source.write_bytes(content)
             self.builder.reset_mock()
-            self.assert_closed(lambda: layout.native_cast_file(self.data, self.state))
+            with contextlib.redirect_stderr(io.StringIO()) as warning:
+                self.assertIsNone(layout.native_cast_file(self.data, self.state))
+            self.assert_unknown_warning(warning.getvalue())
             self.builder.assert_not_called()
             self.assertEqual(self.source.read_bytes(), content)
             self.assertEqual(self.cache.read_bytes(), self.target_bytes)
@@ -192,15 +205,75 @@ class NativeCastLayoutTests(unittest.TestCase):
                 self.assertFalse(self.cache.exists())
                 self.assertEqual(digest_tree(self.data), self.original_data)
 
-    def test_native_640_unknown_source_rejected_before_work_links(self):
-        for content in (self.source_bytes[:-1], b'X' + self.source_bytes[1:]):
+    def assert_unknown_warning(self, text):
+        self.assertEqual(text.count('\n'), 1)
+        self.assertTrue(text.startswith('PD2_EVENT '))
+        event = json.loads(text.removeprefix('PD2_EVENT '))
+        self.assertEqual(event, {'event': 'session_probe', 'phase': 'preflight',
+                                 'check': 'native_cast', 'status': 'unknown_source'})
+        self.assertNotIn(str(self.root), text)
+        self.assertNotIn('private', text)
+
+    def test_native_640_unknown_source_launches_original_with_fixed_warning(self):
+        for content in (self.source_bytes[:-1], b'X' + self.source_bytes[1:],
+                        self.source_bytes + b'private unknown future season'):
             self.source.write_bytes(content)
+            before = digest_tree(self.data)
             self.builder.reset_mock()
-            self.assert_closed(self.prepare_mode)
+            with contextlib.redirect_stderr(io.StringIO()) as warning:
+                result = self.prepare_mode()
+            self.assert_unknown_warning(warning.getvalue())
+            self.assertEqual(result['input_mode'], 'native')
             self.builder.assert_not_called()
-            self.assertEqual(self.links, {})
+            self.assertEqual(self.links[str(self.work_dll)], str(self.source))
             self.assertFalse(self.cache.exists())
-            self.assertEqual(self.source.read_bytes(), content)
+            self.assertEqual(digest_tree(self.data), before)
+
+    def test_unknown_source_restores_original_work_mapping_after_known_build(self):
+        for volatile in (True, False):
+            with self.subTest(volatile=volatile):
+                self.source.write_bytes(self.source_bytes)
+                self.prepare_mode(volatile=volatile)
+                self.assertEqual(self.links[str(self.work_dll)], str(self.cache))
+                self.source.write_bytes(b'private future seasonal DLL')
+                self.builder.reset_mock()
+                with contextlib.redirect_stderr(io.StringIO()) as warning:
+                    self.prepare_mode(volatile=volatile)
+                self.assert_unknown_warning(warning.getvalue())
+                self.assertEqual(self.links[str(self.work_dll)], str(self.source))
+                self.assertEqual(self.cache.read_bytes(), self.target_bytes)
+                self.builder.assert_not_called()
+
+    def test_supported_builds_use_separate_authenticated_caches(self):
+        second_source = self.source_bytes + b'second season'
+        second_target = second_source + b'second private derivative'
+        second_spec = {
+            'source_size': len(second_source),
+            'source_sha256': hashlib.sha256(second_source).hexdigest(),
+            'target_size': len(second_target),
+            'target_sha256': hashlib.sha256(second_target).hexdigest(),
+            'cache_key': 'pd2-native-cast-640-second-v1',
+        }
+        self.stub.SUPPORTED_BUILDS += (second_spec,)
+        self.prepare_mode()
+        self.source.write_bytes(second_source)
+        self.builder.return_value = second_target
+        second_cache = self.state / 'compat' / second_spec['cache_key'] / 'ProjectDiablo.dll'
+        self.prepare_mode()
+        self.assertEqual(self.links[str(self.work_dll)], str(second_cache))
+        self.assertEqual(second_cache.read_bytes(), second_target)
+        self.assertEqual(self.cache.read_bytes(), self.target_bytes)
+        # Switching back must restore first build, not reuse second derivative.
+        self.source.write_bytes(self.source_bytes)
+        self.builder.return_value = self.target_bytes
+        self.prepare_mode()
+        self.assertEqual(self.links[str(self.work_dll)], str(self.cache))
+        # A corrupt known derivative still blocks; never silently replace it.
+        self.source.write_bytes(second_source)
+        self.builder.return_value = second_target
+        second_cache.write_bytes(b'corrupt')
+        self.assert_closed(self.prepare_mode)
+        self.assertEqual(second_cache.read_bytes(), b'corrupt')
 
     def test_builder_rejection_becomes_closed_layout_error(self):
         self.builder.side_effect = ValueError('private details must not escape')
@@ -215,8 +288,11 @@ class NativeCastLayoutTests(unittest.TestCase):
         self.source = self.source.with_name('pRoJeCtDiAbLo.DlL')
         interim.rename(self.source)
         before = digest_tree(self.data)
-        self.prepare_mode()
-        self.assertEqual(self.links[str(self.work_dll)], str(self.cache))
+        # The helper accepts DLL case variants; full imported-layout validation
+        # separately requires canonical game filenames on case-sensitive Linux.
+        self.assertEqual(layout.native_cast_file(self.data, self.state), self.cache)
+        self.builder.assert_called_once_with(self.source_bytes)
+        self.assertEqual(self.cache.read_bytes(), self.target_bytes)
         self.assertEqual(digest_tree(self.data), before)
 
     @unittest.skipIf(os.name == 'nt', 'Case-distinct names need case-sensitive filesystem')

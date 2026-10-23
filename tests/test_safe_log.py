@@ -64,6 +64,22 @@ class SafeLogTests(unittest.TestCase):
                 self.assertIsNone(safe_log.validate_event(dict(value, raw='secret')))
             self.assertIsNone(safe_log.validate_event(dict(value, status='arbitrary')))
 
+    def test_native_cast_statuses_are_closed(self):
+        for phase in ('preflight', 'launch'):
+            for status in ('applied', 'unknown_source'):
+                value = dict(event='session_probe', phase=phase,
+                             check='native_cast', status=status)
+                self.assertEqual(safe_log.validate_event(value), value)
+                self.assertIsNone(safe_log.validate_event(dict(value, path='private.dll')))
+                self.assertIsNone(safe_log.validate_event(dict(value, count=1)))
+                self.assertIsNone(safe_log.validate_event(dict(value, status='arbitrary')))
+                self.assertIsNone(safe_log.validate_event(dict(value, phase='game')))
+        value = dict(event='session_probe', phase='preflight',
+                     check='native_cast', status='unknown_source')
+        rc, _ = self.stream(wire(value))
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.rows()[0], value)
+
     def test_retired_variant_events_are_rejected(self):
         for check, status in (('performance_profile', 'opengl'), ('renderer_variant', 'gles2'),
                               ('box_variant', 'a35'), ('tuning_profile', 'gl-kms'),

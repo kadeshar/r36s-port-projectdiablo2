@@ -30,6 +30,8 @@ Buy the original game and expansion, then download the mod:
 - **[Project Diablo 2 download](https://www.projectdiablo2.com/download)** — mod installer from the official website.
 
 ### Step by Step:
+> **Supported Project Diablo 2 seasons:** only **Season 13** and **Season 14**. Install game files from one of these seasons. Other season DLLs may start without the optional controller binary patch, but are not officially supported or tested on R36S. Older season clients can be found in the [Unofficial PD2 Client Mirror](https://github.com/Khazra89/Unofficial-PD2-Client-Mirror).
+
 1. Copy the contents of the `sdcard/ports/` directory to the `ports/` directory on your console SD card (`EASYROMS` partition or secondary SD card):
    ```
    roms/ports/

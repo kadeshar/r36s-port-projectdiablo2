@@ -16,13 +16,42 @@ CALLSITES = ((0x2180FD, bytes.fromhex("e8de1b0400")),
              (0x21863F, bytes.fromhex("e89c160400")))
 ORIGINAL_TARGET_RVA = 0x259CE0
 
+# Exact builds only: seasonal addresses are established by offline disassembly,
+# never inferred at runtime. Keep S13's cache and derivative byte-for-byte stable.
+SUPPORTED_BUILDS = (
+    dict(season=13, source_size=SOURCE_SIZE, source_sha256=SOURCE_SHA256,
+         target_size=TARGET_SIZE, target_sha256=TARGET_SHA256,
+         cache_key='pd2-native-cast-640-v1', callsites=CALLSITES,
+         original_target_rva=ORIGINAL_TARGET_RVA, native_mode_rva=0x3D9867,
+         width_rva=0x4DCEE8, height_rva=0x4DCE08, mouse_y_rva=0x4DCE14),
+    dict(season=14, source_size=5252096,
+         source_sha256='41d49d63d531050bb0c89db9efd191fefd322378683159be5dc059498ae1e424',
+         target_size=5252608,
+         target_sha256='22901728b35ca2a8054fe8e97b5a84a32f5aa5bfae6eabbf1edf35d1ff1de58e',
+         cache_key='pd2-native-cast-640-s14-v1',
+         callsites=((0x29BBC5, bytes.fromhex('e8963e0500')),
+                    (0x29C0FF, bytes.fromhex('e85c390500'))),
+         original_target_rva=0x2EFA60, native_mode_rva=0x4AC2FE,
+         width_rva=0x5D6F08, height_rva=0x5D6E20, mouse_y_rva=0x5D6E2C),
+)
+
+
+def source_spec(source):
+    """Recognize supported bytes without trying to patch unknown seasonal DLLs."""
+    candidates = [spec for spec in SUPPORTED_BUILDS if len(source) == spec['source_size']]
+    if not candidates:
+        return None
+    digest = hashlib.sha256(source).hexdigest()
+    return next((spec for spec in candidates if digest == spec['source_sha256']), None)
+
 
 def _align(value, alignment):
     return (value + alignment - 1) // alignment * alignment
 
 
-def _wrapper(rva):
+def _wrapper(rva, spec=None):
     """PC-relative i386 stdcall(event*) wrapper; no imports or relocations."""
+    spec = SUPPORTED_BUILDS[0] if spec is None else spec
     code = bytearray(b"\x9c\x60\xe8\x00\x00\x00\x00\x5b")
     pc = rva + 7  # CALL pushes the address of POP EBX.
     branches = []
@@ -34,15 +63,15 @@ def _wrapper(rva):
         code.extend(bytes((opcode, 0)))
         branches.append(len(code) - 1)
 
-    code.extend(b"\x80\xbb" + disp(0x3D9867) + b"\x01")
+    code.extend(b"\x80\xbb" + disp(spec['native_mode_rva']) + b"\x01")
     skip(0x75)  # native controller only
-    code.extend(b"\x8b\x83" + disp(0x4DCEE8))
+    code.extend(b"\x8b\x83" + disp(spec['width_rva']))
     code.extend(b"\x81\x38" + struct.pack("<I", 640))
     skip(0x75)
-    code.extend(b"\x8b\x83" + disp(0x4DCE08))
+    code.extend(b"\x8b\x83" + disp(spec['height_rva']))
     code.extend(b"\x81\x38" + struct.pack("<I", 480))
     skip(0x75)
-    code.extend(b"\x8b\x83" + disp(0x4DCE14))
+    code.extend(b"\x8b\x83" + disp(spec['mouse_y_rva']))
     code.extend(b"\x81\x38" + struct.pack("<i", 431))
     skip(0x7E)  # signed JLE: legitimate Y=431 is not changed
     code.extend(b"\xc7\x00" + struct.pack("<i", 240))
@@ -51,13 +80,15 @@ def _wrapper(rva):
         code[branch] = restore - (branch + 1)
     code.extend(b"\x61\x9d\xff\x74\x24\x04")  # restore; duplicate event
     code.extend(b"\xe8" + struct.pack(
-        "<i", ORIGINAL_TARGET_RVA - (rva + len(code) + 5)))
+        "<i", spec['original_target_rva'] - (rva + len(code) + 5)))
     code.extend(b"\xc2\x04\x00")
     return bytes(code)
 
 
-def _build(source):
+def _build(source, spec=None):
     """Structural checks remain independent of the public source hash gate."""
+    spec = SUPPORTED_BUILDS[0] if spec is None else spec
+
     def require(condition, message):
         if not condition:
             raise ValueError(message)
@@ -103,7 +134,7 @@ def _build(source):
         return matches[0]
 
     patches = []
-    for rva, preimage in CALLSITES:
+    for rva, preimage in spec['callsites']:
         offset = file_offset(rva, len(preimage))
         require(source[offset:offset + len(preimage)] == preimage,
                 "changed callsite preimage")
@@ -111,7 +142,7 @@ def _build(source):
     rva = _align(max(vr + max(vs, rs) for _, vs, vr, rs, rp in sections),
                  section_alignment)
     raw = _align(len(source), file_alignment)
-    code = _wrapper(rva)
+    code = _wrapper(rva, spec)
     raw_size = _align(len(code), file_alignment)
     image_size = _align(rva + len(code), section_alignment)
     code_size = struct.unpack_from("<I", source, opt + 4)[0] + raw_size
@@ -133,10 +164,11 @@ def _build(source):
 
 def native_cast_bytes(source):
     """Return pinned derivative bytes; reject unknown/modified input or output."""
-    if len(source) != SOURCE_SIZE or hashlib.sha256(source).hexdigest() != SOURCE_SHA256:
+    spec = source_spec(source)
+    if spec is None:
         raise ValueError("unknown native-cast source")
-    result = _build(source)
-    if len(result) != TARGET_SIZE or hashlib.sha256(result).hexdigest() != TARGET_SHA256:
+    result = _build(source, spec)
+    if len(result) != spec['target_size'] or hashlib.sha256(result).hexdigest() != spec['target_sha256']:
         raise ValueError("native-cast target integrity mismatch")
     return result
 

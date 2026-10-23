@@ -165,6 +165,7 @@ def validate_event(value, allow_summary=False):
             'game_config': ('ready', 'missing', 'invalid'),
             'save_path': ('canonical', 'missing', 'other', 'unknown'),
             'movement_mode': ('emulated', 'native', 'mixed', 'disabled', 'unknown'),
+            'native_cast': ('applied', 'unknown_source'),
             'virtual_gamepad': ('ready', 'missing', 'denied', 'invalid', 'unavailable'),
             'winebus_backend': ('udev', 'restored'),
             'xinput_api': ('ready', 'library_missing', 'entry_missing'),
@@ -280,7 +281,8 @@ def validate_event(value, allow_summary=False):
             fields.add('detail')
             if value.get('detail') not in ('no_log', 'silent', 'libasound', 'load_error', 'alsa_error', 'unknown', 'capture_error', 'capture_timeout'):
                 return None
-        phases = ('launch', 'shutdown') if check == 'audio_output' else ('launch',)
+        phases = (('preflight', 'launch') if check == 'native_cast' else
+                  ('launch', 'shutdown') if check == 'audio_output' else ('launch',))
         if value.get('phase') not in phases or set(value) != fields:
             return None
     if event == 'x11_probe':
