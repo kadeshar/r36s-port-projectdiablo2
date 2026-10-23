@@ -296,6 +296,20 @@ class LayoutTests(unittest.TestCase):
     def test_nonvolatile_links_empty_game_state_not_imported_engine_files(self):
         self.check_imported_engine_files_are_not_linked(volatile=False)
 
+    def test_imported_dsoal_dlls_are_not_linked(self):
+        for index, name in enumerate(('dsound.dll', 'dsoal-aldrv.dll', 'DSOUND.DLL', 'DSOAL-ALDRV.DLL')):
+            with self.subTest(name=name):
+                data = self.root / ('dsoal-import-' + str(index))
+                shutil.copytree(self.data, data)
+                imported = write(data, 'ProjectD2/' + name, b'custom sound wrapper')
+                self.links.clear()
+                self.link_calls.clear()
+                result = self.prepare(volatile=True, data_override=data)
+                work = Path(result['work']) / 'ProjectD2'
+                self.assertFalse(any(target == imported for _, target in self.link_calls))
+                self.assertNotIn(str(work / name), self.links)
+                self.assertFalse((work / name).exists())
+
     def test_repeated_updates_preserve_user_configs_and_runtime(self):
         self.prepare()
         user = self.port / 'config/ProjectDiablo.cfg'

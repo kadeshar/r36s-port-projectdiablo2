@@ -99,6 +99,16 @@ class ProductionContracts(unittest.TestCase):
         self.assertEqual(set(artifacts), set(audio.DLLS))
         self.assertTrue(all(audio.pe32(data) for data in artifacts.values()))
 
+    def test_payload_accepts_canonical_lf_and_crlf_manifest(self):
+        folder = ROOT / 'sdcard/ports/projectdiablo2'
+        manifest_raw = (folder / 'compat/dsoal/manifest.json').read_bytes()
+        lf_bytes = manifest_raw.replace(b'\r\n', b'\n')
+        crlf_bytes = lf_bytes.replace(b'\n', b'\r\n')
+        with mock.patch.object(audio, 'bounded_bytes', side_effect=lambda path, limit: lf_bytes if path.name == 'manifest.json' else path.read_bytes()):
+            self.assertEqual(set(audio.payload(folder)), set(audio.DLLS))
+        with mock.patch.object(audio, 'bounded_bytes', side_effect=lambda path, limit: crlf_bytes if path.name == 'manifest.json' else path.read_bytes()):
+            self.assertEqual(set(audio.payload(folder)), set(audio.DLLS))
+
     def test_release_includes_binary_and_corresponding_source(self):
         files = json.loads((ROOT / 'release-files.json').read_text())
         folder = ROOT / 'sdcard/ports/projectdiablo2/compat/dsoal'

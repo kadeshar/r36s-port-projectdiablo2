@@ -15,7 +15,8 @@ import struct
 import sys
 import uuid
 
-PAYLOAD_MANIFEST_SHA256 = 'b1cea47159b4ce1cdcdebfc5249fd33e406dc5fc8475a4586fc0e47a1923cf48'
+PAYLOAD_MANIFEST_SHA256 = '9b2a8e0abc29d5adceafbf0585c7cce9ecaeb6571a2c1fd1eb318f9513bb5ce0'
+PAYLOAD_MANIFEST_CRLF_SHA256 = 'b1cea47159b4ce1cdcdebfc5249fd33e406dc5fc8475a4586fc0e47a1923cf48'
 DLLS = ('dsound.dll', 'dsoal-aldrv.dll')
 MARKER = '.audio-dsoal-session.json'
 MODE = 'dsoal'
@@ -123,8 +124,12 @@ def pe32(data):
 def payload(port):
     incoming = directory(directory(port) / 'compat/dsoal')
     raw = bounded_bytes(incoming / 'manifest.json', DOCUMENT_LIMIT)
+    raw_digest = hashlib.sha256(raw).hexdigest()
+    lf_digest = hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest()
     if (not re.fullmatch('[0-9a-f]{64}', PAYLOAD_MANIFEST_SHA256)
-            or hashlib.sha256(raw).hexdigest() != PAYLOAD_MANIFEST_SHA256):
+            or (raw_digest != PAYLOAD_MANIFEST_SHA256
+                and raw_digest != PAYLOAD_MANIFEST_CRLF_SHA256
+                and lf_digest != PAYLOAD_MANIFEST_SHA256)):
         raise DsoalError()
     manifest = decode_document(raw)
     records = manifest.get('artifacts')

@@ -740,9 +740,11 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
             if source.is_dir():
                 continue
             if destination == work / 'ProjectD2' and (
-                    source.name in WORK_CONFIGS or source.name.lower() in ('bncache.dat', 'bnetlog.txt')):
+                    source.name in WORK_CONFIGS
+                    or source.name.lower() in ('bncache.dat', 'bnetlog.txt', 'dsound.dll', 'dsoal-aldrv.dll')):
                 # Imported engine cache/logs are not immutable assets. Wine must
                 # create fresh files in RAM; persistent mode uses game-state below.
+                # Audio DLLs are staged exclusively by audio_dsoal into volatile work.
                 continue
             regular(source)
             target = source
