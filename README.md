@@ -15,6 +15,7 @@ The project combines **PortMaster**, the **Westonpack Wayland/X11** compositor, 
 - **Full Gamepad Controls:** Bundled Xbox 360 translator maps all 17 physical R36S buttons and analog sticks, including L3, R3, Select, Start, and FN/Menu.
 - **Smooth Audio:** DSOAL + OpenAL Soft routes sound through Wine's waveOut backend, with lag-free playback confirmed in gameplay testing on R36S.
 - **Themed Start Menu:** Diablo II-styled X11 menu; default internal resolution is `640x480`, with `800x600`, `1024x768`, and `native` (`1068x600`) choices plus optional FPS toggle.
+- **On-Screen Keyboard (OSK):** Built-in Diablo II styled virtual keyboard for character creation and text input without physical peripherals. Triggered via **SELECT + X** or **FN + X**, with direct X11 XTEST text injection into Wine.
 
 ---
 
@@ -72,6 +73,7 @@ The production launcher uses **PD2's native controller support** through a virtu
 | **Select / Start** | Back / Start |
 | **L3 / R3** | Left / Right stick click |
 | **FN / Menu** | Guide button; firmware may reserve this input |
+| **SELECT + X** or **FN + X** | **Toggle On-Screen Keyboard** (Character creation & text entry) |
 
 ---
 

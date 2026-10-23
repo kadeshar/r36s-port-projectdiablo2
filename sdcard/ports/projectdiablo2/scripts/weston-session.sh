@@ -23,7 +23,7 @@ stop_pid() {
 cleanup() {
  local rc=$?;trap - EXIT INT TERM
  stop_pid "$app_pid"
- for record in metrics.pid compositor-metrics.pid mapper-metrics.pid fps.pid game.pid mapper.pid; do
+ for record in metrics.pid compositor-metrics.pid mapper-metrics.pid fps.pid game.pid mapper.pid osk.pid; do
    pid=
    [[ -f "${PD2_RUN}/$record" && ! -L "${PD2_RUN}/$record" ]] && read -r pid < "${PD2_RUN}/$record"
    if [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && $(ps -o pgid= -p "$pid" | tr -d ' ') == "$pid" ]]; then stop_pid "$pid" 1;fi

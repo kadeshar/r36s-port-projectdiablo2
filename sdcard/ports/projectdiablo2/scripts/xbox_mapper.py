@@ -358,6 +358,7 @@ def main():
         probe_event('ready')
         probe_event(layout, 'mapper_layout')
         dropped = False
+        held_physical = {c for c in range(KEY_MAX + 1) if initial_keys & (1 << c)}
         while not stop:
             if observer is not None:
                 observer.refresh()
@@ -384,6 +385,36 @@ def main():
                 else:
                     if observer is not None:
                         observer.process(kind, code, value)
+                    else:
+                        if kind == EV_KEY:
+                            if value == 1:
+                                held_physical.add(code)
+                            elif value == 0:
+                                held_physical.discard(code)
+                        is_osk_trigger = False
+                        if kind == EV_KEY and value == 1:
+                            # Select+X (0x2c0+0x133) or Fn+X (0x2c4+0x133)
+                            if (code == 0x133 and (0x2c0 in held_physical or 0x2c4 in held_physical)) or \
+                               (code in (0x2c0, 0x2c4) and 0x133 in held_physical):
+                                is_osk_trigger = True
+                            # L3+R3 (0x2c2+0x2c3)
+                            elif (code == 0x2c3 and 0x2c2 in held_physical) or (code == 0x2c2 and 0x2c3 in held_physical):
+                                is_osk_trigger = True
+                            # Select+D-Pad Down (0x2c0+0x221)
+                            elif (code == 0x221 and 0x2c0 in held_physical) or (code == 0x2c0 and 0x221 in held_physical):
+                                is_osk_trigger = True
+                        if is_osk_trigger:
+                            for xcode in XBOX_KEYS.values():
+                                emit(EV_KEY, xcode, 0)
+                            emit(EV_SYN, SYN_REPORT, 0)
+                            try:
+                                import osk
+                                osk.show_osk(pfd=pfd)
+                            except Exception:
+                                pass
+                            current_keys = snapshot(pfd, translator)
+                            held_physical = {c for c in range(KEY_MAX + 1) if current_keys & (1 << c)}
+                            continue
                     translator.process(kind, code, value)
         return 0
     except PermissionError:

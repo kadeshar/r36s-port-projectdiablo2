@@ -61,6 +61,7 @@
   "projectdiablo2/scripts/controller_probe.py",
   "projectdiablo2/scripts/winebus_config.py",
   "projectdiablo2/scripts/xbox_mapper.py",
+  "projectdiablo2/scripts/osk.py",
   "projectdiablo2/scripts/xinput_result.py",
   "projectdiablo2/compat/xinput-probe/xinput-probe.exe",
   "projectdiablo2/defaults/controls-native.gptk",

@@ -20,6 +20,15 @@ A startup returning to Ports with `invalid_layout` immediately after `volatile_w
 
 The SSH repair backed up and replaced only the layout script. Isolated on-device preflight passed with the pinned native-cast DLL, unchanged persistent configuration and unchanged imported cache. The subsequent normal session reached `volatile_work_ready`, reported `640x480` and native movement, and entered the game; the user confirmed R2 worked. Thirty-nine layout tests passed, including canonical/mixed-case imported cache/log regressions in both work modes.
 
+## On-Screen Keyboard (Character Creation & Text Input)
+
+Because the R36S lacks a physical keyboard and Diablo II requires character name entry during character creation, the port includes a built-in on-screen keyboard ([`osk.py`](<../sdcard/ports/projectdiablo2/scripts/osk.py>)):
+
+- **Activation Combos:** **SELECT + X** (standard PortMaster shortcut), **FN + X**, **L3 + R3**, or **SELECT + D-Pad Down**. Single press of **FN / Menu** passes through to the game engine for Automap toggle without conflict.
+- **X11 XTEST Text Injection:** The keyboard connects directly to the private X11 session (`DISPLAY=:0`) and injects confirmed text via the X11 **XTEST** extension (`XTestFakeInput`). This bypasses Weston's disabled libinput (`CRUSTY_NO_LIBINPUT=1`) and delivers genuine hardware-equivalent keystrokes into Wine (`winex11.drv`) and `Game.exe`.
+- **Focus Safety:** When **DONE** or **START** is pressed, the OSK window is unmapped (`UnmapWindow`) before injection, allowing Weston kiosk-shell to switch focus back to `Game.exe` before keys are dispatched.
+- **Controls:** D-Pad / Left Stick for navigation, **A** to type, **B** for backspace, **X** for space, **Y** to toggle Caps, **START** to confirm, **SELECT / FN** to cancel.
+
 ## Current deployment and renderer
 
 Deploy directly from `sdcard/ports/`: copy the production launcher and updated `projectdiablo2/` payload into the existing Ports directory. **Do not build an update ZIP, delete game data, reset the prefix, or overwrite user configurations.**
