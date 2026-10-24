@@ -222,6 +222,104 @@ class OSKVirtualKeyboardTests(unittest.TestCase):
 
 
 
+class OSKReplacementTests(unittest.TestCase):
+    def test_replacement_plan_clears_old_name_from_any_caret(self):
+        for old in ('', 'OldHero', 'abcdefghijklmno'):
+            for caret in range(len(old) + 1):
+                with self.subTest(old=old, caret=caret):
+                    text, pos, selected = old, caret, False
+                    for sym, _code, modifier in osk.name_key_sequence('New', replace=True):
+                        if sym == ord('a') and modifier == 'ctrl':
+                            selected = True
+                        elif sym == 0xff08:
+                            if selected:
+                                text, pos, selected = '', 0, False
+                            elif pos:
+                                text = text[:pos - 1] + text[pos:]
+                                pos -= 1
+                        elif len(text) < 15:
+                            text = text[:pos] + chr(sym) + text[pos:]
+                            pos += 1
+                    self.assertEqual(text, 'New')
+
+    def test_append_does_not_select_or_clear_field(self):
+        self.check_backend_events(False, [osk.KEY_A])
+
+    def test_ctrl_a_backends_release_ctrl_before_backspace_and_text(self):
+        self.assertIn(osk.KEY_LEFTCTRL, osk.ALL_VIRTUAL_KEYS)
+        # Both press and release sequences must include Ctrl+A, then BKSP, then text.
+        self.check_backend_events(True, [osk.KEY_LEFTCTRL, osk.KEY_A,
+                                            osk.KEY_BACKSPACE, osk.KEY_A])
+
+    def check_backend_events(self, replace, expected):
+        with mock.patch.object(osk, 'emit_key') as emit:
+            osk.type_string(10, 'a', send_enter=False, replace=replace, sleep_fn=lambda s: None)
+        released = ([osk.KEY_A, osk.KEY_LEFTCTRL, osk.KEY_BACKSPACE, osk.KEY_A]
+                    if replace else expected)
+        self.assertEqual([c.args[1] for c in emit.call_args_list if c.args[2] == 1], expected)
+        self.assertEqual([c.args[1] for c in emit.call_args_list if c.args[2] == 0], released)
+        if replace:
+            self.assertEqual([c.args[1:] for c in emit.call_args_list], [
+                (osk.KEY_LEFTCTRL, 1), (osk.KEY_A, 1), (osk.KEY_A, 0),
+                (osk.KEY_LEFTCTRL, 0), (osk.KEY_BACKSPACE, 1), (osk.KEY_BACKSPACE, 0),
+                (osk.KEY_A, 1), (osk.KEY_A, 0)])
+
+        screen = osk.OSKScreen.__new__(osk.OSKScreen)
+        screen._xtest_opcode = 130
+        screen.window = 1234
+        screen._keysym_map = ({ord('a'): (osk.KEY_A + 8, False),
+                               0xffe3: (osk.KEY_LEFTCTRL + 8, False)}
+                              if replace else {})
+        screen._shift_code = 50
+        requests = []
+        screen._request = lambda opcode, detail, body, deadline: requests.append((opcode, body))
+        screen._roundtrip = lambda deadline: None
+        self.assertTrue(screen.type_string('a', replace=replace, delay=0, sleep_fn=lambda s: None))
+        self.assertEqual(requests[0][0], 10)  # Restore game focus before clearing.
+        for kind in (2, 3):
+            self.assertEqual([body[1] - 8 for op, body in requests
+                              if op == 130 and body[0] == kind], expected if kind == 2 else released)
+
+        x11, xtst = mock.MagicMock(), mock.MagicMock()
+        x11.XOpenDisplay.return_value = 0x1000
+        x11.XStringToKeysym.return_value = 0xffe1
+        # Exercise Linux-keycode fallback for Ctrl, Backspace and text.
+        x11.XKeysymToKeycode.return_value = 0
+        with mock.patch('ctypes.CDLL', side_effect=[x11, xtst]):
+            self.assertTrue(osk.type_via_libxtst('a', replace=replace, delay=0, sleep_fn=lambda s: None))
+        for pressed in (1, 0):
+            self.assertEqual([c.args[1] - 8 for c in xtst.XTestFakeKeyEvent.call_args_list
+                              if c.args[2] == pressed], expected if pressed else released)
+
+    def test_show_osk_replaces_on_every_backend_and_cancel_leaves_field_alone(self):
+        replace = True
+        for backend in ('wire', 'libxtst', 'uinput', 'cancel'):
+            with self.subTest(backend=backend), \
+                 mock.patch.object(osk.fcntl, 'ioctl', return_value=bytes(96)), \
+                 mock.patch.object(osk, 'OSKScreen') as screen_cls, \
+                 mock.patch.object(osk, 'PadReader'), \
+                 mock.patch.object(osk, 'run_osk_loop', return_value=None if backend == 'cancel' else 'New'), \
+                 mock.patch.object(osk, 'type_via_libxtst', return_value=backend == 'libxtst') as lib, \
+                 mock.patch.object(osk, 'type_string') as uinput, \
+                 mock.patch.object(osk.time, 'sleep'):
+                screen = screen_cls.return_value
+                screen.type_string.return_value = backend == 'wire'
+                result = osk.show_osk(pfd=5, ufd_keyboard=10)
+                if backend == 'cancel':
+                    self.assertIsNone(result)
+                    screen.type_string.assert_not_called()
+                    lib.assert_not_called()
+                    uinput.assert_not_called()
+                    continue
+                self.assertEqual(result, 'New')
+                screen.type_string.assert_called_once_with('New', send_enter=False, replace=replace)
+                if backend != 'wire':
+                    lib.assert_called_once_with('New', send_enter=False, replace=replace)
+                if backend == 'uinput':
+                    uinput.assert_called_once_with(10, 'New', send_enter=False, replace=replace)
+                screen.close.assert_called_once()
+
+
 class OSKHotkeyTests(unittest.TestCase):
     def test_single_fn_menu_does_not_trigger_to_prevent_map_collision(self):
         # Single Fn/Menu must NOT trigger keyboard so Automap in-game remains fully functional

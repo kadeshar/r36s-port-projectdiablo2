@@ -51,6 +51,7 @@ KEY_BACKSPACE = 14
 KEY_TAB = 15
 KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O, KEY_P = range(16, 26)
 KEY_ENTER = 28
+KEY_LEFTCTRL = 29
 KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L = range(30, 39)
 KEY_LEFTSHIFT = 42
 KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M = range(44, 51)
@@ -58,7 +59,7 @@ KEY_DOT = 52
 KEY_SPACE = 57
 
 ALL_VIRTUAL_KEYS = (
-    KEY_ESC, KEY_ENTER, KEY_BACKSPACE, KEY_TAB, KEY_SPACE, KEY_LEFTSHIFT, KEY_MINUS, KEY_DOT,
+    KEY_ESC, KEY_ENTER, KEY_BACKSPACE, KEY_TAB, KEY_SPACE, KEY_LEFTSHIFT, KEY_LEFTCTRL, KEY_MINUS, KEY_DOT,
     KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9, KEY_0,
     KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O, KEY_P,
     KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L,
@@ -247,22 +248,36 @@ def emit_key(fd, code, value):
     os.write(fd, EVENT.pack(0, 0, EV_SYN, SYN_REPORT, 0))
 
 
-def type_string(fd, text, send_enter=True, sleep_fn=time.sleep):
+def name_key_sequence(text, replace=False):
+    """Shared keysym/Linux-key/modifier plan for all typing backends.
+
+    Replace the entire D2 name field with Ctrl+A, then Backspace.
+    The third item is Shift (bool), or 'ctrl' for the selection shortcut.
+    """
+    keys = []
+    if replace:
+        keys.extend([(ord('a'), KEY_A, 'ctrl'), (0xff08, KEY_BACKSPACE, False)])
+    keys.extend((ord(ch), CHAR_MAP[ch][0], CHAR_MAP[ch][1])
+                for ch in text if ch in CHAR_MAP)
+    return keys
+
+
+def type_string(fd, text, send_enter=True, sleep_fn=time.sleep, replace=False):
     """Emit keystrokes for text through uinput device into game window."""
-    for ch in text:
-        if ch not in CHAR_MAP:
-            continue
-        code, shift = CHAR_MAP[ch]
-        if shift:
-            emit_key(fd, KEY_LEFTSHIFT, 1)
+    for _sym, code, modifier in name_key_sequence(text, replace):
+        modifier_code = KEY_LEFTCTRL if modifier == 'ctrl' else KEY_LEFTSHIFT
+        if modifier:
+            emit_key(fd, modifier_code, 1)
             sleep_fn(0.015)
-        emit_key(fd, code, 1)
-        sleep_fn(0.02)
-        emit_key(fd, code, 0)
-        sleep_fn(0.015)
-        if shift:
-            emit_key(fd, KEY_LEFTSHIFT, 0)
+        try:
+            emit_key(fd, code, 1)
+            sleep_fn(0.02)
+            emit_key(fd, code, 0)
             sleep_fn(0.015)
+        finally:
+            if modifier:
+                emit_key(fd, modifier_code, 0)
+                sleep_fn(0.015)
     if send_enter:
         sleep_fn(0.1)
         emit_key(fd, KEY_ENTER, 1)
@@ -270,7 +285,7 @@ def type_string(fd, text, send_enter=True, sleep_fn=time.sleep):
         emit_key(fd, KEY_ENTER, 0)
 
 
-def type_via_libxtst(text, send_enter=False, delay=0.035, sleep_fn=time.sleep):
+def type_via_libxtst(text, send_enter=False, delay=0.035, sleep_fn=time.sleep, replace=False):
     """Type string into focused X11 window using libXtst and libX11 ctypes."""
     try:
         import ctypes
@@ -309,29 +324,31 @@ def type_via_libxtst(text, send_enter=False, delay=0.035, sleep_fn=time.sleep):
         if not shift_code:
             shift_code = 50
 
-        for ch in text:
-            need_shift = ch.isupper() or ch == '_'
-            sym = ord(ch)
+        for sym, linux_code, modifier in name_key_sequence(text, replace):
+            modifier_code = shift_code
+            if modifier == 'ctrl':
+                modifier_code = int(x11.XKeysymToKeycode(dpy, 0xffe3)) or KEY_LEFTCTRL + 8
             code = int(x11.XKeysymToKeycode(dpy, sym))
-            if not code and need_shift and ch.lower() != ch:
-                code = int(x11.XKeysymToKeycode(dpy, ord(ch.lower())))
-            if not code and ch in CHAR_MAP:
-                linux_code, _ = CHAR_MAP[ch]
+            if not code and modifier and chr(sym).isupper():
+                code = int(x11.XKeysymToKeycode(dpy, ord(chr(sym).lower())))
+            if not code:
                 code = linux_code + 8
 
             if not code:
                 continue
 
-            if need_shift:
-                xtst.XTestFakeKeyEvent(dpy, shift_code, 1, 0)
+            if modifier:
+                xtst.XTestFakeKeyEvent(dpy, modifier_code, 1, 0)
                 sleep_fn(0.015)
-            xtst.XTestFakeKeyEvent(dpy, code, 1, 0)
-            sleep_fn(delay)
-            xtst.XTestFakeKeyEvent(dpy, code, 0, 0)
-            sleep_fn(delay)
-            if need_shift:
-                xtst.XTestFakeKeyEvent(dpy, shift_code, 0, 0)
-                sleep_fn(0.015)
+            try:
+                xtst.XTestFakeKeyEvent(dpy, code, 1, 0)
+                sleep_fn(delay)
+                xtst.XTestFakeKeyEvent(dpy, code, 0, 0)
+                sleep_fn(delay)
+            finally:
+                if modifier:
+                    xtst.XTestFakeKeyEvent(dpy, modifier_code, 0, 0)
+                    sleep_fn(0.015)
             x11.XFlush(dpy)
 
         if send_enter:
@@ -589,7 +606,7 @@ class OSKScreen:
             self._shift_code = 50
         self._enter_code = keysym_map.get(0xff0d, (36, False))[0]
 
-    def type_string(self, text, send_enter=False, delay=0.035, sleep_fn=time.sleep):
+    def type_string(self, text, send_enter=False, delay=0.035, sleep_fn=time.sleep, replace=False):
         """Type characters into active window via XTEST extension."""
         if not self._xtest_opcode:
             return False
@@ -607,26 +624,26 @@ class OSKScreen:
                                kind, code, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
             self._request(self._xtest_opcode, 2, body, deadline)
 
-        for ch in text:
-            sym = ord(ch)
-            if sym in self._keysym_map:
-                code, need_shift = self._keysym_map[sym]
-            elif ch in CHAR_MAP:
-                linux_code, need_shift = CHAR_MAP[ch]
-                code = linux_code + 8
+        for sym, linux_code, modifier in name_key_sequence(text, replace):
+            code, mapped_shift = self._keysym_map.get(sym, (linux_code + 8, modifier))
+            if modifier == 'ctrl':
+                modifier_code = self._keysym_map.get(0xffe3, (KEY_LEFTCTRL + 8, False))[0]
             else:
-                continue
+                modifier = mapped_shift
+                modifier_code = self._shift_code
 
-            if need_shift:
-                send_key(self._shift_code, True)
+            if modifier:
+                send_key(modifier_code, True)
                 sleep_fn(0.015)
-            send_key(code, True)
-            sleep_fn(delay)
-            send_key(code, False)
-            sleep_fn(delay)
-            if need_shift:
-                send_key(self._shift_code, False)
-                sleep_fn(0.015)
+            try:
+                send_key(code, True)
+                sleep_fn(delay)
+                send_key(code, False)
+                sleep_fn(delay)
+            finally:
+                if modifier:
+                    send_key(modifier_code, False)
+                    sleep_fn(0.015)
             self._roundtrip(deadline)
 
         if send_enter:
@@ -971,7 +988,7 @@ def show_osk(pfd=None, ufd_keyboard=None, initial_text='', max_len=15):
             typed = False
             # 1. Direct X11 wire protocol XTEST over existing connection
             try:
-                typed = screen.type_string(confirmed_name, send_enter=False)
+                typed = screen.type_string(confirmed_name, send_enter=False, replace=True)
             except Exception as err:
                 sys.stderr.write(f'PD2 OSK wire XTest error: {err}\n')
                 sys.stderr.flush()
@@ -983,7 +1000,7 @@ def show_osk(pfd=None, ufd_keyboard=None, initial_text='', max_len=15):
             if not typed:
                 time.sleep(0.2)
                 try:
-                    typed = type_via_libxtst(confirmed_name, send_enter=False)
+                    typed = type_via_libxtst(confirmed_name, send_enter=False, replace=True)
                 except Exception as err:
                     sys.stderr.write(f'PD2 OSK libXtst error: {err}\n')
                     sys.stderr.flush()
@@ -997,7 +1014,7 @@ def show_osk(pfd=None, ufd_keyboard=None, initial_text='', max_len=15):
                         close_kfd = True
                     if kfd is not None:
                         time.sleep(0.3)
-                        type_string(kfd, confirmed_name, send_enter=False)
+                        type_string(kfd, confirmed_name, send_enter=False, replace=True)
                         time.sleep(0.3)
                         typed = True
                 except Exception as err:
