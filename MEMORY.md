@@ -4,6 +4,35 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## Release 1.2-test.2 — Input Subsystem Compatibility (RG353V + Multi-device)
+
+- **Issue #2 Follow-up Diagnosis (RG353V Start Menu Unresponsive Controls):**
+  - Reporter `rattusludus-jpg` confirmed build boots to selection menu on RG353V, but controls do not react.
+  - Root Cause:
+    1. In [`start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py), `Pad.__init__` solely called `mapper.choose_pad(mapper.physical_devices())`. In `xbox_mapper.py`, `choose_pad` explicitly checks for R36S hardware vendor/product `(0x484b, 0x1100)`. On RG353V, built-in controls register as generic platform/gpio devices (`0x0001:0x0001` or `0x0000:0x0000`), so `choose_pad` returned `None`, leaving `Pad.fd = None` with zero inputs polled.
+    2. Event mapping lacked standard Linux gamepad codes: `BTN_START` (`0x13b` / 315), `BTN_SELECT` (`0x13a` / 314), and keyboard directional keys (`103`, `108`, `105`, `106`).
+    3. `KeyDecoder.feed()` discarded all `kind != 1` (`EV_KEY`). On RG353V and many other PortMaster-compatible handhelds, D-pad and analog sticks emit `kind == 3` (`EV_ABS`) Hat events (`ABS_HAT0X` 16, `ABS_HAT0Y` 17) or stick events (`ABS_X` 0, `ABS_Y` 1).
+- **Code Fixes:**
+  - **Input Discovery Fallback ([`start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py)):**
+    - Checks `mapper.choose_pad()` first (preserving verified R36S physical path). If `None`, scans `/dev/input/event*` and opens candidate event devices non-blocking with multi-fd `select.select()` polling.
+  - **Hat (`EV_ABS`) & Stick Support ([`start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py)):**
+    - `KeyDecoder.feed()` processes `EV_ABS`:
+      - D-Pad Hats (`ABS_HAT0X` 16, `ABS_HAT0Y` 17) mapped to left/right/up/down.
+      - Analog Sticks (`ABS_X` 0, `ABS_Y` 1 with deadzone ±16000) mapped to left/right/up/down.
+  - **Extended Gamepad Actions ([`start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py)):**
+    - Added `0x13b` (`BTN_START` -> accept), `0x13a` (`BTN_SELECT` -> cancel), `103`/`108`/`105`/`106` (arrow keys), `28`/`57` (Enter/Space), `1` (Esc).
+    - Integrated `PD2_SWAP_AB` environment support into `get_pad_actions()`.
+- **Validation & Test Suite:**
+  - Added `test_rg353v_standard_gamepad_hat_and_stick_inputs` in [`tests/test_start_menu.py`](tests/test_start_menu.py) (all 29 tests pass).
+  - Verified `tests/test_layout.py` (all 44 tests pass).
+  - Verified live Pad enumeration on console via SSH (`PAD FDS: 1`).
+- **Release Package 1.2-test.2:**
+  - Built [`.temp/release/Project Diablo 2 R36S port 1.2-test.2.zip`](file:///c:/src/r36s-port-projectdiablo2/.temp/release/Project%20Diablo%202%20R36S%20port%201.2-test.2.zip) (189,079,057 bytes, SHA256: `bf16bd6f5678b49bd2856e61a36e252078a513a9c565ac5b321fb715ada4ca56`).
+- **Console Deployment:**
+  - Deployed updated `start_menu.py` to console `/roms2/ports/projectdiablo2/scripts/start_menu.py`.
+
+---
+
 ## Release 1.2-test.1 — Multi-device Compatibility (RG353V + R36S)
 
 - **Production Code Updates (`sdcard/ports/`):**
