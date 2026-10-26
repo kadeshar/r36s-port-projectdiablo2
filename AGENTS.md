@@ -171,6 +171,29 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 - **No `dist/` or ZIP archives:** Never build `dist/` update ZIP packages (`projectdiablo2-port-update.zip`) after completing tasks.
 - **Direct `sdcard/` deployment:** Handheld console files must always be taken directly from the `sdcard/ports/` directory (`Project Diablo 2.sh` and `projectdiablo2/`). All changes and additions must be directly made and maintained inside `sdcard/ports/`.
 
+### Fresh Installation Simulation Procedure (R36S Console):
+To reliably test clean first-boot scenarios (such as dynamic `state.ext4` image creation, runtime squashfs mounts, and fresh Wine prefix configuration) without risk of data loss:
+- **Script Location:** [`tools/simulate_fresh_install.py`](tools/simulate_fresh_install.py)
+- **Data Protection Guarantee:**
+  - Game saves located across `saves/`, `saves_s14/`, `gamedata/*/Save/`, and `$HOME/.local/share/pd2-r36s/saves/` are scanned and backed up into timestamped `/roms2/ports/projectdiablo2-saves-backup-<timestamp>/` before any removal.
+  - Game assets under `gamedata/` remain completely untouched.
+  - Active saves in `saves/` and `saves_s14/` are preserved in-place; save counts are verified before and after the procedure.
+- **State Cleaned:**
+  - Safely detaches any hanging loop device attached to `state.ext4` and unmounts `storage/mounted-state` / `storage/mounted-wine-check`.
+  - Removes `storage/state.ext4` and `storage/session.lock`, forcing first-boot generation logic on subsequent launch.
+  - Clears `logs/*.log`.
+  - Cleans ephemeral runtime caches and temporary prefix data in `$HOME/.local/share/pd2-r36s`.
+- **Usage:**
+  ```bash
+  # Remote execution via SSH (default console 192.168.50.135):
+  python tools/simulate_fresh_install.py --dry-run
+  python tools/simulate_fresh_install.py
+
+  # Local execution directly on the handheld console:
+  python3 tools/simulate_fresh_install.py --local
+  ```
+- **Post-Reset Verification:** After running the simulation, the console is in a clean first-boot state. As dictated by Rule 7, only the user may initiate the subsequent game test on the console.
+
 ### Running Local Tests:
 ```bash
 # Configuration and layout tests:

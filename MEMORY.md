@@ -4,6 +4,82 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## Issue #6 & Fresh Installation Simulation Procedure
+
+- **Issue #6 Diagnosis:**
+  - In Issue #3, user reported `insufficient_space` on R36H (ArkOS/darkosen). An experimental SD storage fix was sent via Google Drive (`Project-Diablo-2-SD-Storage-Experimental.zip`). That build included a pre-formatted 1GB `storage/state.ext4` image inside the ZIP. It worked because the image had valid ext4 superblock magic `0xEF53` (`\x53\xef`).
+  - In commit `02f6dc8` (Release 1.0), `state.ext4` was omitted from distribution to prevent 1GB archive bloat. `ensure_state_image()` was added to `sdcard/ports/projectdiablo2/storage-tools/storage_common.py` to create and format `state.ext4` on first run via `mke2fs`.
+  - Fatal bug in `ensure_state_image()`: missed `import shutil` and `import subprocess`. On first launch, it created a 1GB sparse zero-filled file, then crashed with `NameError: name \x27subprocess\x27 is not defined`.
+  - On subsequent launches, `state.exists()` was True, so `ensure_state_image()` was skipped; validation checked magic at offset 1080, found `0x00 0x00` instead of `0x53 0xef`, and raised `StorageError: State image is not an ext filesystem`.
+- **Issue #6 Fix & Verification:**
+  - Fixed `sdcard/ports/projectdiablo2/storage-tools/storage_common.py`:
+    - Added missing `import shutil` and `import subprocess`.
+    - Made `ensure_state_image()` atomic: formats into temporary `.tmp` image, verifies ext superblock magic (`0xEF53` / `\x53\xef`), and atomically renames.
+    - Added self-healing: if an incomplete, corrupted, or zeroed `state.ext4` already exists on disk from a previous interrupted run, it detects invalid magic/size, deletes the broken file, and recreates cleanly.
+  - Added unit test suite `tests/test_storage_common.py` covering valid image skip, corrupted/zeroed image healing, missing image creation, and `.tmp` cleanup on error. (4/4 passed).
+  - Executed fresh installation simulation on console via SSH:
+    - All 32 save files safely backed up to `/roms2/ports/projectdiablo2-saves-backup-20261026_145626/`.
+    - Removed `state.ext4`, `session.lock`, logs, and temporary home state.
+    - Post-reset integrity verified 32/32 saves intact and `Game.exe` untouched.
+  - Deployed fixed `storage_common.py` (`9bdbfc0ddbd3...`) to `/roms2/ports/projectdiablo2/storage-tools/storage_common.py` on console `192.168.50.135`. Verified remote sha256 checksum and clean bytecode compilation.
+  - Tested non-game validation via `storage_launcher.py --check` on console:
+    - Successfully auto-created and formatted fresh 1GB `state.ext4` on device (23s).
+    - Mounted ext4 and Wine squashfs in private namespace with 1,005,211,648 available bytes.
+    - Exited cleanly with code 0.
+  - Reset console back to clean first-boot state via `tools/simulate_fresh_install.py` with 32/32 saves intact, ready for user manual launch test.
+
+- **Release Package 1.1-test.1:**
+  - Built `.temp/release/Project Diablo 2 R36S port 1.1-test.1.zip` (188,208,676 bytes, SHA256: `7c3a3329f75cfadd8b22d7e003c8cf5e37656154da17a7c6eeb7a2018d0cdceb`).
+  - Package structure strictly analogous to release 1.0 (contains root `Project Diablo 2.sh` and `projectdiablo2/` tree).
+  - Excludes ephemeral `storage/state.ext4`, session locks, logs, save data, and `__pycache__` bytecode.
+  - Contains updated `storage-tools/storage_common.py` with missing imports fix, atomic `.tmp` creation, and auto-healing for corrupted zero-filled images.
+
+- **Fresh Installation Simulation Tool (`tools/simulate_fresh_install.py`):**
+  - Created to simulate a clean first-boot install on the target R36S console without affecting game saves or game data.
+  - Recursively locates and counts all save files across `saves/`, `saves_s14/`, `gamedata/*/Save/`, and `$HOME/.local/share/pd2-r36s/saves/`.
+  - Backs up all saves to a timestamped backup directory (`/roms2/ports/projectdiablo2-saves-backup-<timestamp>/`).
+  - Cleans first-run state: detaches loop devices, unmounts private mountpoints, deletes `storage/state.ext4` and `session.lock`, clears `logs/*.log`, and clears runtime caches in `$HOME/.local/share/pd2-r36s`.
+  - Verifies post-reset integrity: ensures `state.ext4` is removed, all 32 save files remain intact, and game executable is present.
+  - Supports `--dry-run`, remote execution via SSH (`plink`/`ssh`), and `--local` execution on device.
+  - Documented procedure in `AGENTS.md`.
+
+---
+
+## Issue #2 — RG353V dArkOS Weston & Xwayland Fix Candidate (v3)
+
+- **Problem Diagnosis (Issue #2 / RG353V dArkOS Trixie):**
+  - Original issue: `wp_weston` exited with `rc 139` (SIGSEGV) on `weston_start` due to Mali Bifrost G52 driver stub collisions with Wayland symbols.
+  - Candidate fix 1 (`rg353v-wayland-fix-1.zip`): Preloaded `libwayland-server.so.0` and `libwayland-client.so.0` before `wp_weston`. Weston successfully booted (`drm_module`, `gl_module`, `egl_ready`, `gl_ready`, `output_ready`, `xwayland_module`, `xserver_listening`). However, `x11_probe` failed with `xwayland_crash` (SIGABRT) on client connection. Root cause: `wp_weston` passed inherited `LD_PRELOAD` containing `libcrusty.so` down to Xwayland, while `XWAYLAND_LD_LIBRARY_PATH` also contained `$backendlib` (`crusty_gbm`). When Xwayland's `libepoxy` queried EGL extensions, Crusty intercepted it without `libCRU.so`, triggering `abort()` inside `libepoxy`.
+  - Candidate fix 2 (`rg353v-wayland-fix-2.zip`): Reporter saw immediate exit to EmulationStation with no log. Cause: `launch.sh` dropped `/..` when updating from base `Project Diablo 2.sh`, setting `BASE=$(cd -- "$(dirname -- "$0")" && pwd -P)`. Because `launch.sh` resides in `projectdiablo2-rg353v-fix/`, `BASE` pointed to the fix subdirectory instead of `ports/`, making `$PD2_PORT` invalid and failing namespace mountpoint checks immediately before logging started.
+- **Architectural Solution (Candidate v3):**
+  - **Launch Path Correction (`launch.sh`):** Restored `BASE=$(cd -- "$(dirname -- "$0")/.." && pwd -P)` and `FIX="$BASE/projectdiablo2-rg353v-fix"`. Preserved alignment with base port 02f6dc8 (sd-storage, overlay).
+  - **Compositor Preload (`weston-session.sh`):** Maintained preloading of `$W/lib_aarch64/libwayland-server.so.0:$W/lib_aarch64/libwayland-client.so.0:$preload` for `wp_weston` to bypass Mali Wayland stubs.
+  - **Xwayland Isolation (`weston-session.sh`):**
+    - Injected `export LD_PRELOAD=` into `$R/bin/Xwayland` wrapper to prevent Xwayland from inheriting `libcrusty.so`.
+    - Sanitized `XWAYLAND_LD_LIBRARY_PATH="${xwayland_gl:+$xwayland_gl:}$W/lib_aarch64"`, removing `$backendlib` (`crusty_gbm`) so Xwayland never loads Crusty's fake EGL/GBM/DRM shims.
+  - **Resolution of `insufficient_space` Regression (Candidate v3.1):**
+    - User verified Candidate v3 on R36S: Weston, Xwayland, and start menu succeeded (`start_menu status: selected`).
+    - Failure occurred at `volatile_work_prepare` (`layout.py --volatile-work`) with `insufficient_space`. Root cause: `launch.sh` previously defined `PD2_EXPERIMENT_STATE="$HOME/.local/share/pd2-rg353v-wayland-fix"`. In a fresh state directory, `wineprefix/.initialized` does not exist, triggering `layout.py`'s check requiring 700 MB free space on `$HOME` (`/dev/mmcblk0p2` on R36S only had 372 MB free).
+    - Fixed by unifying `PD2_STATE` with existing production state `$HOME/.local/share/pd2-r36s` where `wineprefix/.initialized` already exists (bypassing the 700 MB requirement and reusing existing extracted Wine runtime).
+    - Removed wrapper's shared flock on `session.lock` so `launch.sh` cleanly acquires the exclusive lock on `pd2-r36s/session.lock`. Mutable game data (`config/`, `saves/`, `logs/`) remains completely isolated under `projectdiablo2-rg353v-fix/` via namespace bind-mounts.
+  - **Resolution of `invalid_layout` Stale Config Symlink Collision (Isolated Fix):**
+    - If a previous game session or manual CLI test terminated before unlinking regular files from `state/game/ProjectD2/`, non-volatile preflight `layout.py` raised `invalid_layout` because `link()` refused to overwrite existing non-symlink files.
+    - Added self-healing `layout.py` directly inside `projectdiablo2-rg353v-fix/scripts/layout.py`.
+    - `Project Diablo 2 - RG353V Fix.sh` bind-mounts `$FIX/scripts/layout.py` onto `$PORT/scripts/layout.py` strictly inside the candidate's private mount namespace, leaving the production `projectdiablo2/` tree completely untouched on disk.
+- **Packaging & Deployment:**
+  - Packaged update into `.temp/rg353v-wayland-fix-3.zip` (minimal add-on) and `.temp/projectdiablo2-rg353v.zip` (complete standalone port).
+  - Standalone full port archive [`.temp/projectdiablo2-rg353v.zip`](file:///c:/src/r36s-port-projectdiablo2/.temp/projectdiablo2-rg353v.zip) (188 MB, SHA256: `dd808baf71a59afd6734c966e098e49192153bf142397f5b351f14ab878b09a4`):
+    - Contains full port payload completely isolated under `projectdiablo2-rg353v/` and launchers `Project Diablo 2 - RG353V.sh` / `Project Diablo 2 - RG353V Fix.sh`.
+    - Bundles all runtimes (`wine-8.0-x86.squashfs`, `weston_pkg_0.2.squashfs`, `box86`, `vc_redist.x86.exe`, `wine-8.0-x86.tar.xz`), `compat/`, `defaults/`, `licenses/`, and `storage-tools/`.
+    - Incorporates RG353V Wayland preload + Xwayland isolation in `scripts/weston-session.sh` and layout self-healing in `scripts/layout.py`.
+    - Completely standalone; zero overlap or dependency on production `projectdiablo2/`.
+  - Reverted console `/roms2/ports/projectdiablo2/scripts/layout.py` back to pristine git release (`3115b7ca...`).
+  - Deployed `Project Diablo 2 - RG353V Fix.sh` and `projectdiablo2-rg353v-fix/` (`launch.sh`, `weston-session.sh`, `scripts/layout.py`) to `/roms2/ports/` on target console `192.168.50.135`.
+  - User verified on R36S console: game starts and runs properly.
+- **Testing Standard:** In compliance with AGENTS.md rule 7, game launch on the console remains exclusively reserved for the user. Local validation confirmed bash syntax and clean library loading without crash.
+
+---
+
 ## Issue #2 — compositor-only diagnostic v2
 
 - Reporter [v1 response](https://github.com/kadeshar/r36s-port-projectdiablo2/issues/2#issuecomment-6389765216): plain/Crusty `--version` both rc0, providers ready, no truncation. Constructor-only crash not reproduced; actual DRM/SDL/EGL startup remains unproven. User requests next diagnostic for reporter; no RG353V available locally.

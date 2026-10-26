@@ -3,7 +3,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
 
 
 class StorageError(Exception):
@@ -39,25 +41,63 @@ def digest(path):
 
 def ensure_state_image(port, info):
     state = port / info['state_file']
-    if not state.exists():
-        mkfs = None
-        for candidate in ('/sbin/mke2fs', '/sbin/mkfs.ext4', '/usr/sbin/mke2fs', '/usr/sbin/mkfs.ext4'):
-            if os.path.exists(candidate):
-                mkfs = candidate
-                break
-        if not mkfs:
-            mkfs = shutil.which('mke2fs') or shutil.which('mkfs.ext4')
-        if not mkfs:
-            raise StorageError(f"Missing state image {state} and mke2fs not found to create it.")
-        state.parent.mkdir(parents=True, exist_ok=True)
-        target_size = info.get('state_bytes', 1024**3)
-        with open(str(state), 'wb') as f:
+    target_size = info.get('state_bytes', 1024**3)
+    if state.exists():
+        try:
+            if state.is_file() and state.stat().st_size == target_size:
+                with state.open('rb') as stream:
+                    stream.seek(1080)
+                    if stream.read(2) == b'\x53\xef':
+                        return
+        except OSError:
+            pass
+        # Corrupted, zero-filled or incomplete image from earlier crash
+        try:
+            state.unlink()
+        except OSError as exc:
+            raise StorageError(f"Cannot remove invalid state image {state}: {exc}")
+
+    mkfs = None
+    for candidate in ('/sbin/mke2fs', '/sbin/mkfs.ext4', '/usr/sbin/mke2fs', '/usr/sbin/mkfs.ext4'):
+        if os.path.exists(candidate):
+            mkfs = candidate
+            break
+    if not mkfs:
+        mkfs = shutil.which('mke2fs') or shutil.which('mkfs.ext4')
+    if not mkfs:
+        raise StorageError(f"Missing state image {state} and mke2fs not found to create it.")
+
+    state.parent.mkdir(parents=True, exist_ok=True)
+    tmp_state = state.with_name(state.name + '.tmp')
+    if tmp_state.exists():
+        try:
+            tmp_state.unlink()
+        except OSError:
+            pass
+
+    try:
+        with open(str(tmp_state), 'wb') as f:
             f.seek(target_size - 1)
             f.write(b'\0')
         cmd = [str(mkfs), '-t', 'ext4', '-F', '-m0',
                '-O', '^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file',
-               str(state)]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+               str(tmp_state)]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, universal_newlines=True)
+        if res.returncode != 0:
+            err = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+            raise StorageError(f"mke2fs failed: {err}")
+        with open(str(tmp_state), 'rb') as f:
+            f.seek(1080)
+            if f.read(2) != b'\x53\xef':
+                raise StorageError("Created state image failed ext superblock verification")
+        tmp_state.replace(state)
+    except Exception:
+        if tmp_state.exists():
+            try:
+                tmp_state.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def validated(port):
@@ -70,10 +110,8 @@ def validated(port):
             or info.get('state_file') != 'storage/state.ext4'):
         raise StorageError('Unsupported storage manifest')
     wine = regular(port / info['wine_file'])
-    state = port / info['state_file']
-    if not state.exists():
-        ensure_state_image(port, info)
-    state = regular(state)
+    ensure_state_image(port, info)
+    state = regular(port / info['state_file'])
     if (type(info.get('wine_size')) is not int or wine.stat().st_size != info['wine_size']
             or digest(wine) != info.get('wine_sha256')):
         raise StorageError('Read-only Wine image integrity failed')
