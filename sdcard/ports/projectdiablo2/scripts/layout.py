@@ -793,6 +793,8 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
             if not destination.exists() or config_content(destination, name in JSON_CONFIGS) != content:
                 atomic_bytes(destination, content)
         else:
+            if destination.exists() and not destination.is_symlink():
+                destination.unlink()
             link(destination, active)
     if volatile_work:
         # Caller mounts a fresh tmpfs here. Refuse persistent legacy log links
@@ -808,7 +810,10 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
             if not active.exists():
                 active.touch()
             regular(active)
-            link(work / 'ProjectD2' / name, active)
+            dest = work / 'ProjectD2' / name
+            if dest.exists() and not dest.is_symlink():
+                dest.unlink()
+            link(dest, active)
     link(prefix / 'drive_c/Diablo II', work)
     link(prefix / 'dosdevices/c:', prefix / 'drive_c')
     link(prefix / 'dosdevices/s:', saves)

@@ -4,6 +4,35 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## Release 1.2-test.1 — Multi-device Compatibility (RG353V + R36S)
+
+- **Production Code Updates (`sdcard/ports/`):**
+  - **Weston Wayland Preload & Xwayland Isolation (`scripts/weston-session.sh`):**
+    - Preloaded `$W/lib_aarch64/libwayland-server.so.0:$W/lib_aarch64/libwayland-client.so.0:$preload` for `wp_weston` to bypass Mali Bifrost G52 driver stub collisions with Wayland symbols on RG353V (dArkOS Trixie).
+    - Injected `export LD_PRELOAD=` into `$R/bin/Xwayland` wrapper to prevent Xwayland from inheriting `libcrusty.so`.
+    - Sanitized `XWAYLAND_LD_LIBRARY_PATH="${xwayland_gl:+$xwayland_gl:}$W/lib_aarch64"` removing `$backendlib` (`crusty_gbm`) to avoid fake EGL symbol collisions in `libepoxy`.
+  - **Preflight Layout Self-Healing (`scripts/layout.py`):**
+    - Unlinks stale regular files at target config/dat paths before calling `link(destination, active)`, preventing `LayoutError('invalid_layout')` if a previous session was interrupted.
+    - Verified all 44 unit tests pass in `tests/test_layout.py`.
+  - **Storage Tools Robustness (`storage-tools/storage_common.py`):**
+    - Added missing `shutil` and `subprocess` imports.
+- **Release Package 1.2-test.1:**
+  - Built [`.temp/release/Project Diablo 2 R36S port 1.2-test.1.zip`](file:///c:/src/r36s-port-projectdiablo2/.temp/release/Project%20Diablo%202%20R36S%20port%201.2-test.1.zip) (188,274,792 bytes, SHA256: `e7f5ef580de29acbf33f3166911638d4d04b1b1a7ab4147f947a4ac182741e06`).
+  - Standard PortMaster distribution structure: contains `Project Diablo 2.sh` and `projectdiablo2/` tree.
+- **Console Deployment & Fresh Installation Simulation:**
+  - Executed `tools/simulate_fresh_install.py` on console `192.168.50.135`:
+    - Backed up 32 save files to `/roms2/ports/projectdiablo2-saves-backup-20261026_155122`.
+    - Cleaned `storage/state.ext4`, session locks, logs, and home state cache. Verified post-reset integrity (32/32 saves intact, `Game.exe` verified).
+  - Deployed updated files to console:
+    - `/roms2/ports/Project Diablo 2.sh` (`d1306ac7...`)
+    - `/roms2/ports/projectdiablo2/scripts/layout.py` (`16cc51ba...`)
+    - `/roms2/ports/projectdiablo2/scripts/weston-session.sh` (`3c957ae2...`)
+    - `/roms2/ports/projectdiablo2/storage-tools/storage_common.py` (`9bdbfc0d...`)
+    - `/roms2/ports/Project Diablo 2 R36S port 1.2-test.1.zip` (`e7f5ef58...`)
+- **Testing Standard:** In compliance with AGENTS.md rule 7, game launch on the console remains exclusively reserved for the user. Console is in clean first-boot state ready for user manual launch test.
+
+---
+
 ## Issue #6 & Fresh Installation Simulation Procedure
 
 - **Issue #6 Diagnosis:**

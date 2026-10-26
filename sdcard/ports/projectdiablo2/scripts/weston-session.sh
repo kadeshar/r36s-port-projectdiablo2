@@ -103,7 +103,7 @@ chown "$uid:$gid" "$XDG_RUNTIME_DIR" "$R/bin"
 # Xwayland is found through PATH and this build supports a configurable path.
 runuser -u "$PD2_USER" --preserve-environment -- python3 -B "$PD2_PORT/scripts/x11_auth.py" --path "$PD2_XAUTHORITY" || { error xauth_prepare_failed;exit 2; }
 [[ -f "$PD2_XAUTHORITY" && ! -L "$PD2_XAUTHORITY" && $(stat -c %a "$PD2_XAUTHORITY") == 600 ]] || { error xauth_prepare_failed;exit 2; }
-printf '#!/bin/bash\nexec "%s/bin/Xwayland" "$@" -auth "%s/xauthority" -fp built-ins\n' "$W" "$R" > "$R/bin/Xwayland"
+printf '#!/bin/bash\nexport LD_PRELOAD=\nexec "%s/bin/Xwayland" "$@" -auth "%s/xauthority" -fp built-ins\n' "$W" "$R" > "$R/bin/Xwayland"
 chmod 700 "$R/bin/Xwayland";chown "$uid:$gid" "$R/bin/Xwayland"
 export PATH="$R/bin:$W/bin:$PATH"
 export DISPLAY=:0 WAYLAND_DISPLAY=wayland-pd2
@@ -177,10 +177,13 @@ mkfifo -m600 "$R/compositor.pipe" || { error invalid_layout;exit 2; }
 [[ -p "$R/compositor.pipe" && ! -L "$R/compositor.pipe" ]] || { error invalid_layout;exit 2; }
 ( cd /;exec python3 -B "$PD2_PORT/scripts/graphics_probe.py" --stream ) < "$R/compositor.pipe" & compositor_log_pid=$!
 printf 'PD2_EVENT {"event":"compositor_note","phase":"runtime","note":"root_service"}\n'
+for wayland_library in "$W/lib_aarch64/libwayland-server.so.0" "$W/lib_aarch64/libwayland-client.so.0"; do
+ [[ -r "$wayland_library" ]] || { error graphics_provider_missing; exit 2; }
+done
 stage weston_start
 setsid env -u DISPLAY -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$R/compositor-runtime" \
- SDL_VIDEO_EGL_DRIVER="$CRUSTY_LIBEGL" CRUSTY_SHOW_CURSOR=0 XWAYLAND_LD_LIBRARY_PATH="$xwayland_gl:$backendlib:$W/lib_aarch64" \
- LD_LIBRARY_PATH="$backendlib:$W/lib_aarch64" LD_PRELOAD="$preload" "$W/wp_weston" -c "$R/weston.ini" \
+ SDL_VIDEO_EGL_DRIVER="$CRUSTY_LIBEGL" CRUSTY_SHOW_CURSOR=0 XWAYLAND_LD_LIBRARY_PATH="${xwayland_gl:+$xwayland_gl:}$W/lib_aarch64" \
+ LD_LIBRARY_PATH="$backendlib:$W/lib_aarch64" LD_PRELOAD="$W/lib_aarch64/libwayland-server.so.0:$W/lib_aarch64/libwayland-client.so.0:$preload" "$W/wp_weston" -c "$R/weston.ini" \
  "${weston_args[@]}" --shell=kiosk-shell.so -i0 -Swayland-pd2 --xwayland > "$R/compositor.pipe" 2>&1 & weston_pid=$!
 printf '%s\n' "$weston_pid" > "$R/compositor.pid"
 chmod 644 "$R/compositor.pid"

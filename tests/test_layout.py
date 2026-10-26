@@ -863,6 +863,15 @@ class LayoutTests(unittest.TestCase):
                     self.prepare()
             self.assertEqual(list(self.state.iterdir()), [])
 
+    def test_stale_regular_work_config_unlinked_on_preflight(self):
+        self.prepare(volatile=False)
+        stale_file = self.state / 'game/ProjectD2/ddraw.ini'
+        stale_file.write_text('stale content')
+        self.assertTrue(stale_file.exists())
+        self.prepare(volatile=False)
+        self.assertFalse(stale_file.exists())
+        self.assertEqual(self.links[str(stale_file)], str(self.port / 'config/ddraw-gdi.ini'))
+
 
 if __name__ == '__main__':
     unittest.main()
