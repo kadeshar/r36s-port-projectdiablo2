@@ -181,9 +181,12 @@ for wayland_library in "$W/lib_aarch64/libwayland-server.so.0" "$W/lib_aarch64/l
  [[ -r "$wayland_library" ]] || { error graphics_provider_missing; exit 2; }
 done
 stage weston_start
+scaler_lib="$PD2_PORT/compat/weston-scaler/libweston_scaler.so"
+scaler_preload=
+[[ -r "$scaler_lib" ]] && scaler_preload=":$scaler_lib"
 setsid env -u DISPLAY -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$R/compositor-runtime" \
  SDL_VIDEO_EGL_DRIVER="$CRUSTY_LIBEGL" CRUSTY_SHOW_CURSOR=0 XWAYLAND_LD_LIBRARY_PATH="${xwayland_gl:+$xwayland_gl:}$W/lib_aarch64" \
- LD_LIBRARY_PATH="$backendlib:$W/lib_aarch64" LD_PRELOAD="$W/lib_aarch64/libwayland-server.so.0:$W/lib_aarch64/libwayland-client.so.0:$preload" "$W/wp_weston" -c "$R/weston.ini" \
+ LD_LIBRARY_PATH="$backendlib:$W/lib_aarch64" LD_PRELOAD="$W/lib_aarch64/libwayland-server.so.0:$W/lib_aarch64/libwayland-client.so.0$scaler_preload:$preload" "$W/wp_weston" -c "$R/weston.ini" \
  "${weston_args[@]}" --shell=kiosk-shell.so -i0 -Swayland-pd2 --xwayland > "$R/compositor.pipe" 2>&1 & weston_pid=$!
 printf '%s\n' "$weston_pid" > "$R/compositor.pid"
 chmod 644 "$R/compositor.pid"

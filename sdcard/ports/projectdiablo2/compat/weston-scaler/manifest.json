@@ -1,0 +1,7 @@
+{
+  "name": "weston-scaler",
+  "version": "1.0.0",
+  "file": "libweston_scaler.so",
+  "size": 70096,
+  "sha256": "795c104f5dea905957486229cd258021ebe516e757615d788939b4a9363d9c59"
+}
