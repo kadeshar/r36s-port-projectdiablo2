@@ -179,7 +179,7 @@ def validate_event(value, allow_summary=False):
             'audio_metrics_capture': ('ready', 'playback_observed', 'sustained_playback', 'no_playback', 'partial_coverage', 'capture_limit', 'data_lost', 'no_stream', 'invalid_capture', 'unavailable'),
             'audio_metrics_library': ('ready','unavailable'),
             'dynarec_bigblock': ('1', '2'),
-            'fps_counter': ('hotkey', 'renderer', 'disabled', 'unavailable'),
+            'fps_counter': ('hotkey', 'renderer', 'disabled', 'unavailable', 'overlay'),
             'diagnostic_mode': ('off','present','sdl','glx','ddraw'),
             'presentation_capture': ('ready','unavailable'),
             'graphics_test_result': ('completed','failed','timeout'),

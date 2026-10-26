@@ -1,10 +1,24 @@
 #!/bin/bash
 # PORTMASTER: projectdiablo2.zip, Project Diablo 2.sh
-# Experimental private offline PD2 launcher, v0.1.18.
+# Production PD2 launcher with SD-backed state storage.
 umask 077
 ulimit -c 0
 BASE=$(cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
 export PD2_PORT="$BASE/projectdiablo2"
+
+if [[ ${PD2_EXPERIMENT_ACTIVE:-} != sd-storage-v1 ]]; then
+  mkdir -p "$PD2_PORT/logs" 2>/dev/null
+  fixed_message() {
+    printf '%s\n' "$1" > /dev/tty0 2>/dev/null || printf '%s\n' "$1" > /dev/tty1 2>/dev/null || printf '%s\n' "$1" >&2
+  }
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "$(date -u +'%Y-%m-%d %H:%M:%S UTC') [FATAL] python3 not found in PATH" >> "$PD2_PORT/logs/storage-session.log" 2>/dev/null
+    fixed_message 'PD2: python3 is not available in PATH.'
+    exit 1
+  fi
+  exec python3 -B "$PD2_PORT/storage-tools/storage_launcher.py" --port "$PD2_PORT" "$@"
+fi
+
 # Native Controller from 0.1.13 is now the default; explicit test modes survive.
 export PD2_INPUT_MODE="${PD2_INPUT_MODE:-native}"
 export PD2_CONTROLLER_TEST="${PD2_CONTROLLER_TEST:-0}"
@@ -33,7 +47,7 @@ for cmd in python3 timeout setsid unshare flock mount umount mountpoint mkfifo p
  command -v "$cmd" >/dev/null || { fixed_message 'PD2: missing required system tool.'; exit 1; }
 done
 [[ -f "$PD2_PORT/scripts/safe_log.py" ]] || { fixed_message 'PD2: incomplete port installation.'; exit 1; }
-export PD2_HOME="$HOME" PD2_USER="$(id -un)" PD2_STATE="$HOME/.local/share/pd2-r36s"
+export PD2_HOME="$HOME" PD2_USER="$(id -un)" PD2_STATE="${PD2_EXPERIMENT_STATE:-$HOME/.local/share/pd2-r36s}"
 # Never execute Wine as root; Options/Tools root explorers are not a game launcher.
 [[ $(id -u) != 0 ]] || { fixed_message 'PD2: launch from Ports menu as regular user, not root.'; exit 1; }
 mkdir -p "$PD2_STATE" || exit 1
@@ -98,6 +112,7 @@ XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [[ -d /opt/system/Tools/PortMaster ]]; then controlfolder=/opt/system/Tools/PortMaster
 elif [[ -d /opt/tools/PortMaster ]]; then controlfolder=/opt/tools/PortMaster
 elif [[ -d "$XDG_DATA_HOME/PortMaster" ]]; then controlfolder="$XDG_DATA_HOME/PortMaster"
+elif [[ -d /roms2/ports/PortMaster ]]; then controlfolder=/roms2/ports/PortMaster
 else controlfolder=/roms/ports/PortMaster; fi
 [[ -f "$controlfolder/control.txt" ]] || error invalid_layout
 source "$controlfolder/control.txt" || error unsupported_runtime

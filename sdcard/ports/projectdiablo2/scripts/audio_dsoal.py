@@ -159,7 +159,21 @@ def stage(port, prefix, work):
     prefix, work = prefix_paths(prefix, work)
     # A miswired caller must not turn imported game data into a writable target.
     if work == port or port in work.parents or work in port.parents:
-        raise DsoalError()
+        # SD storage stores ext4 state below its ROM payload.
+        # Permit only the exact, bounded tmpfs workspace; imports still reject.
+        try:
+            from experimental_audio_storage import accepts_workspace
+        except ImportError:
+            try:
+                from .experimental_audio_storage import accepts_workspace
+            except ImportError:
+                import sys as _sys
+                _scripts = Path(__file__).resolve().parent
+                if str(_scripts) not in _sys.path:
+                    _sys.path.insert(0, str(_scripts))
+                from experimental_audio_storage import accepts_workspace
+        if not accepts_workspace(port, prefix, work):
+            raise DsoalError()
     target = directory(work / 'ProjectD2')
     reserved = {name.casefold() for name in DLLS}
     if any(child.name.casefold() in reserved for child in target.iterdir()):

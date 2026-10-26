@@ -1,0 +1,12 @@
+{
+  "gid": 1000,
+  "schema_version": 1,
+  "source_wine_sha256": "d77d023bd9046547afccae5860dc6089b9d5cd9699f656b83e2f573bbf3fae6d",
+  "state_bytes": 1073741824,
+  "state_file": "storage/state.ext4",
+  "uid": 1000,
+  "wine_file": "runtime/wine-8.0-x86.squashfs",
+  "wine_sha256": "fe1f8180b957ea1b034e6ccb9789d44e841030271faff959a9ea9abdba2882e4",
+  "wine_size": 74506240,
+  "wine_compression": "gzip"
+}

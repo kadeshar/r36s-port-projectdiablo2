@@ -318,13 +318,13 @@ class LauncherContractTests(unittest.TestCase):
         self.assertIn('x', m.FONT)
         self.assertEqual(m.LABELS[0], '640x480')
         for resolution in m.RESOLUTIONS:
-            for fps in ('default', '0', '1'):
+            for fps in ('default', '0', '1', '2', '3', '4'):
                 self.assertIn("'" + resolution + ' ' + fps + "'", self.weston)
         protocol = self.weston.split('case "$menu_selection" in', 1)[1].split('esac', 1)[0]
         expected = {resolution + ' ' + fps for resolution in m.RESOLUTIONS
-                    for fps in ('default', '0', '1')}
+                    for fps in ('default', '0', '1', '2', '3', '4')}
         self.assertEqual(set(re.findall(r"'([^']+)'", protocol)), expected)
-        self.assertEqual(len(re.findall(r"'([^']+)'", protocol)), 15)
+        self.assertEqual(len(re.findall(r"'([^']+)'", protocol)), 30)
         self.assertIn('menu_resolution="${menu_selection%% *}"', self.weston)
         self.assertIn('menu_fps="${menu_selection#* }"', self.weston)
 
@@ -393,7 +393,7 @@ class LauncherShellTests(unittest.TestCase):
                    'printf "VOLATILE_AND_GAME_WOULD_START\\n"\n')
         cases = []
         for resolution in m.RESOLUTIONS:
-            for fps in ('default', '0', '1'):
+            for fps in ('default', '0', '1', '2', '3', '4'):
                 # Current menu has two fields; audio is not a menu choice.
                 cases.append((resolution + ' ' + fps, '0', '1', 'selected',
                               '1024x768' if resolution == 'default' else resolution,

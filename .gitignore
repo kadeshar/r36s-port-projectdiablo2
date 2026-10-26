@@ -5,6 +5,9 @@ __pycache__/
 *.so
 .pytest_cache/
 
+# Temporary work and experiments (never deploy as production)
+/.temp/
+
 # Test leftovers and fixtures
 .state/
 .fixture-*/

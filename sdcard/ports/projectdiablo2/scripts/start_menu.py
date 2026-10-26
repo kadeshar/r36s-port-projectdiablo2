@@ -14,6 +14,7 @@ import time
 
 RESOLUTIONS = ('default', '640x480', '800x600', '1024x768', 'native')
 LABELS = ('640x480', '640x480', '800x600', '1024x768', '1068x600')
+OVERLAY_LEVELS = ('OFF', 'LEVEL 1', 'LEVEL 2', 'LEVEL 3', 'LEVEL 4')
 CANCEL = 10
 EVENT = struct.Struct('@llHHi')  # Linux input_event: native timeval (aarch64/ARM32).
 PAD_ACTIONS = {0x220: 'up', 0x221: 'down', 0x222: 'left', 0x223: 'right',
@@ -27,14 +28,16 @@ class Menu:
         # Untouched fields inherit the already resolved main-launcher settings.
         self.row = 2
         self.resolution = 0
-        self.fps = False
+        self.fps = 0
         self.fps_changed = False
         # Display resolved launcher values without changing the inheritance
         # protocol. Standalone/default sessions use 640x480 and FPS off.
         inherited_resolution = os.environ.get('PD2_GAME_RESOLUTION', '640x480')
         self.inherited_resolution = (inherited_resolution if inherited_resolution in
                                      ('640x480', '800x600', '1024x768', 'native') else '640x480')
-        self.inherited_fps = os.environ.get('PD2_FPS', '0') == '1'
+        inherited_fps = os.environ.get('PD2_FPS', '0')
+        self.inherited_fps_level = int(inherited_fps) if inherited_fps in ('0', '1', '2', '3', '4') else 0
+        self.inherited_fps = self.inherited_fps_level > 0
         self.result = None
 
     def action(self, action):
@@ -48,7 +51,15 @@ class Menu:
             if self.row == 0:
                 self.resolution = (self.resolution + (-1 if action == 'left' else 1)) % len(RESOLUTIONS)
             elif self.row == 1:
-                self.fps = not (self.fps if self.fps_changed else self.inherited_fps)
+                current = self.fps if self.fps_changed else self.inherited_fps_level
+                if isinstance(current, bool):
+                    current = 1 if current else 0
+                if action == 'left':
+                    self.fps = (current - 1) % len(OVERLAY_LEVELS)
+                elif action == 'right':
+                    self.fps = (current + 1) % len(OVERLAY_LEVELS)
+                else:  # accept: toggle between off and on/level1
+                    self.fps = 0 if current > 0 else 1
                 self.fps_changed = True
             elif action == 'accept':
                 self.result = 'launch' if self.row == 2 else 'cancel'

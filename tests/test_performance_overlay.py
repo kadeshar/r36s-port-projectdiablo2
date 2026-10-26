@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Tests for R36S performance overlay and system metrics."""
+import os
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OVERLAY_DIR = os.path.join(ROOT, 'sdcard', 'ports', 'projectdiablo2', 'scripts', 'overlay')
+if OVERLAY_DIR not in sys.path:
+    sys.path.insert(0, OVERLAY_DIR)
+
+import overlay_metrics
+import fps_tracker
+import x11_hud
+import performance_overlay
+
+
+class TestSystemMetrics(unittest.TestCase):
+    def setUp(self):
+        self.metrics = overlay_metrics.SystemMetrics()
+
+    def test_sample_structure_and_keys(self):
+        data = self.metrics.sample()
+        required_keys = {
+            'cpu_total', 'cpu_cores', 'cpu_mhz', 'cpu_temp',
+            'ram_used_mb', 'ram_total_mb', 'ram_free_mb',
+            'swap_used_mb', 'swap_total_mb', 'gpu_pct', 'gpu_mhz',
+            'battery_pct', 'battery_status', 'battery_volts', 'plugged',
+        }
+        self.assertTrue(required_keys.issubset(data.keys()))
+        self.assertIsInstance(data['cpu_total'], int)
+        self.assertIsInstance(data['cpu_cores'], list)
+        self.assertIsInstance(data['ram_total_mb'], int)
+        self.assertGreater(data['ram_total_mb'], 0)
+
+    def test_cpu_usage_calculation(self):
+        stat_mock_1 = (
+            "cpu  1000 0 1000 8000 0 0 0\n"
+            "cpu0 250 0 250 2000 0 0 0\n"
+            "cpu1 250 0 250 2000 0 0 0\n"
+        )
+        stat_mock_2 = (
+            "cpu  1500 0 1500 9000 0 0 0\n"
+            "cpu0 400 0 400 2200 0 0 0\n"
+            "cpu1 350 0 350 2300 0 0 0\n"
+        )
+        with mock.patch("builtins.open", mock.mock_open(read_data=stat_mock_1)):
+            total1, cores1 = self.metrics._read_cpu_usage()
+            self.assertEqual(total1, 0)  # first sample is baseline
+
+        with mock.patch("builtins.open", mock.mock_open(read_data=stat_mock_2)):
+            total2, cores2 = self.metrics._read_cpu_usage()
+            # total diff: (1500-1000) + (1500-1000) + (9000-8000) = 500+500+1000 = 2000 total, 1000 idle -> 50%
+            self.assertEqual(total2, 50)
+            self.assertEqual(len(cores2), 2)
+            # core0: 150 user diff + 150 sys diff + 200 idle diff = 500 total, 300 busy -> 60%
+            self.assertEqual(cores2[0], 60)
+
+    def test_meminfo_calculation(self):
+        meminfo_mock = (
+            "MemTotal:        1024000 kB\n"
+            "MemFree:          200000 kB\n"
+            "MemAvailable:     600000 kB\n"
+            "Buffers:           50000 kB\n"
+            "Cached:           350000 kB\n"
+            "SwapTotal:        512000 kB\n"
+            "SwapFree:         400000 kB\n"
+        )
+        with mock.patch("builtins.open", mock.mock_open(read_data=meminfo_mock)):
+            used_mb, total_mb, free_mb = self.metrics._read_ram()
+            swap_used_mb, swap_total_mb = self.metrics._read_swap()
+            self.assertEqual(total_mb, 1000)
+            self.assertEqual(free_mb, 585)
+            self.assertEqual(used_mb, 415)
+            self.assertEqual(swap_total_mb, 500)
+            self.assertEqual(swap_used_mb, 110)
+
+
+class TestFPSTracker(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.work_dir = self.tmp_dir.name
+        self.d2_dir = os.path.join(self.work_dir, 'ProjectD2')
+        os.makedirs(self.d2_dir, exist_ok=True)
+        self.tracker = fps_tracker.FPSTracker(work_dir=self.work_dir)
+
+    def tearDown(self):
+        self.tracker.close()
+        self.tmp_dir.cleanup()
+
+    def test_initial_state(self):
+        data = self.tracker.update()
+        self.assertEqual(data['fps'], 0)
+        self.assertEqual(len(data['history']), 200)
+
+    def test_manual_record_frame(self):
+        self.tracker.record_frame(33.3)  # approx 30 FPS
+        self.assertEqual(self.tracker.fps, 30)
+        self.assertEqual(self.tracker.frametime_ms, 33.3)
+
+        self.tracker.record_frame(16.6)  # approx 60 FPS
+        self.assertEqual(self.tracker.fps, 60)
+        self.assertEqual(self.tracker.min_fps, 30)
+        self.assertEqual(self.tracker.max_fps, 60)
+
+    def test_telemetry_file_reading(self):
+        present_file = os.path.join(self.d2_dir, 'pd2-present.jsonl')
+        with open(present_file, 'w', encoding='ascii') as f:
+            f.write('{"event":1,"backend":1,"frames":30,"duration_ms":1000,"width":640,"height":480}\n')
+
+        data = self.tracker.update()
+        self.assertEqual(data['fps'], 30)
+        self.assertEqual(data['frametime_ms'], 33.3)
+
+        # Append next sample
+        with open(present_file, 'a', encoding='ascii') as f:
+            f.write('{"event":1,"backend":1,"frames":20,"duration_ms":1000,"width":640,"height":480}\n')
+
+        data = self.tracker.update()
+        self.assertEqual(data['fps'], 20)
+        self.assertEqual(data['frametime_ms'], 50.0)
+
+
+class TestX11HUD(unittest.TestCase):
+    def test_chart_color_thresholds(self):
+        # > 20 FPS: green (< 50.0ms)
+        self.assertEqual(x11_hud.get_chart_color(16.6), x11_hud.C_CHART_OK)    # ~60 FPS
+        self.assertEqual(x11_hud.get_chart_color(33.3), x11_hud.C_CHART_OK)    # ~30 FPS
+        self.assertEqual(x11_hud.get_chart_color(40.0), x11_hud.C_CHART_OK)    # 25 FPS
+        self.assertEqual(x11_hud.get_chart_color(49.9), x11_hud.C_CHART_OK)    # > 20 FPS
+
+        # 15-20 FPS: orange (50.0ms - 66.7ms)
+        self.assertEqual(x11_hud.get_chart_color(50.0), x11_hud.C_CHART_WARN)  # 20 FPS
+        self.assertEqual(x11_hud.get_chart_color(55.0), x11_hud.C_CHART_WARN)  # ~18.2 FPS
+        self.assertEqual(x11_hud.get_chart_color(60.0), x11_hud.C_CHART_WARN)  # ~16.7 FPS
+        self.assertEqual(x11_hud.get_chart_color(66.6), x11_hud.C_CHART_WARN)  # ~15.0 FPS
+        self.assertEqual(x11_hud.get_chart_color(66.7), x11_hud.C_CHART_WARN)  # 15 FPS
+
+        # < 15 FPS: red (> 66.7ms)
+        self.assertEqual(x11_hud.get_chart_color(66.8), x11_hud.C_CHART_BAD)   # < 15 FPS
+        self.assertEqual(x11_hud.get_chart_color(70.0), x11_hud.C_CHART_BAD)   # ~14.3 FPS
+        self.assertEqual(x11_hud.get_chart_color(100.0), x11_hud.C_CHART_BAD)  # 10 FPS
+
+        # Edge cases
+        self.assertEqual(x11_hud.get_chart_color(0), x11_hud.C_CHART_OK)
+        self.assertEqual(x11_hud.get_chart_color(-10), x11_hud.C_CHART_OK)
+
+    def test_dimensions_per_level(self):
+        hud1 = x11_hud.X11HUD(level=1)
+        self.assertEqual((hud1.width, hud1.height), (x11_hud.LEVEL1_WIDTH, x11_hud.LEVEL1_HEIGHT))
+
+        hud2 = x11_hud.X11HUD(level=2)
+        self.assertEqual((hud2.width, hud2.height), (410, 20))
+        self.assertEqual(hud2.x, (640 - 410) // 2)  # Centered horizontally
+        self.assertEqual(hud2.y, 0)  # Glued to top edge
+
+        hud3 = x11_hud.X11HUD(level=3)
+        self.assertEqual((hud3.width, hud3.height), (205, 136))
+        self.assertEqual(hud3.y, 0)  # Glued to top edge
+
+        hud4 = x11_hud.X11HUD(level=4)
+        self.assertEqual((hud4.width, hud4.height), (205, 226))
+        self.assertEqual(hud4.y, 0)  # Glued to top edge
+
+    def test_xauth_parsing(self):
+        import struct
+        def field(v): return struct.pack('>H', len(v)) + v
+        cookie = b'1234567890abcdef'
+        record = struct.pack('>H', 65535) + field(b'') + field(b'0') + field(b'MIT-MAGIC-COOKIE-1') + field(cookie)
+        self.assertEqual(x11_hud.X11HUD._parse_xauth(record), cookie)
+
+        # Also test fallback binary search
+        garbled = b'prefix_junk' + record
+        self.assertEqual(x11_hud.X11HUD._parse_xauth(garbled), cookie)
+
+    def test_pixel_calculation(self):
+        hud = x11_hud.X11HUD()
+        self.assertEqual(hud._pixel((255, 0, 0)), 0xff0000)
+        self.assertEqual(hud._pixel((0, 255, 0)), 0x00ff00)
+        self.assertEqual(hud._pixel((0, 0, 255)), 0x0000ff)
+        self.assertEqual(hud._pixel((18, 20, 26)), 0x12141a)
+
+    def test_mock_render_all_levels(self):
+        mock_sock = mock.MagicMock()
+        for lvl in (1, 2, 3, 4):
+            hud = x11_hud.X11HUD(level=lvl)
+            hud.sock = mock_sock
+            m = {
+                'cpu_total': 45, 'cpu_cores': [40, 50, 42, 48],
+                'cpu_mhz': 1300, 'cpu_temp': 48,
+                'ram_used_mb': 412, 'ram_total_mb': 1024,
+                'swap_used_mb': 15, 'swap_total_mb': 512,
+                'gpu_pct': 30, 'gpu_mhz': 500,
+                'battery_pct': 85, 'battery_status': 'Discharging',
+                'battery_volts': 4.1,
+            }
+            f = {'fps': 30, 'frametime_ms': 33.3, 'min_fps': 28, 'max_fps': 32, 'avg_fps': 30.1, 'history': [33.3]*20}
+            hud.render(m, f)
+            self.assertTrue(mock_sock.sendall.called)
+
+    def test_level1_skips_redraw_when_fps_unchanged(self):
+        mock_sock = mock.MagicMock()
+        hud = x11_hud.X11HUD(level=1)
+        hud.sock = mock_sock
+        f = {'fps': 30}
+        hud.render({}, f)
+        call_count1 = mock_sock.sendall.call_count
+        self.assertGreater(call_count1, 0)
+
+        # Same FPS: must skip sending any requests
+        hud.render({}, f)
+        self.assertEqual(mock_sock.sendall.call_count, call_count1)
+
+        # Changed FPS: must redraw
+        hud.render({}, {'fps': 35})
+        self.assertGreater(mock_sock.sendall.call_count, call_count1)
+
+
+class TestOptimizationLevelMetrics(unittest.TestCase):
+    def setUp(self):
+        self.metrics = overlay_metrics.SystemMetrics()
+
+    def test_level1_collects_zero_metrics(self):
+        data = self.metrics.sample(level=1)
+        self.assertEqual(data, {})
+
+    def test_level2_omits_unneeded_metrics(self):
+        data = self.metrics.sample(level=2)
+        self.assertEqual(data['cpu_cores'], [])
+        self.assertEqual(data['swap_used_mb'], 0)
+
+
+class TestPerformanceOverlayCLI(unittest.TestCase):
+    def test_level_zero_exits_cleanly(self):
+        rc = performance_overlay.run_overlay(level=0)
+        self.assertEqual(rc, 0)
+
+    def test_cli_mode_single_iteration(self):
+        # Target PID that is not running immediately terminates the loop
+        rc = performance_overlay.run_overlay(level=2, target_pid=99999999, cli_mode=True)
+        self.assertEqual(rc, 0)
+
+
+if __name__ == '__main__':
+    unittest.main()

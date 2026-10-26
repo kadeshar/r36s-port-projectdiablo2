@@ -11,7 +11,7 @@ import time
 
 import x11_probe
 
-TIMEOUT = 5.0
+TIMEOUT = 20.0
 MAX_FRAME = 262144
 MAX_EVENTS = 1024
 WIDTH, HEIGHT = 640, 480
@@ -387,11 +387,18 @@ class Screen:
         if menu.resolution == 0:
             inherited = getattr(menu, 'inherited_resolution', '640x480')
             resolution = '1068x600' if inherited == 'native' else inherited
-        fps = menu.fps if menu.fps_changed else getattr(menu, 'inherited_fps', False)
+        fps = menu.fps if menu.fps_changed else getattr(menu, 'inherited_fps_level', (1 if getattr(menu, 'inherited_fps', False) else 0))
+        if isinstance(fps, bool):
+            fps_idx = 1 if fps else 0
+        elif isinstance(fps, int) and 0 <= fps <= 4:
+            fps_idx = fps
+        else:
+            fps_idx = 0
+        overlay_levels = ('OFF', 'LEVEL 1', 'LEVEL 2', 'LEVEL 3', 'LEVEL 4')
         # Plain numeric resolution names fit the 548-pixel text area.
         rows = (
             'RESOLUTION: ' + resolution,
-            'FPS COUNTER: ' + ('ON' if fps else 'OFF'),
+            'PERF OVERLAY: ' + overlay_levels[fps_idx],
             'ENTER SANCTUARY / LAUNCH',
             'EXIT TO SYSTEM',
         )

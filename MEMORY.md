@@ -4,6 +4,214 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## Issue #2 — compositor-only diagnostic v2
+
+- Reporter [v1 response](https://github.com/kadeshar/r36s-port-projectdiablo2/issues/2#issuecomment-6389765216): plain/Crusty `--version` both rc0, providers ready, no truncation. Constructor-only crash not reproduced; actual DRM/SDL/EGL startup remains unproven. User requests next diagnostic for reporter; no RG353V available locally.
+- Added separate [v2 entry](<sdcard/ports/Project Diablo 2 - Weston Check v2.sh>), [orchestrator](<sdcard/ports/projectdiablo2/scripts/weston_startup_check.py>) and [allowlist sanitizer](<sdcard/ports/projectdiablo2/scripts/weston_startup_log.py>). Reuses unchanged constructor helper/pinned SquashFS; private mount+PID namespace, private /run+/tmp with host-run links, private seatd, production-like DRM/GL/Crusty baseline then optional debug/verified-strace ioctl-only attempt. Xwayland deny shim; no real Xwayland client, Wine, game, mapper or production-launcher execution. Eight seconds/attempt, overall deadlines, process-group cleanup and PID namespace containment. Game session lock prevents collisions.
+- Raw native captures stay in verified tmpfs,1MiB cap/coreoff; persist only fixed enums/function tokens/numeric ioctl request+errno/signals/counts. Snapshot capture length before diagnostic TERM/KILL so cleanup signals do not masquerade as crashes; always KILL remaining process group even after leader exit. Independent review found these two cleanup/evidence issues, both fixed with regressions and rechecked.
+- [Reporter guide](<docs/ISSUE-2-WESTON-V2.md>): extract diagnostic ZIP at SD root, run Weston Check v2, return `logs/pd2-weston-startup-v2.json` plus exact device/firmware, visible behavior and return/hang timing. Blank screen expected during compositor takeover; no gameplay claim from alive-at-deadline or X11 listener.
+- Validation:35 v2 synthetic tests+11 existing graphics-provider tests PASS; Bash syntax PASS. No actual native compositor/console/game executed. Production launcher/adapter/runner, runtime binaries, configs/saves and unrelated performance-overlay work left untouched. This is a diagnostic handoff, not a hardware fix or full-regression claim.
+
+## Issue #2 — one-run complete diagnostic package
+
+- V2 reporter result [issue comment](https://github.com/kadeshar/r36s-port-projectdiablo2/issues/2#issuecomment-6397900110): baseline and instrumented compositor both rc -11 before X11; provider discovery ready; no truncation; sanitizer discarded nearly all unknown lines. Immediate return was expected crash behavior.
+- Replaced repeated diagnostic iterations with one [Complete Check launcher](<sdcard/ports/Project Diablo 2 - Complete Check.sh>) and [PL/EN guide](<docs/ISSUE-2-WESTON-COMPLETE.md>). One report runs fixed 11-case matrix: production-like baseline/repeat, signal guard, independent ptrace watcher, SDL discovery/GLES2 + KMSDRM, Crusty KMSDRM/GLES31, native DRM GL/Pixman when explicit module exists, debug ioctl trace. No Wine, Xwayland client, menu, mapper or game.
+- Added actual authenticated AArch64 guard/selftest/watcher payload under [compat/weston-check](<sdcard/ports/projectdiablo2/compat/weston-check/manifest.json>), reproducibly built by pinned Zig0.15.2 (official SHA in manifest). Guard and watcher use separate inherited RAM FD (`PD2_FAULT_FD`), bounded PC/FP/maps protocol; watcher catches faults after application replaces handlers. Complete parser emits module roles/file offsets, fixed tokens, stage results, coverage, partial/truncation flags and hypothesis-only `next_actions`; never persists absolute addresses, paths or raw driver text. Native identity hashes have fixed budget and no path output.
+- Two review fixes: always kill remaining process group after leader exit; snapshot capture lengths before diagnostic TERM/KILL. Pixman case skips unless explicit staged module mapping exists; native artifacts stage into private executable tmpfs and reverify bytes before exec; report keeps prior cases on timeout/interrupt and marks `partial_report`.
+- Synthetic validation: complete suite52/52, fault guard/watcher19/19, v2/startup35/35, v3 parser included in complete suite. Actual device/game/compositor never run by agent. Final ZIP should be sent once; future diagnostic only if this report is partial or introduces new hardware fact.
+
+## Performance Overlay — FPS Color Thresholds & R36S Naming Standardization
+
+- **FPS Color Thresholds (`scripts/overlay/x11_hud.py`):**
+  - Updated frametime graph coloring logic:
+    - `> 20 FPS`: Green (`C_CHART_OK`, `(70, 225, 95)`, frametime `< 50.0ms`).
+    - `15–20 FPS`: Orange (`C_CHART_WARN`, `(255, 180, 50)`, frametime `50.0ms – 66.7ms`).
+    - `< 15 FPS`: Red (`C_CHART_BAD`, `(255, 75, 75)`, frametime `> 66.7ms`).
+  - Implemented standalone `get_chart_color(frametime_ms)` helper with float conversion and edge-case handling (`val <= 0` defaults green).
+  - Adjusted chart ceiling `max_ms = 80.0` (when `show_y_scale=False`) to avoid flatline ceiling clamping above 60.0ms; frametimes down to 12.5 FPS remain visually distinct.
+  - Adjusted subtle chart target guideline to 20 FPS (`50.0ms`).
+- **R36S Naming Standardization:**
+  - Removed all unrelated "Steam Deck" and "steamdeck" references across `scripts/overlay/` (`__init__.py`, `performance_overlay.py`, `x11_hud.py`), `tests/test_performance_overlay.py`, `docs/PERFORMANCE-OVERLAY.md`, and `docs/README.md`.
+  - Standardized all terminology to R36S (`R36S Bar`, `R36S OVERLAY 1.0`).
+- **Unit Testing & Validation:**
+  - Added `test_chart_color_thresholds` in `tests/test_performance_overlay.py` covering all threshold boundaries (16.6ms, 33.3ms, 40ms, 49.9ms, 50.0ms, 55.0ms, 60.0ms, 66.6ms, 66.7ms, 66.8ms, 70.0ms, 100.0ms, <=0ms). 16/16 overlay tests PASS; 43/43 layout tests PASS.
+
+---
+
+## Performance Overlay — Zero-Overhead Level 1 Optimization & Selective Metrics Collection
+
+- **Diagnostic Investigation:**
+  - On RK3326 Cortex-A35, `SystemMetrics.sample()` was taking ~8.0ms per sample (~26ms per second) due to repeated directory walks (`glob.glob`) and multi-file `/proc` and `/sys` parsing.
+  - In Level 1, all system metrics (CPU, RAM, GPU, thermal, battery) were collected even though Level 1 only displays the FPS number.
+  - `pd2-present.jsonl` was reopened and closed on every loop tick.
+  - HUD was redrawing on every tick even when the FPS value was completely unchanged.
+- **Architectural & Performance Optimizations:**
+  - **Level-Selective Collection (`overlay_metrics.py`):**
+    - `sample(level=1)` returns `{}` immediately: dropped sampling cost from **7.98 ms down to 0.0018 ms** (4400× speedup, 0.00% CPU).
+    - `level=2` collects only aggregate CPU, RAM, GPU %, and Battery (skips per-core CPU, CPU MHz, thermal zone, and swap).
+    - `level=3` collects what Level 3 displays (skips per-core CPU and swap).
+    - Cached sysfs paths (`thermal_paths`, `devfreq_paths`, `power_supplies`, `cpu_freq_path`) in `__init__` once, completely eliminating per-tick directory walks.
+  - **Persistent Telemetry Stream (`fps_tracker.py`):**
+    - Retains open file handle on `pd2-present.jsonl` across loop iterations; reads newly appended lines without opening, closing, or re-stating file size every tick.
+  - **Redraw Throttling in Level 1 (`x11_hud.py`):**
+    - If FPS value is unchanged between frames, `render()` skips X11 drawing requests completely.
+    - Throttled window restacking (`ConfigureWindow`) from every frame to once every 30 frames.
+    - Removed debug loop logging to prevent flash/microSD disk writes during gameplay.
+- **Deployment & Verification:** Deployed to `192.168.50.135`. Unit tests (15/15) pass. Console benchmark confirmed 0.0018ms per sample in Level 1.
+
+---
+
+## Performance Overlay — Launcher Fix for Level 1 & Level 4 Chart Legend Removal
+
+- **Level 1 Overlay Launcher Fix (`run-game.sh`):**
+  - Previously, `run-game.sh` routed level 1 through legacy `fps_renderer.py`, replacing `ddraw.dll` with an old companion that rendered hardcoded `"FPS: XX"`.
+  - Updated launcher pattern from `^[2-4]$` to `^[1-4]$` for both `present_renderer.py` and `performance_overlay.py`. Level 1 now properly launches the new minimal pill showing only the clean white number (e.g. `36`).
+- **Level 4 Graph Legend Removal (`x11_hud.py`):**
+  - Disabled Y-axis legend scale (`50`, `40`, `30`, `20`, `10`, `0`) and ticks from Level 4 chart (`show_y_scale=False`).
+  - Graph now spans the full chart width inside the slate border cleanly matching Level 3 aesthetics.
+- **Deployment & Verification:** Deployed `run-game.sh` and `overlay/*.py` to `192.168.50.135`. Regression tests pass.
+
+---
+
+## Performance Overlay — Level 1 FPS-Only Pill & Level 3 CPU/GPU Layout Alignment
+
+- **Level 1 Minimal Number-Only Pill (`x11_hud.py`):**
+  - Removed "FPS" label per hardware screenshot reference (`media_1792927131570_05bc8c8c.jpg`).
+  - Dimensions compacted to `34 × 16 px`, positioned top-left (`x=8, y=0`).
+  - Displays only the cool white FPS number (`C_VAL_FPS`) on semi-transparent dark charcoal backing (`C_BG_ALPHA = 175`).
+- **Level 3 GPU & CPU Layout Alignment:**
+  - Updated GPU and CPU sections to match Level 4 structure:
+    - GPU: `GPU  XX%  XX°C` line + `XX MHz` clock line below.
+    - CPU: `CPU  XX%  XX°C` line + `XX MHz` clock line below.
+  - Dimensions adjusted to `205 × 136 px` to fit the multi-line layout with full-width framed frametime chart.
+- **Deployment & Verification:** Deployed to console `192.168.50.135`. Unit tests (12/12) and console verification pass.
+
+---
+
+## Performance Overlay — Steam Deck Level 4 Replica (Live Line Graph with Y Scale & Core Stats)
+
+- **Exact Level 4 Styling (`x11_hud.py`):**
+  - Dimensions: `205 × 226 px`, glued to top-left edge with 32-bit ARGB semi-transparent background (`C_BG_ALPHA = 175`).
+  - Top header: `Time HH:MM:SS` with `R36S 1.0` right aligned.
+  - GPU: `GPU  XX%  XX°C` and `500 MHz` line. Added degree symbol `°` to `FONT_6X9`.
+  - CPU: `CPU  XX%  XX°C` and `1296 MHz` line.
+  - Per-Core CPU breakdown: Individual lines for `CPU0`, `CPU1`, `CPU2`, `CPU3` with utilization % and frequency.
+  - RAM: `RAM  used_mb M / total_mb M`.
+  - Battery: `BATT  XX%  [~]  X.XV` with charging plug indicator.
+  - Gamescope: `GAMESCOPE  XX FPS  XX.Xms`.
+  - Frametime: `Frametime  min: XXms, max: XXms`.
+  - **Frametime Live Line Graph with Right Y-Scale:**
+    - Live fluctuating green line across subtle horizontal grid ticks.
+    - Right-side Y-axis scale numbers: `50`, `40`, `30`, `20`, `10`, `0` ms in `C_MUTED`.
+    - 0..50ms scaled chart.
+  - Footer: `Display Hz  60`.
+- **Deployment & Verification:** Deployed to console `192.168.50.135`. Regression tests pass.
+
+---
+
+## Performance Overlay — 32-bit ARGB Hardware Transparency, Lowercase Font & Frametime Chart Box
+
+- **True 32-bit ARGB Hardware Alpha Transparency (`x11_hud.py`):**
+  - Eliminated 1-bit SHAPE dither which punched holes into 1-pixel font glyphs.
+  - Implemented dynamic scan of X11 server connection setup reply for depth 32 TrueColor visual (`class == 4`).
+  - Allocated dedicated 32-bit Colormap via `CreateColormap` (Opcode 78).
+  - Created 32-bit ARGB `override_redirect` window with premultiplied alpha (`C_BG_ALPHA = 175` ~68% opacity).
+  - Top-level `override_redirect` surface composites smoothly over running game via Weston's GPU OpenGL ES renderer (`gl-renderer.so`).
+- **Font Lowercase Glyph Definitions (`FONT_6X9`):**
+  - Added full 26-letter lowercase alphabet (`a` through `z`).
+  - Fixed `'mIN'` and `'mAX'`: previous font table only had lowercase `'m'`, `'s'`, `'c'`, causing missing `'i, n, a, x'` to fallback to uppercase. Now renders exact lowercase `'min:'` and `'max:'`.
+- **Frametime Chart Layout & Framing:**
+  - Added `with_border` parameter to `draw_chart` with slate frame (`C_BORDER`).
+  - Stretched frametime line horizontally across all inner columns: `n_samples` interpolated across full inner width.
+  - Chart fills full remaining vertical height (`chart_y = 86`, `chart_h = self.height - chart_y - 4 = 30px`) down to bottom border.
+  - Increased `history_size` from 32 to 200 samples in `fps_tracker.py`.
+- **Deployment & Verification:**
+  - Deployed to console `192.168.50.135:/roms2/ports/projectdiablo2/scripts/overlay/`.
+  - Static tests and console test suite passed.
+
+---
+
+## Performance Overlay — Level 3 Scale (1/4 Screen Height) & Full-Width Chart
+
+- **Scale & Dimensions Adjusted:**
+  - Expanded height from 74px to **120px** (exactly 1/4 of device height: 480 / 4 = 120px).
+  - Width set to **190px** (`190 × 120 px`).
+  - Row spacing adjusted to 14px advance for comfortable legibility.
+  - **Full-Width Frametime Graph:** The live green line chart stretches across the full width of the box (`chart_x = 6`, `chart_w = 178`, `chart_h = 24`) with a 6px border on each side.
+- **Transparency Bugfix:**
+  - In `ShapeMask` request, fixed wire format from `<IBB2xhhI` (which incorrectly placed window first, triggering X11 `BadWindow 0x0`) to `<BB2xIhhI` (`SHAPE_OP`, `SHAPE_KIND`, pad, `WINDOW`, `X`, `Y`, `PIXMAP`).
+  - Fixed `try_reparent_to_game` packing (`int(child)`, `int(self.x)`, `int(self.y)`).
+- **Verification & Deployment:** Tested on device (`192.168.50.135`). Deployed to `/roms2/ports/projectdiablo2/scripts/overlay/`.
+
+---
+
+## Performance Overlay — Steam Deck Level 3 Alignment & Height Optimization
+
+- **Level 3 Redesign:**
+  - Matched Steam Deck hardware screenshot layout:
+    - Row 1: `GPU` (emerald green `#3cd773`) `XX%` `gpu_mhz MHz`
+    - Row 2: `CPU` (dodger blue `#379bff`) `XX%` `cpu_mhz M` `temp°C`
+    - Row 3: `RAM` (orchid pink `#dc69c3`) `ram_used M` `/ ram_total M`
+    - Row 4: `BATT` (salmon coral `#f2645a`) `bat_pct %` `~` (cyan plug when charging) `bat_volts V`
+    - Row 5: `GAMESCOPE` (salmon coral `#f2645a`) `fps FPS` `ft ms`
+    - Row 6: `Frametime` (salmon coral `#f2645a`) `min-max ms`
+    - Row 7: Frametime live emerald green line graph (`draw_chart`)
+  - **Height Compacted:** Reduced height from 100px to **74px** (width 175px). Snug fit around content with zero wasted dead space below the graph.
+- **Transparency Bugfix:**
+  - Resolved socket timeout in `_setup_shape_transparency`:
+    - `CreateGC` wire format previously packed 4 uint32s instead of 3, leaving 4 dangling bytes in the socket.
+    - Resource IDs allocated cleanly via client bitmask (`bit3`, `bit4`).
+    - `_roundtrip()` updated to only read `extra_units` when `reply[0] == 1`, preventing socket desynchronization on errors.
+- **Verification & Deployment:** Tested on target device (`192.168.50.135`). Unit tests pass (12/12). Deployed to `/roms2/ports/projectdiablo2/scripts/overlay/`.
+
+---
+
+## Performance Overlay — Steam Deck Level 2 Replica & Visual Polish
+
+- **Exact Steam Deck Level 2 Styling:**
+  - Upgraded font to custom 6×9 pixel-crafted bitmap font (`FONT_6X9`) with +55% pixel area for enhanced legibility on 3.5" 640×480 screen.
+  - Matched exact Steam Deck MangoHUD colors from hardware screenshot:
+    - `FPS`: Salmon/coral red (`#f2645a`)
+    - FPS value: Cool white (`#ebf5ff`)
+    - Separators `|`: Purple/violet (`#825f91`)
+    - Frametime chart: Emerald green line (`#46e15f`)
+    - `CPU`: Dodger/sky blue (`#379bff`), value in white (CPU frequency removed from Level 2 per request)
+    - `GPU`: Emerald green (`#3cd773`), value in white
+    - `RAM`: Orchid pink (`#dc69c3`), value in white
+    - `BATT`: Salmon/coral red (`#f2645a`), value in white
+    - Wall plug icon: Bright cyan AC plug glyph `~` displayed next to `BATT` when device is charging or on wall power (`/sys/class/power_supply/*/online == 1` or `status in ('Charging', 'Full')`).
+  - Added live horizontal frametime line graph (42×9 px) in Level 2 between `FPS` and `CPU` replacing frame latency number.
+  - Semi-transparent background support (`TRANSPARENT_BG = True`) using X11 50% stipple shape mask with graceful fallback to solid black.
+- **Verification & Deployment:** Tested on target console (`192.168.50.135`). Unit tests pass (12/12). Deployed to `/roms2/ports/projectdiablo2/scripts/overlay/`.
+
+---
+
+## Performance Overlay (Steam Deck / MangoHUD style) — Visual Polish & Telemetry Fix
+
+- **Telemetry Root Cause:** When `fps_enabled` was set to levels 2, 3, or 4, `run-game.sh` previously skipped invoking `present_renderer.py`. In normal sessions, `ddraw.dll` was the default upstream cnc-ddraw, which does not emit `pd2-present.jsonl`. Without telemetry, `FPSTracker` saw no updates and displayed `0 FPS`. Fixed by invoking `present_renderer.py` in `run-game.sh` when `fps_enabled =~ ^[2-4]$`.
+- **GPU Usage Clarification:** In GDI mode, Diablo II executes via software rasterization in Box86 on the ARM Cortex-A35 CPU. The Mali-G31 GPU is only used by the Weston compositor to scan out the 2D surface to DRM/KMS. Low GPU load (typically 0% to 15%) is normal and accurate for GDI 2D games on RK3326.
+- **Accurate Steam Deck Theme:**
+  - Background set to pure black (`rgb(0, 0, 0)`) with subtle dark border (`rgb(40, 46, 56)`).
+  - Labels (`FPS`, `CPU`, `GPU`, `RAM`, `BAT`) styled in Steam Deck muted slate grey (`rgb(135, 148, 162)`).
+  - Values styled in crisp white (`rgb(245, 245, 250)`), FPS in bright neon lime green (`rgb(95, 225, 115)`), accents in cyan (`rgb(110, 195, 255)`), and battery in yellow (`rgb(240, 220, 85)`).
+- **Positioning & Configuration:**
+  - Glued to top edge (`y = 0`) for levels 2, 3, 4 (`OVERLAY_TOP_Y = 0`).
+  - Level 2 compacted to 380×18 px, centered horizontally by default (`(SCREEN_WIDTH - width) // 2` -> 130).
+  - Layout constants declared at the top of [x11_hud.py](sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py) for easy modification by developers and agents (`LEVEL2_ALIGN`, `LEVEL2_WIDTH`, etc.).
+  - Level 4 header renamed from `STEAM DECK OVERLAY [L4]` to `R36S OVERLAY 1.0`.
+- **Namespace Cleanliness:** Renamed `scripts/overlay/metrics.py` to `overlay_metrics.py` to eliminate python module shadowing with the root diagnostic `scripts/metrics.py`.
+- **Deployment:** Deployed directly to target console `192.168.50.135` via SCP. All local unit tests pass.
+
+---
+
+## Issue #2 — RG353V / dArkOS early Weston SIGSEGV
+
+- [Issue #2](https://github.com/kadeshar/r36s-port-projectdiablo2/issues/2), firmware `dArkOS_RG353v_trixie_08282026`, port0.1.18. Downloaded attachment contains only20 sanitized JSONL lines: native providers ready, seatd_ready, weston_start, rc139, compositor_failed. No module/X11/Wine/game stage;40 raw lines omitted. Early Crusty/native initialization suspected, not established. No backtrace; provider ready validates discovery/load/ELF, not graphics initialization. Previous R36S input-block regression is a different later rc1 failure.
+- Upstream dArkOS builds use chipset libMali plus custom SDL; “trixie” alone does not establish Mesa/GLVND. Do not globally replace providers, change renderer or reset prefix/saves on this evidence.
+- Added manually invoked [constructor check](<sdcard/ports/projectdiablo2/scripts/weston_check.py>) and [procedure](<docs/ISSUE-2-RG353V.md>). Private read-only SquashFS mount; only `wp_weston --version` plain/Crusty, no real compositor session or game. Native children use sanitized environments, bounded256KiB verified tmpfs capture,10s deadline, process-group cleanup, core dumps disabled. Report contains fixed enums/rc/signals, never raw paths/loader text. Matching production constructor failure is actionable evidence; both checks passing is explicitly inconclusive.
+- Production launcher, shared runtime scripts, runtime binaries, game/config/prefix/saves untouched. No actual console/runtime/game check executed by agent. User/reporter must manually provide affected-device diagnostic JSON before a hardware fix can be justified. Initial full Linux regression:759 tests OK,4 skipped (560.438s). Windows initial run hit temporary-fixture permission errors, so Linux verification used instead.
+- User has no affected device; requested handoff-ready diagnostic version. Added optional [Ports entry](<sdcard/ports/Project Diablo 2 - Weston Check.sh>), no production-launcher delegation, saves only sanitized `logs/pd2-weston-check.json`. Helper now standalone, mirrors production ELF/provider discovery and authenticates SquashFS against pinned size/SHA256 before execution. Reporter copies two files, runs optional Ports entry, returns JSON plus exact device/firmware; no ZIP or complete port replacement. Final targeted Linux tests:diagnostic15/15, graphics-provider11/11; Bash syntax and protected-production diff checks pass. Full suite above predates final handoff changes; no claim of another full run.
+
 ## Season 14 native-cast compatibility and future-season fallback
 
 - SSH failures `20261023T181009Z-32050` / `20261023T181036Z-33035`: `unsupported_runtime` in preflight, before Wine. Imported S14 ProjectDiablo.dll changed to 5252096 bytes / SHA256 `41d49d63d531050bb0c89db9efd191fefd322378683159be5dc059498ae1e424`; S13-only native-cast authentication rejected it. SGD2FreeRes.dll remained the existing pinned build.
@@ -225,3 +433,120 @@ To address Cortex-A35 execution bottlenecks:
 - **Audio:** Production uses DSOAL / OpenAL Soft WinMM / Wine waveOut with SDL dummy and legacy time32 ALSA. User validated lag-free Audio B before promotion. Dmix/HelBuflen experiments and their guides are retired; findings and validation retained at the top of this memory.
 - **Performance:** Optimized Box86 Dynarec flags and memory thrashing prevention.
 - **Testing:** Comprehensive regression test suite validating layouts, configurations, telemetry, and shell contracts.
+- **Steam Deck Performance Overlay:** Replaced basic binary FPS counter in start menu with 5-tier Steam Deck performance overlay (Levels: Off, 1, 2, 3, 4). Built modular, zero-dependency X11 HUD in `scripts/overlay/` using core X11 `override_redirect` double-buffered Pixmap and `/proc`/`/sys` telemetry, easily portable to other PortMaster ports.
+
+---
+
+## 10. Issue #3 — SD Storage Experimental Launcher Preflight Logging & Menu Diagnostics
+
+### Problem Reported:
+- Issue #3 reporter (`gundamf890`) on R36H with dArkOSen reported:
+  *"the game doesn't boot up, and it doesn't create any logs at all"*
+- Earlier, reporter hit `insufficient_space` because production launcher placed the ~700 MB wineprefix into `$HOME/.local/share/pd2-r36s` on the rootfs rather than the SD card ROMs partition.
+- Experimental SD storage port was provided, but failed before producing session logs.
+
+### Root Cause Analysis:
+1. **Preflight Logging Void:**
+   - In `Project Diablo 2 - SD Storage Experimental.sh` and `storage_launcher.py`, no log file was opened until line 65 (`storage-session.log`), which was only used as output redirection for `subprocess.run(command)`.
+   - Any exception during preflight (`sys.platform != 'linux'`, `os.getuid() == 0`, missing system tools, integrity check mismatch, `box86` `noexec` permission error, missing game data, or lock contention) raised `StorageError` or `OSError`.
+   - The exception handler in `main()` printed to `sys.stderr`, which was swallowed by EmulationStation without redirection or console screen output. Result: 0 bytes written to `logs/`, immediate silent exit.
+2. **Game Data Detection Restriction:**
+   - `source_data(port)` strictly expected game data at `port.parent / 'projectdiablo2/gamedata'`.
+   - If the user extracted `projectdiablo2-sd` alone or placed `Diablo II` directly into `projectdiablo2-sd/gamedata`, `source_data()` raised `StorageError` before launch.
+3. **Menu Display Timeout & Input Fallback:**
+   - `menu_x11.py` had a 5.0s `TIMEOUT` for core X11 connection, window creation, mapping, and expose event loop. On RK3326 Cortex-A35 during heavy startup I/O, this could time out and fail before the menu was visible.
+   - `start_menu.py` `Pad.__init__` did not wrap device access in a try-except fallback block, risking hard failure on input permission issues.
+4. **PortMaster Location:**
+   - `private-launcher.sh` checked `/roms/ports/PortMaster`, `/opt/system/Tools/PortMaster`, etc., but omitted `/roms2/ports/PortMaster`.
+
+### Implementation:
+1. **Early Real-Time Diagnostic Logging (`storage_launcher.py` & `.sh`):**
+   - Creates `logs/` directory immediately.
+   - Opens `logs/storage-session.log` from step 1, logging UTC timestamps, platform, user UID, tool verification, manifest validation, Box86 permissions, game data path, and lock status.
+   - Real-time streaming of adapter subprocess output into `storage-session.log`.
+   - Added `fixed_message()` routing to `/dev/tty0` and `/dev/tty1` so error notifications appear on the physical console screen.
+   - Any fatal preflight error writes a timestamped `[FATAL]` message and traceback to `storage-session.log`.
+2. **Dual-Path Game Data Resolution (`storage_common.py` & `storage_session.py`):**
+   - Supports local `projectdiablo2-sd/gamedata` (no bind-mount required) and external `projectdiablo2/gamedata` (bind-mounted ro).
+   - Case-insensitive search for `ProjectD2/Game.exe`.
+   - Descriptive error message on failure pointing to expected paths.
+3. **Menu Robustness & Visibility (`menu_x11.py`, `start_menu.py`, `weston-session.sh`):**
+   - Increased `menu_x11.py` `TIMEOUT` from 5.0s to 20.0s for RK3326 headroom.
+   - Added graceful fallback and logging in `start_menu.py` `Pad` initialization.
+   - Added user-facing console message (`/dev/tty0`) if the start menu fails to display.
+4. **PortMaster Path Addition (`private-launcher.sh`):**
+   - Added `/roms2/ports/PortMaster` to `controlfolder` candidates.
+5. **Release Packaging (`package_user_zip.py`):**
+   - Repackaged `releases/Project-Diablo-2-SD-Storage-Experimental.zip` with `--force` flag support, verifying 144 entries, 115 files, 0o755 executable attributes, and SHA-256 manifest.
+   - All 50 synthetic test suite cases pass. Production payload in `sdcard/ports/projectdiablo2` remains untouched.
+
+---
+
+## 11. Issue #3 — Production Merge of SD Storage Architecture & Console Deployment
+
+### Context & Confirmation:
+- User `gundamf890` confirmed experimental SD storage fix solved boot issues: *"i can get into the game now, thanks"*.
+- User requested merge of SD storage architecture into official production payload and deployment to physical R36S console (`192.168.50.135`).
+
+### Architecture & Production Merging:
+1. **Self-Wrapping Production Launcher (`sdcard/ports/Project Diablo 2.sh`):**
+   - Outer run (`PD2_EXPERIMENT_ACTIVE != sd-storage-v1`): checks python3 availability, logs to `storage-session.log`, and executes `storage-tools/storage_launcher.py`.
+   - Inner run (`PD2_EXPERIMENT_ACTIVE == sd-storage-v1`): executes the full production launcher body in the isolated mount namespace with `PD2_STATE="$PD2_EXPERIMENT_STATE"`, satisfying all PortMaster contracts and regression test suites.
+2. **Storage Tools Integration (`sdcard/ports/projectdiablo2/storage-tools/`):**
+   - Merged `storage_common.py`, `storage_launcher.py`, and `storage_session.py`.
+   - Supports dual port names (`projectdiablo2` and `projectdiablo2-sd`).
+   - Dual game data resolution (local in `gamedata/` or bind-mounted from external port directory).
+   - Manages `state.ext4` mount and `wine-8.0-x86.squashfs` mount in private unshared namespace.
+3. **Audio DSOAL Path Acceptance (`scripts/audio_dsoal.py` & `scripts/experimental_audio_storage.py`):**
+   - Updated `audio_dsoal.py` and `experimental_audio_storage.py` to accept workspace under `projectdiablo2/storage/mounted-state`.
+   - Dynamic fallback import ensuring module resolution both from parent repo tests and child runtime.
+4. **Release Tracking (`release-files.json`):**
+   - Added `storage-tools/*`, `storage-manifest.json`, `private-launcher.sh`, `experimental_audio_storage.py`.
+
+### Test Verification:
+- `tests/test_storage_check.py`: 15/15 PASS.
+- `tests/test_layout.py`: 43/43 PASS.
+- `tests/test_start_menu.py`: 28/28 PASS.
+- `tests/test_controller_mode.py`: 18/18 PASS.
+- `tests/test_runtime_fix.py`: 6/6 PASS.
+- `tests/test_fetch_metrics.py`: 9/9 PASS.
+- `tests/test_menu_x11.py`: 21/21 PASS.
+- `tests/test_audio_dsoal.py`: 30/30 PASS.
+- `tests/test_payload_cleanup.py`: 4/4 PASS.
+
+### Physical Device Deployment (`192.168.50.135`):
+- Uploaded `Project Diablo 2.sh` to `/roms2/ports/`.
+- Uploaded `private-launcher.sh`, `storage-manifest.json`, `storage-tools/`, and updated `scripts/` to `/roms2/ports/projectdiablo2/`.
+- Copied `wine-8.0-x86.squashfs` (74 MB) and `state.ext4` (1 GB) from `/roms2/ports/projectdiablo2-sd/` to `/roms2/ports/projectdiablo2/`.
+- Validated on-device via non-executing check:
+  `python3 -B /roms2/ports/projectdiablo2/storage-tools/storage_launcher.py --port /roms2/ports/projectdiablo2 --check` -> PASS (Exit 0, 732 MB available, no wine/game execution).
+
+---
+
+## 12. Non-Production Diagnostic Payloads Cleanup
+
+- Relocated all non-production diagnostic check launchers and helpers out of the production tree into `.temp/projectdiablo2-weston-complete/`:
+  - Launchers: `sdcard/ports/Project Diablo 2 - Complete Check.sh`, `sdcard/ports/Project Diablo 2 - Weston Check v2.sh`
+  - Orchestration & sanitizers: `sdcard/ports/projectdiablo2/scripts/weston_check.py`, `weston_startup_check.py`, `weston_startup_log.py`, `weston_complete_check.py`, `weston_complete_log.py`
+  - Native fault-guard compat: `sdcard/ports/projectdiablo2/compat/weston-check/`
+  - Build tools: `tools/build_weston_fault_guard.py`, `tools/weston_fault_guard.c`, `tools/weston_fault_watch.c`
+  - Synthetic diagnostic tests: `tests/test_weston_check.py`, `tests/test_weston_startup_check.py`, `tests/test_weston_startup_log.py`, `tests/test_weston_complete_check.py`, `tests/test_weston_complete_log.py`, `tests/test_weston_fault_guard.py`
+  - Leftover test root fixture: `safe-log-test-*` moved into `.temp/`
+- Pruned all diagnostic entries from `release-files.json`.
+- Restored `tests/test_payload_cleanup.py` (`test_only_production_launcher_is_distributed`) to assert strictly single launcher `Project Diablo 2.sh`.
+- Test verification: `tests/test_payload_cleanup.py` 4/4 PASS.
+
+---
+
+## 13. Deployment of Project Diablo 2 R36S port 1.0.zip via SSH
+
+- Uploaded `.temp/release/Project Diablo 2 R36S port 1.0.zip` (187,902,050 bytes, SHA256: `7869a603e1f9413574cfb3bcaeff8d032a3bff48eda7bb5d63ea718e1d95c166`) directly to target console (`192.168.50.135:/roms2/ports/`) via PSCP.
+- Verified checksum and file size matching bit-for-bit on-device.
+- Extracted package cleanly into `/roms2/ports/` via `unzip -o`. User data (`saves/`, `config/`, `gamedata/Diablo II/`, and `storage/state.ext4`) remained untouched.
+- Ran non-executing verification on device:
+  `python3 -B /roms2/ports/projectdiablo2/storage-tools/storage_launcher.py --port /roms2/ports/projectdiablo2 --check` -> PASS (Exit 0, ext4 image and read-only Wine mounted in private namespace, no Wine or game executed).
+- Full local layout regression tests passed (43/43 PASS).
+
+
+
+

@@ -224,11 +224,11 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
  menu_valid=0
  if [[ "$menu_rc" == 0 ]]; then
   case "$menu_selection" in
-   'default default'|'default 0'|'default 1'|\
-    'native default'|'native 0'|'native 1'|\
-    '640x480 default'|'640x480 0'|'640x480 1'|\
-    '800x600 default'|'800x600 0'|'800x600 1'|\
-    '1024x768 default'|'1024x768 0'|'1024x768 1') menu_valid=1;;
+   'default default'|'default 0'|'default 1'|'default 2'|'default 3'|'default 4'|\
+    'native default'|'native 0'|'native 1'|'native 2'|'native 3'|'native 4'|\
+    '640x480 default'|'640x480 0'|'640x480 1'|'640x480 2'|'640x480 3'|'640x480 4'|\
+    '800x600 default'|'800x600 0'|'800x600 1'|'800x600 2'|'800x600 3'|'800x600 4'|\
+    '1024x768 default'|'1024x768 0'|'1024x768 1'|'1024x768 2'|'1024x768 3'|'1024x768 4') menu_valid=1;;
   esac
  fi
  if [[ "$menu_valid" == 1 ]]; then
@@ -241,6 +241,8 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
   # Launcher menu MUST wait for a visible menu and explicit confirmation. Never launch
   # the game after a missing/broken menu or an invalid selection protocol.
   printf '%s\n' 'PD2: blad launchera; gra nie zostala uruchomiona. Sprawdz log.' >&2
+  printf '%s\n' 'PD2: launcher menu failed; game not started. Check logs.' > /dev/tty0 2>/dev/null || true
+  printf '%s\n' 'PD2: launcher menu failed; game not started. Check logs.' > /dev/tty1 2>/dev/null || true
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"start_menu","status":"failed"}\n'
   exit 1
  fi

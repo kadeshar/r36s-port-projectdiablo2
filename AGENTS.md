@@ -158,6 +158,12 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 - **Accuracy & Integrity:** Retain 100% technical accuracy, code syntax, exact error strings, command arguments, and markdown links. Code blocks and commit messages are never mangled.
 - **Persistence:** The caveman mode remains continuously active across all turns within the agent session unless the user explicitly requests normal mode.
 
+### Temporary Files and Experimental Work:
+- **All new temporary files, downloaded investigation references, synthetic fixtures, build intermediates, scratch reports and experimental port copies MUST be placed under the repository-root `.temp/` directory.** Keep `.temp/` ignored by Git; do not create new temporary artifacts in the root, `.state/`, production `sdcard/ports/`, or unrelated directories.
+- **Explicit experimental-work exception:** when the user requests an experimental port under `.temp/`, keep its payload, isolated launchers, copied scripts, tools and tests there. Do not merge experiments into or deploy them as production `sdcard/ports/` files without a separate explicit user request. Never share mutable production config, Wine prefix or saves with an experiment.
+- Permanent project documentation still belongs in root `docs/`; disposable experiment notes may live inside `.temp/`. This repository-storage rule does not replace necessary volatile `/tmp` or `/run` paths used by console sessions.
+- Existing temporary artifacts elsewhere are not permission to create more there; do not relocate/delete the user's existing files without authorization.
+
 ### Documentation Location Standard:
 - **No loose `.md` files in `sdcard/ports/`:** Handheld ROM partitions must contain only execution payloads, scripts, runtimes, and configs. All user-facing guides, diagnostic protocols, and changelogs must reside strictly within the root [`docs/`](docs/) directory.
 

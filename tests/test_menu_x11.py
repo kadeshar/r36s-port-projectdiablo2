@@ -231,7 +231,7 @@ class ProtocolTests(unittest.TestCase):
         labels = [call.args[2] for call in text.call_args_list]
         self.assertIn('> ENTER SANCTUARY / LAUNCH', labels)
         self.assertIn('  EXIT TO SYSTEM', labels)
-        self.assertIn('  FPS COUNTER: OFF', labels)
+        self.assertIn('  PERF OVERLAY: OFF', labels)
         self.assertIn('  RESOLUTION: 800x600', labels)
         self.assertFalse(any('DEFAULT' in label for label in labels))
         for row in range(4):
@@ -246,15 +246,16 @@ class ProtocolTests(unittest.TestCase):
         import start_menu
         screen, _ = self.screen()
         for inherited in ('640x480', '800x600', '1024x768', 'native'):
-            for fps in ('0', '1'):
+            for fps in ('0', '1', '2', '3', '4'):
                 with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': inherited, 'PD2_FPS': fps}):
                     menu = start_menu.Menu()
                 with mock.patch.object(screen, '_text') as text:
                     screen.draw(menu)
                 labels = [call.args[2] for call in text.call_args_list]
                 expected = '1068x600' if inherited == 'native' else inherited
+                expected_overlay = {'0': 'OFF', '1': 'LEVEL 1', '2': 'LEVEL 2', '3': 'LEVEL 3', '4': 'LEVEL 4'}[fps]
                 self.assertIn('  RESOLUTION: ' + expected, labels)
-                self.assertIn('  FPS COUNTER: ' + ('ON' if fps == '1' else 'OFF'), labels)
+                self.assertIn('  PERF OVERLAY: ' + expected_overlay, labels)
                 for resolution in range(len(screen.labels)):
                     menu.resolution = resolution
                     with mock.patch.object(screen, '_text') as text:

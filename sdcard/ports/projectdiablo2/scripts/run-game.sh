@@ -364,7 +364,7 @@ case "$audio_variant" in
   ;;
 esac
 resolution="${PD2_GAME_RESOLUTION:-640x480}"
-[[ "$fps_enabled" == 0 || "$fps_enabled" == 1 ]] || { error invalid_profile 1; exit 1; }
+case "$fps_enabled" in 0|1|2|3|4) ;; *) error invalid_profile 1; exit 1;; esac
 case "$resolution" in 640x480|800x600|1024x768|native) ;; *) error invalid_profile 1; exit 1;; esac
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"render_resolution","status":"%s"}\n' "$resolution"
 [[ "$input_mode" == mapper || "$input_mode" == native ]] || { error invalid_profile 1; exit 1; }
@@ -577,11 +577,14 @@ if [[ "$controller_test" == 0 ]]; then
    printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"presentation_capture","status":"unavailable"}\n'
    error invalid_layout 1; exit 1
   fi
- elif [[ "$fps_enabled" == 1 ]]; then
-  # Select the authenticated automatic HUD before the first game frame. This
-  # changes only the volatile work copy; no input helper or second Wine desktop.
-  timeout --kill-after=2 10 python3 -B "$PD2_PORT/scripts/fps_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" || \
+ elif [[ "$fps_enabled" =~ ^[1-4]$ ]]; then
+  rm -f "$PD2_WORK/ProjectD2/pd2-present.jsonl"
+  if python3 -B "$PD2_PORT/scripts/present_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" >/dev/null; then
+   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"fps_counter","status":"overlay"}\n'
+  else
    printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"fps_counter","status":"unavailable"}\n'
+   error invalid_layout 1; exit 1
+  fi
  else
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"fps_counter","status":"disabled"}\n'
  fi
@@ -630,6 +633,10 @@ else
  setsid "${audio_game_wrapper[@]}" "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\Game.exe' -ddraw & game_pid=$!
 fi
 printf '%s\n' "$game_pid" > "$PD2_RUN/game.pid"
+if [[ "$fps_enabled" =~ ^[1-4]$ ]]; then
+ setsid python3 -B "$PD2_PORT/scripts/overlay/performance_overlay.py" --level "$fps_enabled" --pid "$game_pid" --work "$PD2_WORK" & fps_pid=$!
+ printf '%s\n' "$fps_pid" > "$PD2_RUN/fps.pid"
+fi
 if [[ ${PD2_METRICS:-0} == 1 ]];then
  # Anchor resource accounting to Wine/game, not mapper or the sampler itself.
  setsid python3 -B "$PD2_PORT/scripts/metrics.py" --port "$PD2_PORT" --pid "$game_pid" --wine-prefix "$WINEPREFIX" --uid "$(id -u)" --wine-exe "$PD2_BOX" & metrics_pid=$!
