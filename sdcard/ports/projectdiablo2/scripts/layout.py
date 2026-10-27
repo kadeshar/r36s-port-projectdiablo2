@@ -20,8 +20,8 @@ JSON_CONFIGS = ('ProjectDiablo.json', 'SGD2FreeResolution.json', 'BH.json')
 WORK_CONFIGS = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw.ini')
 ARTIFACTS = ('wine-8.0-x86.tar.xz', 'box86', 'weston_pkg_0.2.squashfs', 'vc_redist.x86.exe')
 CNC_DDRAW_VERSION = '7.1.0.0'
-CNC_DDRAW_SIZE = 411648
-CNC_DDRAW_SHA256 = '85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9'
+CNC_DDRAW_SIZE = 433152
+CNC_DDRAW_SHA256 = '78426543604f16aececafafc326021e8d68731752ba7a196569461020a457d56'
 # Restricted PD2 SGD2 build: fixed in-game vector and parser both force 1068x600.
 # Patch only a private generated copy, never the imported asset or an unknown DLL.
 SGD2_SOURCE_SIZE = 307200

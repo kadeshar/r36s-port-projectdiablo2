@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / 'tools'
 STATE = ROOT / '.state/cnc-ddraw'
 DEST = ROOT / 'sdcard/ports/projectdiablo2/compat/cnc-ddraw'
-UPSTREAM_ZIP = Path(r'C:\AI fast\R36S\projectdiablo2\.state\fps-renderer\upstream.zip')
+UPSTREAM_ZIP = Path(r'C:\AI fast\old\R36S\projectdiablo2\.state\fps-renderer\upstream.zip')
 SOURCE_SHA = 'a4f638383364e3bc1e4682b1d549a1f5400fa0cc312ee216d1b42555b1c814eb'
 VS = Path(os.environ.get('PRESENT_RENDERER_VS', r'C:\Program Files\Microsoft Visual Studio\2022\Community'))
 

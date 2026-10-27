@@ -847,8 +847,8 @@ class LayoutTests(unittest.TestCase):
         production = importlib.util.module_from_spec(SPEC)
         SPEC.loader.exec_module(production)
         self.assertEqual(production.CNC_DDRAW_VERSION, '7.1.0.0')
-        self.assertEqual(production.CNC_DDRAW_SIZE, 411648)
-        self.assertEqual(production.CNC_DDRAW_SHA256, '85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9')
+        self.assertEqual(production.CNC_DDRAW_SIZE, 433152)
+        self.assertEqual(production.CNC_DDRAW_SHA256, '78426543604f16aececafafc326021e8d68731752ba7a196569461020a457d56')
         # A self-consistent local manifest is not enough to bypass release pins.
         with self.assertRaisesRegex(production.LayoutError, 'unsupported_runtime'):
             production.companion_file(self.port)
