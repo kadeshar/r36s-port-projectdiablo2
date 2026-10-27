@@ -681,6 +681,50 @@ To address Cortex-A35 execution bottlenecks:
   `python3 -B /roms2/ports/projectdiablo2/storage-tools/storage_launcher.py --port /roms2/ports/projectdiablo2 --check` -> PASS (Exit 0, ext4 image and read-only Wine mounted in private namespace, no Wine or game executed).
 - Full local layout regression tests passed (43/43 PASS).
 
+---
+
+## 14. In-Game Performance Overlay Hotkey Controls & Dedicated FPS Telemetry Sections
+
+- **Background Gamepad Hotkey Listener (`scripts/overlay/hotkey_listener.py`):**
+  - Monitors `/dev/input/event*` devices non-blocking via Python standard library (`select`, `struct`, `threading`).
+  - Implements in-game hotkey combinations:
+    - **FN + R1** (`0x2c4` + `0x137` / `BTN_TR`): Dynamically cycles overlay levels (`0 -> 1 -> 2 -> 3 -> 4 -> 0`).
+    - **FN + R2** (`0x2c4` + `0x139` / `BTN_TR2` or `ABS_RZ >= 128`): Resets the frametime graph and recalculates `AVG`, `1% LOW`, and `0.1%low` fresh.
+    - Also accepts Select (`0x2c0` / `0x13a`) and virtual Xbox Mode (`0x13c`) as secondary alias modifiers.
+  - Edge-triggered with 0.35s debouncing to prevent accidental multi-triggers.
+  - Responsive instant thread shutdown via `threading.Event`.
+
+- **Dedicated FPS Telemetry Sections Replacing GAMESCOPE:**
+  - Replaced the single `GAMESCOPE` section in Level 3 and Level 4 with four distinct telemetry rows:
+    - `FPS`: Instantaneous / current frame rate.
+    - `AVG`: Average frame rate accumulated since last reset.
+    - `1% LOW`: Average of the lowest 1% of frame times converted to FPS.
+    - `0.1%low`: Average of the lowest 0.1% of frame times converted to FPS.
+    - Followed by `Frametime` in ms and the color-coded live frametime graph.
+  - Updated layout dimensions:
+    - Level 3 (Detailed HUD): 205 × 176 px (increased from 136 px to accommodate 4 FPS rows).
+    - Level 4 (Full OSD): 205 × 266 px (increased from 226 px to accommodate 4 FPS rows).
+
+- **`FPSTracker` Statistical Engine (`scripts/overlay/fps_tracker.py`):**
+  - Added tracking for `low_1pct` and `low_01pct` percentiles.
+  - Added `reset()` method to clear `history` (frametime graph) and reset `all_fps_samples`, `avg_fps`, `min_fps`, `max_fps`, `low_1pct`, and `low_01pct`.
+
+- **Dynamic HUD Level Switching (`scripts/overlay/x11_hud.py`):**
+  - Added `set_level(new_level)` to dynamically resize and reposition the unmanaged override-redirect X11 window using `ConfigureWindow` (opcode 12).
+  - Frees and recreates the backbuffer pixmap (opcode 54 / 53) to match new dimensions without reconnecting or dropping X11 connection.
+  - Supports Level 0 as hidden/unmapped window (`UnmapWindow` opcode 10) with zero rendering overhead, seamlessly mapping window (`MapWindow` opcode 8) when cycling to Level 1..4.
+
+- **Verification & Testing:**
+  - `tests/test_performance_overlay.py`: 20/20 PASS.
+  - Tested synthetic hotkey event processing, debouncing, 1% and 0.1% low calculation, reset behavior, and HUD resizing.
+  - Fixed Level 2 centering regression on dynamic switch: `_get_default_x` previously used stale `self.width` (from Level 1, 34px) instead of target level width (410px), resulting in `x=303` instead of `x=115`. Fixed by explicitly passing target `width=new_w` to `_get_default_x`. Regression tested and confirmed centered at `(640-410)//2 = 115`.
+  - Executed fresh installation simulation via `tools/simulate_fresh_install.py`:
+    - 32/32 saves backed up to `/roms2/ports/projectdiablo2-saves-backup-20261027_080605`.
+    - Removed `storage/state.ext4`, session locks, runtime caches, and logs.
+    - Verified all 32 saves preserved in place and `Game.exe` intact.
+    - Console reset to clean first-boot state ready for user manual launch test.
+
+
 
 
 
