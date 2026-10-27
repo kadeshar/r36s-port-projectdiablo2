@@ -627,12 +627,10 @@ fi
 # WINDOWS working directory, so config lookup does not depend on a Unix cwd
 # or explorer inheritance. Wine's /exec waits without opening another console
 # and stops option/title parsing before the EXE path (which contains spaces).
-desktop_res="${resolution:-640x480}"
-[[ "$desktop_res" == native ]] && desktop_res="1068x600"
 if [[ "$controller_test" == 1 ]]; then
  setsid "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\pd2-xinput-probe.exe' & game_pid=$!
 else
- setsid "${audio_game_wrapper[@]}" "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,"$desktop_res" start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\Game.exe' -ddraw & game_pid=$!
+ setsid "${audio_game_wrapper[@]}" "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\Game.exe' -ddraw & game_pid=$!
 fi
 printf '%s\n' "$game_pid" > "$PD2_RUN/game.pid"
 if [[ "$fps_enabled" =~ ^[1-4]$ ]]; then

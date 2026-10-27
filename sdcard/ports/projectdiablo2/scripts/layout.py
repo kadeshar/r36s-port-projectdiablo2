@@ -783,15 +783,12 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
             if name == 'ddraw.ini':
                 # Use a clean known template; user game-specific INI sections
                 # can override global keys. Never sync this session template to config.
-                res_target = resolution if resolution != 'native' else '1068x600'
-                res_w, res_h = res_target.split('x')
                 content = config_content(port / 'defaults/ddraw-gdi.ini', False)
                 content = display_ini(content, {
                     'renderer': 'gdi', 'shader': 'Nearest neighbor',
-                    'width': res_w, 'height': res_h,
                     'maxfps': '30', 'minfps': '0', 'vsync': 'false',
                     'singlecpu': 'false', 'maxgameticks': '-1',
-                    'inject_resolution': res_target,
+                    'inject_resolution': resolution if resolution != 'native' else '1068x600',
                 })
             if not destination.exists() or config_content(destination, name in JSON_CONFIGS) != content:
                 atomic_bytes(destination, content)
