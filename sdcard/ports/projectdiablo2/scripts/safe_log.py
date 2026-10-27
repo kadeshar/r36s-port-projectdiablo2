@@ -554,6 +554,12 @@ def stream_log(directory, session, input_stream, maxbytes=MAX_BYTES, retain=MAX_
                 try:
                     if writer.write(data) != len(data):
                         raise OSError("short write")
+                    writer.flush()
+                    if not (counts["written_events"] % 20):
+                        try:
+                            os.fsync(writer.fileno())
+                        except OSError:
+                            pass
                     size += len(data)
                     counts["written_events"] = min(MAX_COUNT, counts["written_events"] + 1)
                 except (OSError, ValueError):

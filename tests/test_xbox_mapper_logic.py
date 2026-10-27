@@ -332,6 +332,26 @@ class ObserverTests(unittest.TestCase):
         self.observer.process(m.EV_KEY, 0x131, 0)  # No exception / no mapper failure.
         self.assertEqual(self.rows()[0][1], 2)
 
+    def test_retrogame_pad_selection_and_keymap(self):
+        # RG353V / retrogame_joypad with standard Linux codes
+        rg_keys = sum(1 << c for c in (0x130, 0x131, 0x133, 0x134, 0x136, 0x137,
+                                       0x138, 0x139, 0x220, 0x221, 0x222, 0x223,
+                                       0x13a, 0x13b, 0x13c, 0x13d, 0x13e))
+        rg_pad = ('/dev/input/event4', 'retrogame_joypad', 0x484b, 0x1101, rg_keys, ABS)
+        self.assertEqual(m.choose_pad([rg_pad]), rg_pad)
+        keymap, triggers, layout = m.build_keymap(rg_keys, ABS)
+        self.assertEqual(layout, 'retrogame')
+        self.assertEqual(keymap[0x13a], 'SELECT')
+        self.assertEqual(keymap[0x13b], 'START')
+        self.assertEqual(keymap[0x13d], 'THUMBL')
+        self.assertEqual(keymap[0x13e], 'THUMBR')
+        self.assertEqual(keymap[0x13c], 'MODE')
+        self.assertEqual(keymap[0x131], 'A')
+        self.assertEqual(keymap[0x130], 'B')
+        self.assertEqual(keymap[0x133], 'X')
+        self.assertEqual(keymap[0x134], 'Y')
+        self.assertEqual(triggers, {0x138: m.ABS_Z, 0x139: m.ABS_RZ})
+
 
 if __name__ == '__main__':
     unittest.main()
