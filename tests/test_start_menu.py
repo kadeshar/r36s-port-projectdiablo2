@@ -175,6 +175,32 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(decoder.feed(b''.join(event(1, c, 1) for c in codes)),
                          ['up', 'down', 'left', 'right', 'accept', 'cancel', 'accept', 'cancel'])
 
+    def test_rg353v_standard_gamepad_hat_and_stick_inputs(self):
+        actions = m.get_pad_actions()
+        decoder = m.KeyDecoder(actions)
+        # Standard buttons: BTN_START (0x13b), BTN_SELECT (0x13a), keyboard arrows (103, 108, 105, 106)
+        std_codes = (103, 108, 105, 106, 0x13b, 0x13a, 28, 1)
+        self.assertEqual(decoder.feed(b''.join(event(1, c, 1) for c in std_codes)),
+                         ['up', 'down', 'left', 'right', 'accept', 'cancel', 'accept', 'cancel'])
+        # D-pad Hat input: ABS_HAT0X (16), ABS_HAT0Y (17)
+        self.assertEqual(decoder.feed(event(3, 16, -1)), ['left'])
+        self.assertEqual(decoder.feed(event(3, 16, 0)), [])
+        self.assertEqual(decoder.feed(event(3, 16, 1)), ['right'])
+        self.assertEqual(decoder.feed(event(3, 16, 0)), [])
+        self.assertEqual(decoder.feed(event(3, 17, -1)), ['up'])
+        self.assertEqual(decoder.feed(event(3, 17, 0)), [])
+        self.assertEqual(decoder.feed(event(3, 17, 1)), ['down'])
+        self.assertEqual(decoder.feed(event(3, 17, 0)), [])
+        # Left Analog Stick: ABS_X (0), ABS_Y (1)
+        self.assertEqual(decoder.feed(event(3, 0, -20000)), ['left'])
+        self.assertEqual(decoder.feed(event(3, 0, 0)), [])
+        self.assertEqual(decoder.feed(event(3, 0, 20000)), ['right'])
+        self.assertEqual(decoder.feed(event(3, 0, 0)), [])
+        self.assertEqual(decoder.feed(event(3, 1, -20000)), ['up'])
+        self.assertEqual(decoder.feed(event(3, 1, 0)), [])
+        self.assertEqual(decoder.feed(event(3, 1, 20000)), ['down'])
+        self.assertEqual(decoder.feed(event(3, 1, 0)), [])
+
 
     def test_partial_evdev_frames_held_repeat_unknown_and_release(self):
         decoder = m.KeyDecoder(m.PAD_ACTIONS, held=[0x131])

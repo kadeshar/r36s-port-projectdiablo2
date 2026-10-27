@@ -18,8 +18,20 @@ OVERLAY_LEVELS = ('OFF', 'LEVEL 1', 'LEVEL 2', 'LEVEL 3', 'LEVEL 4')
 CANCEL = 10
 EVENT = struct.Struct('@llHHi')  # Linux input_event: native timeval (aarch64/ARM32).
 PAD_ACTIONS = {0x220: 'up', 0x221: 'down', 0x222: 'left', 0x223: 'right',
-               0x131: 'accept', 0x130: 'cancel', 0x2c1: 'accept',
-               0x2c0: 'cancel', 0x2c4: 'cancel'}
+               103: 'up', 108: 'down', 105: 'left', 106: 'right',
+               0x131: 'accept', 0x130: 'cancel',
+               0x13b: 'accept', 0x13a: 'cancel',
+               0x2c1: 'accept', 0x2c0: 'cancel', 0x2c4: 'cancel',
+               28: 'accept', 57: 'accept', 1: 'cancel'}
+
+
+def get_pad_actions():
+    if os.environ.get('PD2_SWAP_AB') == '1':
+        mapping = dict(PAD_ACTIONS)
+        mapping[0x131] = 'cancel'
+        mapping[0x130] = 'accept'
+        return mapping
+    return PAD_ACTIONS
 
 
 
@@ -72,11 +84,17 @@ class Menu:
 
 
 class KeyDecoder:
-    """Ignore keys held on entry, release events and kernel autorepeat."""
+    """Ignore keys held on entry, release events and kernel autorepeat.
+    Also handles Hat (EV_ABS 16/17) and analog stick (EV_ABS 0/1) directional input.
+    """
     def __init__(self, mapping, held=()):
         self.mapping = mapping
         self.held = set(held)
         self.buffer = b''
+        self.hat_x = 0
+        self.hat_y = 0
+        self.stick_x = 0
+        self.stick_y = 0
 
     def feed(self, data):
         self.buffer += data
@@ -86,49 +104,138 @@ class KeyDecoder:
             self.buffer = self.buffer[EVENT.size:]
             if kind == 0 and code == 3:  # SYN_DROPPED: do not trust stale state.
                 raise OSError('input synchronization lost')
-            if kind != 1:
-                continue
-            if value == 0:
-                self.held.discard(code)
-            elif value == 1 and code not in self.held:
-                self.held.add(code)
-                if code in self.mapping:
-                    actions.append(self.mapping[code])
+            if kind == 1:  # EV_KEY
+                if value == 0:
+                    self.held.discard(code)
+                elif value == 1 and code not in self.held:
+                    self.held.add(code)
+                    if code in self.mapping:
+                        actions.append(self.mapping[code])
+            elif kind == 3:  # EV_ABS (Hat and Stick)
+                if code == 16:  # ABS_HAT0X
+                    new_dir = -1 if value < 0 else (1 if value > 0 else 0)
+                    if new_dir != self.hat_x:
+                        if new_dir == -1:
+                            actions.append('left')
+                        elif new_dir == 1:
+                            actions.append('right')
+                        self.hat_x = new_dir
+                elif code == 17:  # ABS_HAT0Y
+                    new_dir = -1 if value < 0 else (1 if value > 0 else 0)
+                    if new_dir != self.hat_y:
+                        if new_dir == -1:
+                            actions.append('up')
+                        elif new_dir == 1:
+                            actions.append('down')
+                        self.hat_y = new_dir
+                elif code == 0:  # ABS_X (Left analog stick horizontal)
+                    new_dir = -1 if value < -16000 else (1 if value > 16000 else 0)
+                    if new_dir != self.stick_x:
+                        if new_dir == -1:
+                            actions.append('left')
+                        elif new_dir == 1:
+                            actions.append('right')
+                        self.stick_x = new_dir
+                elif code == 1:  # ABS_Y (Left analog stick vertical)
+                    new_dir = -1 if value < -16000 else (1 if value > 16000 else 0)
+                    if new_dir != self.stick_y:
+                        if new_dir == -1:
+                            actions.append('up')
+                        elif new_dir == 1:
+                            actions.append('down')
+                        self.stick_y = new_dir
         return actions
 
 
 class Pad:
     def __init__(self):
+        self.fds = []
         self.fd = None
-        # Reuse the already verified physical R36S identity/layout, not a
-        # virtual Xbox or an arbitrary device. Import is lazy for host tests.
+        # Reuse the already verified physical R36S identity/layout when available.
+        # Fall back to opening candidate event devices for other handhelds (RG353V, etc.).
         import fcntl
-        import xbox_mapper as mapper
-        device = mapper.choose_pad(mapper.physical_devices())
-        if device is None:
-            return  # X11 keyboard remains usable.
-        fd = os.open(device[0], os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+        actions_map = get_pad_actions()
+        device_paths = []
         try:
-            mask = fcntl.ioctl(fd, mapper.evread(0x18, 96), bytes(96))
-            held = [code for code in PAD_ACTIONS if mask[code // 8] & (1 << (code % 8))]
-            self.decoder = KeyDecoder(PAD_ACTIONS, held)
-            self.fd = fd
+            import xbox_mapper as mapper
+            dev = mapper.choose_pad(mapper.physical_devices())
+            if dev is not None:
+                device_paths = [dev[0]]
+        except Exception:
+            pass
+
+        if not device_paths:
+            # Fallback: scan /dev/input/event*
+            from pathlib import Path
+            for p in sorted(Path('/dev/input').glob('event[0-9]*')):
+                device_paths.append(str(p))
+
+        if not device_paths:
+            return  # X11 keyboard remains usable.
+
+        all_held = set()
+        open_fds = []
+        try:
+            for path in device_paths:
+                try:
+                    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+                except OSError:
+                    continue
+                try:
+                    # EVIOCGKEY(96) = 0x80604518
+                    ioctl_cmd = 0x80604518
+                    try:
+                        import xbox_mapper as mapper
+                        ioctl_cmd = mapper.evread(0x18, 96)
+                    except Exception:
+                        pass
+                    mask = fcntl.ioctl(fd, ioctl_cmd, bytes(96))
+                    for code in actions_map:
+                        if mask[code // 8] & (1 << (code % 8)):
+                            all_held.add(code)
+                    open_fds.append(fd)
+                except Exception:
+                    if len(device_paths) == 1:
+                        # Dedicated chosen device must propagate permission/driver error
+                        os.close(fd)
+                        raise
+                    open_fds.append(fd)
         except BaseException:
-            os.close(fd)
+            for fd in open_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             raise
 
+        if not open_fds:
+            return
+        self.fds = open_fds
+        self.fd = open_fds[0]
+        self.decoder = KeyDecoder(actions_map, all_held)
+
     def actions(self):
-        if self.fd is None or not select.select([self.fd], [], [], 0)[0]:
+        if not self.fds:
             return []
-        data = os.read(self.fd, EVENT.size * 64)
-        if not data:
-            raise OSError('controller disconnected')
-        return self.decoder.feed(data)
+        readable, _, _ = select.select(self.fds, [], [], 0)
+        if not readable:
+            return []
+        all_actions = []
+        for fd in readable:
+            data = os.read(fd, EVENT.size * 64)
+            if not data:
+                raise OSError('controller disconnected')
+            all_actions.extend(self.decoder.feed(data))
+        return all_actions
 
     def close(self):
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
+        for fd in self.fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self.fds = []
+        self.fd = None
 
 
 # Built-in 5x7 font: no native GUI library, fonts or package installation.

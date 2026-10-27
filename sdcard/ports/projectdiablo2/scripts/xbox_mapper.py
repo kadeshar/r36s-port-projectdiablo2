@@ -92,8 +92,20 @@ def physical_devices(root='/sys/class/input'):
 
 
 def choose_pad(devices):
-    # Do not guess the digital-trigger layout for an unrelated USB controller.
-    return next((d for d in devices if (d[2], d[3]) == (0x484b, 0x1100)
+    # Primary match: R36S / GO-Super Gamepad (0x484b, 0x1100).
+    r36s = next((d for d in devices if (d[2], d[3]) == (0x484b, 0x1100)
+                 and bits_set(d[4], 0x130, 0x131, 0x133, 0x134)
+                 and bits_set(d[5], ABS_X, ABS_Y, ABS_RX, ABS_RY)), None)
+    if r36s is not None:
+        return r36s
+    # RG353V / retrogame_joypad (0x484b, 0x1101):
+    rg353 = next((d for d in devices if (d[2], d[3]) == (0x484b, 0x1101)
+                  and bits_set(d[4], 0x130, 0x131, 0x133, 0x134)
+                  and bits_set(d[5], ABS_X, ABS_Y, ABS_RX, ABS_RY)), None)
+    if rg353 is not None:
+        return rg353
+    # Named built-in handheld controller match (retrogame_joypad):
+    return next((d for d in devices if d[1] == 'retrogame_joypad'
                  and bits_set(d[4], 0x130, 0x131, 0x133, 0x134)
                  and bits_set(d[5], ABS_X, ABS_Y, ABS_RX, ABS_RY)), None)
 
@@ -101,17 +113,32 @@ def choose_pad(devices):
 def build_keymap(keybits, absbits):
     if not bits_set(keybits, 0x130, 0x131, 0x133, 0x134):
         raise ValueError('unsupported layout')
-    # Physical GO-Super codes confirmed by the user's 17-step test (0.1.12).
-    # BTN_TRIGGER_HAPPY1..5 are Select, Start, L3, R3, Menu on this R36S,
-    # NOT the standard Xbox input codes used on the virtual/output side.
-    keys = {0x131: 'A', 0x130: 'B', 0x133: 'X', 0x134: 'Y',
-            0x136: 'TL', 0x137: 'TR',
-            0x220: 'UP', 0x221: 'DOWN', 0x222: 'LEFT', 0x223: 'RIGHT',
-            0x2c0: 'SELECT', 0x2c1: 'START', 0x2c2: 'THUMBL',
-            0x2c3: 'THUMBR', 0x2c4: 'MODE'}
     if absbits & ((1 << ABS_Z) | (1 << ABS_RZ)):
-        raise ValueError('unexpected GO-Super axes')
-    return keys, {0x138: ABS_Z, 0x139: ABS_RZ}, 'standard'
+        raise ValueError('unexpected axes')
+
+    if bits_set(keybits, 0x2c0, 0x2c1):
+        # Physical GO-Super layout confirmed on R36S:
+        # BTN_TRIGGER_HAPPY1..5 (0x2c0..0x2c4) are Select, Start, L3, R3, Menu.
+        keys = {0x131: 'A', 0x130: 'B', 0x133: 'X', 0x134: 'Y',
+                0x136: 'TL', 0x137: 'TR',
+                0x220: 'UP', 0x221: 'DOWN', 0x222: 'LEFT', 0x223: 'RIGHT',
+                0x2c0: 'SELECT', 0x2c1: 'START', 0x2c2: 'THUMBL',
+                0x2c3: 'THUMBR', 0x2c4: 'MODE'}
+        triggers = {0x138: ABS_Z, 0x139: ABS_RZ}
+        layout = 'standard'
+    else:
+        # Standard Linux gamepad / retrogame_joypad (RG353V and clones):
+        # 0x13a=BTN_SELECT, 0x13b=BTN_START, 0x13d=BTN_THUMBL, 0x13e=BTN_THUMBR, 0x13c=BTN_MODE.
+        # D-Pad uses 0x220..0x223 (BTN_DPAD_*) or fallback.
+        # Action buttons: 0x130=BTN_SOUTH (B on Nintendo layout, A on Xbox), 0x131=BTN_EAST (A on Nintendo, B on Xbox).
+        keys = {0x131: 'A', 0x130: 'B', 0x133: 'X', 0x134: 'Y',
+                0x136: 'TL', 0x137: 'TR',
+                0x220: 'UP', 0x221: 'DOWN', 0x222: 'LEFT', 0x223: 'RIGHT',
+                0x13a: 'SELECT', 0x13b: 'START', 0x13d: 'THUMBL',
+                0x13e: 'THUMBR', 0x13c: 'MODE'}
+        triggers = {0x138: ABS_Z, 0x139: ABS_RZ}
+        layout = 'retrogame'
+    return keys, triggers, layout
 
 
 def axis_info(fd, code):
@@ -393,15 +420,19 @@ def main():
                                 held_physical.discard(code)
                         is_osk_trigger = False
                         if kind == EV_KEY and value == 1:
-                            # Select+X (0x2c0+0x133) or Fn+X (0x2c4+0x133)
-                            if (code == 0x133 and (0x2c0 in held_physical or 0x2c4 in held_physical)) or \
-                               (code in (0x2c0, 0x2c4) and 0x133 in held_physical):
+                            # Select+X (0x2c0+0x133 or 0x13a+0x133) or Fn+X (0x2c4+0x133 or 0x13c+0x133)
+                            is_select_down = (0x2c0 in held_physical or 0x13a in held_physical or
+                                              0x2c4 in held_physical or 0x13c in held_physical)
+                            if (code == 0x133 and is_select_down) or \
+                               (code in (0x2c0, 0x13a, 0x2c4, 0x13c) and 0x133 in held_physical):
                                 is_osk_trigger = True
-                            # L3+R3 (0x2c2+0x2c3)
-                            elif (code == 0x2c3 and 0x2c2 in held_physical) or (code == 0x2c2 and 0x2c3 in held_physical):
+                            # L3+R3 (0x2c2+0x2c3 or 0x13d+0x13e)
+                            elif (code in (0x2c3, 0x13e) and (0x2c2 in held_physical or 0x13d in held_physical)) or \
+                                 (code in (0x2c2, 0x13d) and (0x2c3 in held_physical or 0x13e in held_physical)):
                                 is_osk_trigger = True
-                            # Select+D-Pad Down (0x2c0+0x221)
-                            elif (code == 0x221 and 0x2c0 in held_physical) or (code == 0x2c0 and 0x221 in held_physical):
+                            # Select+D-Pad Down (0x2c0+0x221 or 0x13a+0x221)
+                            elif (code == 0x221 and is_select_down) or \
+                                 (code in (0x2c0, 0x13a) and 0x221 in held_physical):
                                 is_osk_trigger = True
                         if is_osk_trigger:
                             for xcode in XBOX_KEYS.values():

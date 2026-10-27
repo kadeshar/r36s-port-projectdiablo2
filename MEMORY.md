@@ -4,6 +4,91 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## Fresh Installation Failure Diagnosis & Fix (ArkOS mke2fs 1.45.3)
+
+- **Reported Issue:**
+  - Fresh installation on ArkOS failed; game/start menu did not appear after launcher click.
+- **Root Cause Analysis:**
+  - Inspected console log /roms2/ports/projectdiablo2/logs/storage-session.log:
+    [ERROR] Validation failed: mke2fs failed: mke2fs 1.45.3 (14-Jul-2019)
+    Invalid filesystem option set: ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file
+  - When state.ext4 does not exist (fresh installation or after reset), nsure_state_image() in storage_common.py creates and formats state.ext4 using mke2fs.
+  - The command hardcoded -O ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file.
+  - ArkOS runs Linux 4.4.189 and ships with mke2fs 1.45.3 (14-Jul-2019). The orphan_file feature was only added in e2fsprogs 1.47.0 (2023). Passing ^orphan_file caused mke2fs to fail immediately with Invalid filesystem option set, aborting before the compositor, start menu, or game could execute.
+- **Code Fix ([sdcard/ports/projectdiablo2/storage-tools/storage_common.py](sdcard/ports/projectdiablo2/storage-tools/storage_common.py)):**
+  - Added multi-candidate feature fallback in nsure_state_image():
+    1. ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file (modern e2fsprogs 1.47+)
+    2. ^64bit,^metadata_csum,^metadata_csum_seed (ArkOS e2fsprogs 1.45.3)
+    3. ^64bit,^metadata_csum
+    4. ^64bit
+    5. Default (no extra -O)
+  - If mke2fs fails with 'invalid filesystem option' in stderr, it attempts the next candidate. If failure is due to a real error (disk full, permissions), it aborts without trying further feature sets.
+- **Validation:**
+  - Added unit tests 	est_ensure_state_image_fallbacks_when_option_unsupported and 	est_ensure_state_image_stops_on_unrelated_error_without_fallback in [	ests/test_storage_common.py](tests/test_storage_common.py). All 6 unit tests pass.
+  - Deployed updated storage_common.py to console /roms2/ports/projectdiablo2/storage-tools/storage_common.py.
+  - Verified storage check on console: state.ext4 formatted and mounted successfully in private namespace.
+  - Executed 	ools/simulate_fresh_install.py to leave console in a clean first-boot state ready for user verification.
+
+---
+
+## Release 1.2-test.2 — Input Subsystem Compatibility (RG353V + Multi-device)
+
+- **Issue #2 Follow-up Diagnosis (RG353V Start Menu Unresponsive Controls):**
+  - Reporter `rattusludus-jpg` confirmed build boots to selection menu on RG353V, but controls do not react.
+  - Root Cause:
+    1. In [`start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py), `Pad.__init__` solely called `mapper.choose_pad(mapper.physical_devices())`. In `xbox_mapper.py`, `choose_pad` explicitly checks for R36S hardware vendor/product `(0x484b, 0x1100)`. On RG353V, built-in controls register as generic platform/gpio devices (`0x0001:0x0001` or `0x0000:0x0000`), so `choose_pad` returned `None`, leaving `Pad.fd = None` with zero inputs polled.
+    2. Event mapping lacked standard Linux gamepad codes: `BTN_START` (`0x13b` / 315), `BTN_SELECT` (`0x13a` / 314), and keyboard directional keys (`103`, `108`, `105`, `106`).
+    3. `KeyDecoder.feed()` discarded all `kind != 1` (`EV_KEY`). On RG353V and many other PortMaster-compatible handhelds, D-pad and analog sticks emit `kind == 3` (`EV_ABS`) Hat events (`ABS_HAT0X` 16, `ABS_HAT0Y` 17) or stick events (`ABS_X` 0, `ABS_Y` 1).
+- **Code Fixes:**
+  - **Input Discovery Fallback ([`start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py)):**
+    - Checks `mapper.choose_pad()` first (preserving verified R36S physical path). If `None`, scans `/dev/input/event*` and opens candidate event devices non-blocking with multi-fd `select.select()` polling.
+  - **Hat (`EV_ABS`) & Stick Support ([`start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py)):**
+    - `KeyDecoder.feed()` processes `EV_ABS`:
+      - D-Pad Hats (`ABS_HAT0X` 16, `ABS_HAT0Y` 17) mapped to left/right/up/down.
+      - Analog Sticks (`ABS_X` 0, `ABS_Y` 1 with deadzone ±16000) mapped to left/right/up/down.
+  - **Extended Gamepad Actions ([`start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py)):**
+    - Added `0x13b` (`BTN_START` -> accept), `0x13a` (`BTN_SELECT` -> cancel), `103`/`108`/`105`/`106` (arrow keys), `28`/`57` (Enter/Space), `1` (Esc).
+    - Integrated `PD2_SWAP_AB` environment support into `get_pad_actions()`.
+- **Validation & Test Suite:**
+  - Added `test_rg353v_standard_gamepad_hat_and_stick_inputs` in [`tests/test_start_menu.py`](tests/test_start_menu.py) (all 29 tests pass).
+  - Verified `tests/test_layout.py` (all 44 tests pass).
+  - Verified live Pad enumeration on console via SSH (`PAD FDS: 1`).
+- **Release Package 1.2-test.2:**
+  - Built [`.temp/release/Project Diablo 2 R36S port 1.2-test.2.zip`](file:///c:/src/r36s-port-projectdiablo2/.temp/release/Project%20Diablo%202%20R36S%20port%201.2-test.2.zip) (189,079,057 bytes, SHA256: `bf16bd6f5678b49bd2856e61a36e252078a513a9c565ac5b321fb715ada4ca56`).
+- **Console Deployment:**
+  - Deployed updated `start_menu.py` to console `/roms2/ports/projectdiablo2/scripts/start_menu.py`.
+
+---
+
+## Release 1.2-test.1 — Multi-device Compatibility (RG353V + R36S)
+
+- **Production Code Updates (`sdcard/ports/`):**
+  - **Weston Wayland Preload & Xwayland Isolation (`scripts/weston-session.sh`):**
+    - Preloaded `$W/lib_aarch64/libwayland-server.so.0:$W/lib_aarch64/libwayland-client.so.0:$preload` for `wp_weston` to bypass Mali Bifrost G52 driver stub collisions with Wayland symbols on RG353V (dArkOS Trixie).
+    - Injected `export LD_PRELOAD=` into `$R/bin/Xwayland` wrapper to prevent Xwayland from inheriting `libcrusty.so`.
+    - Sanitized `XWAYLAND_LD_LIBRARY_PATH="${xwayland_gl:+$xwayland_gl:}$W/lib_aarch64"` removing `$backendlib` (`crusty_gbm`) to avoid fake EGL symbol collisions in `libepoxy`.
+  - **Preflight Layout Self-Healing (`scripts/layout.py`):**
+    - Unlinks stale regular files at target config/dat paths before calling `link(destination, active)`, preventing `LayoutError('invalid_layout')` if a previous session was interrupted.
+    - Verified all 44 unit tests pass in `tests/test_layout.py`.
+  - **Storage Tools Robustness (`storage-tools/storage_common.py`):**
+    - Added missing `shutil` and `subprocess` imports.
+- **Release Package 1.2-test.1:**
+  - Built [`.temp/release/Project Diablo 2 R36S port 1.2-test.1.zip`](file:///c:/src/r36s-port-projectdiablo2/.temp/release/Project%20Diablo%202%20R36S%20port%201.2-test.1.zip) (188,274,792 bytes, SHA256: `e7f5ef580de29acbf33f3166911638d4d04b1b1a7ab4147f947a4ac182741e06`).
+  - Standard PortMaster distribution structure: contains `Project Diablo 2.sh` and `projectdiablo2/` tree.
+- **Console Deployment & Fresh Installation Simulation:**
+  - Executed `tools/simulate_fresh_install.py` on console `192.168.50.135`:
+    - Backed up 32 save files to `/roms2/ports/projectdiablo2-saves-backup-20261026_155122`.
+    - Cleaned `storage/state.ext4`, session locks, logs, and home state cache. Verified post-reset integrity (32/32 saves intact, `Game.exe` verified).
+  - Deployed updated files to console:
+    - `/roms2/ports/Project Diablo 2.sh` (`d1306ac7...`)
+    - `/roms2/ports/projectdiablo2/scripts/layout.py` (`16cc51ba...`)
+    - `/roms2/ports/projectdiablo2/scripts/weston-session.sh` (`3c957ae2...`)
+    - `/roms2/ports/projectdiablo2/storage-tools/storage_common.py` (`9bdbfc0d...`)
+    - `/roms2/ports/Project Diablo 2 R36S port 1.2-test.1.zip` (`e7f5ef58...`)
+- **Testing Standard:** In compliance with AGENTS.md rule 7, game launch on the console remains exclusively reserved for the user. Console is in clean first-boot state ready for user manual launch test.
+
+---
+
 ## Issue #6 & Fresh Installation Simulation Procedure
 
 - **Issue #6 Diagnosis:**
