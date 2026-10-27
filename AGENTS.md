@@ -116,8 +116,6 @@ This prevents the operating system from stalling due to swapping RAM pages out t
 │       └── caveman/           # Mandatory caveman token efficiency skill (SKILL.md)
 ├── AGENTS.md                  # This architectural guide and AI operational contract
 ├── docs/                      # Central documentation directory (no loose .md in sdcard/ports)
-│   ├── README.md              # Documentation index and overview
-│   ├── PORT-README.md         # Detailed port manual and historical changelog
 │   └── DIAGNOSTICS-1.md       # Historical diagnostic procedures (tests A–F)
 ├── MEMORY.md                  # Chronological debugging history and test records
 ├── README.md                  # Project overview and setup documentation

@@ -8,6 +8,10 @@ R36S performance overlay with levels:
   3: Detailed multi-line performance HUD
   4: Full detailed HUD with live frametime bar graph and per-core CPU stats
 
+Gamepad hotkey controls during gameplay:
+  FN + R1 : Switch overlay level (cycles 0 -> 1 -> 2 -> 3 -> 4 -> 0)
+  FN + R2 : Reset frametime graph and statistical metrics (FPS/AVG/1% Low/0.1% Low)
+
 Designed to be fully portable and easily drop-in movable to other PortMaster / Linux ports.
 Requires only standard Linux kernel interfaces (/proc, /sys) and X11 Unix socket.
 """
@@ -21,10 +25,12 @@ try:
     from .overlay_metrics import SystemMetrics
     from .fps_tracker import FPSTracker
     from .x11_hud import X11HUD
+    from .hotkey_listener import HotkeyListener
 except ImportError:
     from overlay_metrics import SystemMetrics
     from fps_tracker import FPSTracker
     from x11_hud import X11HUD
+    from hotkey_listener import HotkeyListener
 
 
 def _get_log_path():
@@ -58,12 +64,10 @@ def _pid_alive(pid):
         return False
 
 
-def run_overlay(level=1, target_pid=None, work_dir=None, display=':0', interval=0.3, cli_mode=False):
-    _log(f'Starting performance overlay level={level} pid={target_pid} work={work_dir} display={display}')
-    if level <= 0:
-        _log('Level is 0, exiting')
-        return 0
+def run_overlay(level=1, target_pid=None, work_dir=None, display=':0', interval=0.35, cli_mode=False):
+    _log(f'Starting performance overlay initial_level={level} pid={target_pid} work={work_dir} display={display}')
 
+    current_level = max(0, min(4, level))
     metrics = SystemMetrics()
     fps_tracker = FPSTracker(work_dir=work_dir)
     hud = None
@@ -83,8 +87,8 @@ def run_overlay(level=1, target_pid=None, work_dir=None, display=':0', interval=
 
     if not cli_mode:
         try:
-            _log(f'Connecting X11HUD to {display}...')
-            hud = X11HUD(level=level, display=display)
+            _log(f'Connecting X11HUD to {display} (initial_level={current_level})...')
+            hud = X11HUD(level=current_level, display=display)
             hud.connect()
             _log(f'X11HUD connected successfully! Window={hud.window}')
         except Exception as e:
@@ -93,36 +97,82 @@ def run_overlay(level=1, target_pid=None, work_dir=None, display=':0', interval=
             sys.stderr.flush()
             cli_mode = True
 
-    if level == 1 and interval < 0.5:
-        interval = 0.5
+    # Setup gamepad hotkey listener
+    level_switch_pending = False
+    reset_data_pending = False
 
-    _log(f'Entering render loop, cli_mode={cli_mode}, interval={interval}')
+    def on_switch_level():
+        nonlocal level_switch_pending
+        level_switch_pending = True
+
+    def on_reset_data():
+        nonlocal reset_data_pending
+        reset_data_pending = True
+
+    hotkey_listener = HotkeyListener(
+        on_switch_level=on_switch_level,
+        on_reset_data=on_reset_data,
+        debounce_seconds=0.35,
+    )
+    try:
+        hotkey_listener.start()
+        _log('HotkeyListener started successfully (FN+R1 switch level, FN+R2 reset data)')
+    except Exception as e:
+        _log(f'HotkeyListener start warning: {e}')
+
+    _log(f'Entering render loop, current_level={current_level}, cli_mode={cli_mode}, interval={interval}')
     try:
         while running:
             if target_pid and not _pid_alive(target_pid):
                 _log(f'Target pid {target_pid} exited')
                 break
 
-            m = metrics.sample(level=level)
+            # Process hotkey inputs
+            sw, rs = hotkey_listener.poll_actions()
+            if sw or level_switch_pending:
+                level_switch_pending = False
+                current_level = (current_level + 1) % 5
+                _log(f'Hotkey action: Switched overlay level to {current_level}')
+                if hud and not cli_mode:
+                    try:
+                        hud.set_level(current_level)
+                    except Exception as e:
+                        _log(f'hud.set_level error: {e}')
+
+            if rs or reset_data_pending:
+                reset_data_pending = False
+                _log('Hotkey action: Reset overlay telemetry metrics and frametime graph')
+                fps_tracker.reset()
+
+            m = metrics.sample(level=current_level)
             f = fps_tracker.update()
 
             if hud and not cli_mode:
-                try:
-                    hud.render(m, f)
-                except Exception as e:
-                    _log(f'hud.render failed: {e}')
-                    break
+                if current_level > 0:
+                    try:
+                        hud.render(m, f)
+                    except Exception as e:
+                        _log(f'hud.render failed: {e}')
+                        break
             else:
-                fps = f.get('fps', 0)
-                cpu = m.get('cpu_total', 0)
-                gpu = m.get('gpu_pct', 0)
-                ram = m.get('ram_used_mb', 0)
-                sys.stdout.write(f'\r[Level {level}] FPS: {fps} | CPU: {cpu}% | GPU: {gpu}% | RAM: {ram}MB')
-                sys.stdout.flush()
+                if current_level > 0:
+                    fps = f.get('fps', 0)
+                    avg = f.get('avg_fps', 0.0)
+                    l1 = f.get('low_1pct', 0.0)
+                    l01 = f.get('low_01pct', 0.0)
+                    cpu = m.get('cpu_total', 0)
+                    gpu = m.get('gpu_pct', 0)
+                    ram = m.get('ram_used_mb', 0)
+                    sys.stdout.write(f'\r[Level {current_level}] FPS: {fps} (AVG:{avg:.0f} 1%Low:{l1:.0f} 0.1%Low:{l01:.0f}) | CPU: {cpu}% | GPU: {gpu}% | RAM: {ram}MB')
+                    sys.stdout.flush()
+                else:
+                    sys.stdout.write('\r[Level 0: OFF] Press FN+R1 to activate overlay...                     ')
+                    sys.stdout.flush()
 
             time.sleep(interval)
     finally:
         _log('Shutting down overlay')
+        hotkey_listener.stop()
         fps_tracker.close()
         if hud:
             hud.close()

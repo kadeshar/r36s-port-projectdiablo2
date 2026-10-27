@@ -118,13 +118,13 @@ LEVEL2_Y = OVERLAY_TOP_Y
 
 # Level 3 (multi-line HUD)
 LEVEL3_WIDTH = 205
-LEVEL3_HEIGHT = 136
+LEVEL3_HEIGHT = 176
 LEVEL3_X = 8
 LEVEL3_Y = OVERLAY_TOP_Y
 
 # Level 4 (full detailed HUD with live frametime graph & Y scale)
 LEVEL4_WIDTH = 205
-LEVEL4_HEIGHT = 226
+LEVEL4_HEIGHT = 266
 LEVEL4_X = 8
 LEVEL4_Y = OVERLAY_TOP_Y
 
@@ -221,7 +221,7 @@ class X11HUD:
         self.y = self._get_default_y(level) if y is None else y
 
     def _get_dimensions(self, level):
-        if level == 1:
+        if level in (0, 1):
             return LEVEL1_WIDTH, LEVEL1_HEIGHT
         elif level == 2:
             return LEVEL2_WIDTH, LEVEL2_HEIGHT
@@ -231,14 +231,15 @@ class X11HUD:
             return LEVEL4_WIDTH, LEVEL4_HEIGHT
         return LEVEL1_WIDTH, LEVEL1_HEIGHT
 
-    def _get_default_x(self, level):
-        if level == 1:
+    def _get_default_x(self, level, width=None):
+        target_w = width if width is not None else self._get_dimensions(level)[0]
+        if level in (0, 1):
             return LEVEL1_X
         elif level == 2:
             if LEVEL2_ALIGN == 'center':
-                return (SCREEN_WIDTH - self.width) // 2
+                return (SCREEN_WIDTH - target_w) // 2
             elif LEVEL2_ALIGN == 'right':
-                return SCREEN_WIDTH - self.width - 8
+                return SCREEN_WIDTH - target_w - 8
             elif isinstance(LEVEL2_ALIGN, int):
                 return LEVEL2_ALIGN
             return 8
@@ -354,8 +355,9 @@ class X11HUD:
         # 0x0004 = GCForeground, 0x0008 = GCBackground
         self._send_req(55, 0, struct.pack('<IIIII', self.gc, self.window, 12, 0, 0))
 
-        # Map window
-        self._send_req(8, 0, struct.pack('<I', self.window))
+        # Map window if level > 0
+        if self.level > 0:
+            self._send_req(8, 0, struct.pack('<I', self.window))
 
         # Stack mode Above (ConfigureWindow, stack-mode = 0)
         self._send_req(12, 0, struct.pack('<III', self.window, 64, 0))
@@ -369,6 +371,52 @@ class X11HUD:
 
         # Try to reparent into game window if game already opened its X11 window
         self.try_reparent_to_game()
+
+    def set_level(self, new_level):
+        """Switch HUD level dynamically, adjusting window geometry and pixmap."""
+        if new_level == self.level:
+            return
+        old_level = self.level
+        self.level = new_level
+        _log(f'X11HUD switching level from {old_level} to {new_level}')
+
+        if new_level == 0:
+            if self.sock and self.window:
+                self._send_req(10, 0, struct.pack('<I', self.window))
+                self._roundtrip()
+            return
+
+        new_w, new_h = self._get_dimensions(new_level)
+        new_x = self._get_default_x(new_level, width=new_w)
+        new_y = self._get_default_y(new_level)
+
+        if not self.sock or not self.window:
+            self.width, self.height = new_w, new_h
+            self.x, self.y = new_x, new_y
+            return
+
+        # Free old pixmap (Opcode 54)
+        if self.pixmap:
+            self._send_req(54, 0, struct.pack('<I', self.pixmap))
+
+        # Create new pixmap with updated size (Opcode 53)
+        self._send_req(53, self.depth, struct.pack('<IIHH', self.pixmap, self.window, new_w, new_h))
+
+        # Resize and reposition window: ConfigureWindow (opcode 12)
+        # Value mask: X(0x1) | Y(0x2) | Width(0x4) | Height(0x8) | StackMode(0x40) = 0x4f
+        conf_payload = struct.pack('<IHHiiIII', self.window, 0x004f, 0, new_x, new_y, new_w, new_h, 0)
+        self._send_req(12, 0, conf_payload)
+
+        self.width, self.height = new_w, new_h
+        self.x, self.y = new_x, new_y
+
+        # If previously hidden, map window (Opcode 8)
+        if old_level == 0:
+            self._send_req(8, 0, struct.pack('<I', self.window))
+
+        # Restack Above
+        self._send_req(12, 0, struct.pack('<III', self.window, 64, 0))
+        self._roundtrip()
 
     def _find_cookie(self):
         candidates = []
@@ -837,18 +885,31 @@ class X11HUD:
         self.draw_text(x_bat, y, f'{bat_pct}%', C_VAL_BAT)
         self.draw_text(110, y, f'{bat_volts}V', C_MUTED)
 
-        # GAMESCOPE block
-        y += 12
-        self.draw_text(8, y, 'GAMESCOPE', C_LABEL_BAT)
-        self.draw_text(76, y, f'{fps} FPS', C_VAL_FPS)
-        self.draw_text(136, y, f'{ft:.1f}ms', C_MUTED)
+        avg_fps = fps_info.get('avg_fps', 0.0)
+        low_1pct = fps_info.get('low_1pct', 0.0)
+        low_01pct = fps_info.get('low_01pct', 0.0)
 
-        # Frametime min/max
+        # FPS sections (replaces GAMESCOPE per user specification)
+        y += 12
+        self.draw_text(8, y, 'FPS', C_LABEL_FPS)
+        self.draw_text(76, y, f'{fps:>3} FPS', C_VAL_FPS)
+
+        y += 12
+        self.draw_text(8, y, 'AVG', C_LABEL_FPS)
+        self.draw_text(76, y, f'{int(avg_fps):>3} FPS', C_VAL_FPS)
+
+        y += 12
+        self.draw_text(8, y, '1% LOW', C_LABEL_FPS)
+        self.draw_text(76, y, f'{int(low_1pct):>3} FPS', C_VAL_FPS)
+
+        y += 12
+        self.draw_text(8, y, '0.1%low', C_LABEL_FPS)
+        self.draw_text(76, y, f'{int(low_01pct):>3} FPS', C_VAL_FPS)
+
+        # Frametime block
         y += 12
         self.draw_text(8, y, 'Frametime', C_LABEL_BAT)
-        min_ms = round(1000.0 / max(1, max_fps), 1) if max_fps > 0 else round(ft, 1)
-        max_ms = round(1000.0 / max(1, min_fps), 1) if min_fps > 0 else round(ft, 1)
-        self.draw_text(76, y, f'min:{min_ms:.0f}ms max:{max_ms:.0f}ms', C_MUTED)
+        self.draw_text(76, y, f'{ft:.1f}ms', C_MUTED)
 
         # Frametime Live Line Chart across full width inside border, taking full remaining height
         chart_x = 8
@@ -922,18 +983,31 @@ class X11HUD:
         self.draw_text(x_b, y, f'{bat_pct}%', C_VAL_BAT)
         self.draw_text(110, y, f'{bat_volts}V', C_MUTED)
 
-        # Gamescope / FPS block
-        y += 12
-        self.draw_text(8, y, 'GAMESCOPE', C_LABEL_BAT)
-        self.draw_text(76, y, f'{fps} FPS', C_VAL_FPS)
-        self.draw_text(136, y, f'{ft:.1f}ms', C_MUTED)
+        avg_fps = fps_info.get('avg_fps', 0.0)
+        low_1pct = fps_info.get('low_1pct', 0.0)
+        low_01pct = fps_info.get('low_01pct', 0.0)
 
-        # Frametime min/max
+        # FPS sections (replaces GAMESCOPE per user specification)
+        y += 12
+        self.draw_text(8, y, 'FPS', C_LABEL_FPS)
+        self.draw_text(76, y, f'{fps:>3} FPS', C_VAL_FPS)
+
+        y += 12
+        self.draw_text(8, y, 'AVG', C_LABEL_FPS)
+        self.draw_text(76, y, f'{int(avg_fps):>3} FPS', C_VAL_FPS)
+
+        y += 12
+        self.draw_text(8, y, '1% LOW', C_LABEL_FPS)
+        self.draw_text(76, y, f'{int(low_1pct):>3} FPS', C_VAL_FPS)
+
+        y += 12
+        self.draw_text(8, y, '0.1%low', C_LABEL_FPS)
+        self.draw_text(76, y, f'{int(low_01pct):>3} FPS', C_VAL_FPS)
+
+        # Frametime block
         y += 12
         self.draw_text(8, y, 'Frametime', C_LABEL_BAT)
-        min_ms = round(1000.0 / max(1, max_fps), 1) if max_fps > 0 else round(ft, 1)
-        max_ms = round(1000.0 / max(1, min_fps), 1) if min_fps > 0 else round(ft, 1)
-        self.draw_text(76, y, f'min:{min_ms:.0f}ms max:{max_ms:.0f}ms', C_MUTED)
+        self.draw_text(76, y, f'{ft:.1f}ms', C_MUTED)
 
         # Live Frametime Line Graph across full width inside border
         chart_x = 8
