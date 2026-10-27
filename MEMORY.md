@@ -4,6 +4,33 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## Fresh Installation Failure Diagnosis & Fix (ArkOS mke2fs 1.45.3)
+
+- **Reported Issue:**
+  - Fresh installation on ArkOS failed; game/start menu did not appear after launcher click.
+- **Root Cause Analysis:**
+  - Inspected console log /roms2/ports/projectdiablo2/logs/storage-session.log:
+    [ERROR] Validation failed: mke2fs failed: mke2fs 1.45.3 (14-Jul-2019)
+    Invalid filesystem option set: ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file
+  - When state.ext4 does not exist (fresh installation or after reset), nsure_state_image() in storage_common.py creates and formats state.ext4 using mke2fs.
+  - The command hardcoded -O ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file.
+  - ArkOS runs Linux 4.4.189 and ships with mke2fs 1.45.3 (14-Jul-2019). The orphan_file feature was only added in e2fsprogs 1.47.0 (2023). Passing ^orphan_file caused mke2fs to fail immediately with Invalid filesystem option set, aborting before the compositor, start menu, or game could execute.
+- **Code Fix ([sdcard/ports/projectdiablo2/storage-tools/storage_common.py](sdcard/ports/projectdiablo2/storage-tools/storage_common.py)):**
+  - Added multi-candidate feature fallback in nsure_state_image():
+    1. ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file (modern e2fsprogs 1.47+)
+    2. ^64bit,^metadata_csum,^metadata_csum_seed (ArkOS e2fsprogs 1.45.3)
+    3. ^64bit,^metadata_csum
+    4. ^64bit
+    5. Default (no extra -O)
+  - If mke2fs fails with 'invalid filesystem option' in stderr, it attempts the next candidate. If failure is due to a real error (disk full, permissions), it aborts without trying further feature sets.
+- **Validation:**
+  - Added unit tests 	est_ensure_state_image_fallbacks_when_option_unsupported and 	est_ensure_state_image_stops_on_unrelated_error_without_fallback in [	ests/test_storage_common.py](tests/test_storage_common.py). All 6 unit tests pass.
+  - Deployed updated storage_common.py to console /roms2/ports/projectdiablo2/storage-tools/storage_common.py.
+  - Verified storage check on console: state.ext4 formatted and mounted successfully in private namespace.
+  - Executed 	ools/simulate_fresh_install.py to leave console in a clean first-boot state ready for user verification.
+
+---
+
 ## Release 1.2-test.2 — Input Subsystem Compatibility (RG353V + Multi-device)
 
 - **Issue #2 Follow-up Diagnosis (RG353V Start Menu Unresponsive Controls):**

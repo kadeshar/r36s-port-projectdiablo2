@@ -630,7 +630,7 @@ fi
 if [[ "$controller_test" == 1 ]]; then
  setsid "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\pd2-xinput-probe.exe' & game_pid=$!
 else
- setsid "${audio_game_wrapper[@]}" "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\Game.exe' -ddraw & game_pid=$!
+ setsid "${audio_game_wrapper[@]}" "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\Game.exe' -ddraw > "$PD2_PORT/logs/wine-game.log" 2>&1 & game_pid=$!
 fi
 printf '%s\n' "$game_pid" > "$PD2_RUN/game.pid"
 if [[ "$fps_enabled" =~ ^[1-4]$ ]]; then

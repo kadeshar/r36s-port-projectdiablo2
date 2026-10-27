@@ -75,17 +75,35 @@ def ensure_state_image(port, info):
         except OSError:
             pass
 
+    feature_candidates = [
+        '^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file',
+        '^64bit,^metadata_csum,^metadata_csum_seed',
+        '^64bit,^metadata_csum',
+        '^64bit',
+        None,
+    ]
+
     try:
         with open(str(tmp_state), 'wb') as f:
             f.seek(target_size - 1)
             f.write(b'\0')
-        cmd = [str(mkfs), '-t', 'ext4', '-F', '-m0',
-               '-O', '^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file',
-               str(tmp_state)]
-        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, universal_newlines=True)
-        if res.returncode != 0:
+        last_err = 'mke2fs failed'
+        formatted = False
+        for feat in feature_candidates:
+            cmd = [str(mkfs), '-t', 'ext4', '-F', '-m0']
+            if feat:
+                cmd.extend(['-O', feat])
+            cmd.append(str(tmp_state))
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, universal_newlines=True)
+            if res.returncode == 0:
+                formatted = True
+                break
             err = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
-            raise StorageError(f"mke2fs failed: {err}")
+            last_err = err
+            if 'invalid filesystem option' not in err.lower():
+                break
+        if not formatted:
+            raise StorageError(f"mke2fs failed: {last_err}")
         with open(str(tmp_state), 'rb') as f:
             f.seek(1080)
             if f.read(2) != b'\x53\xef':

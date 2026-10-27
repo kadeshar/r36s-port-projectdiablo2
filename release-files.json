@@ -58,6 +58,7 @@
   "projectdiablo2/scripts/fps_renderer.py",
   "projectdiablo2/scripts/overlay/__init__.py",
   "projectdiablo2/scripts/overlay/performance_overlay.py",
+  "projectdiablo2/scripts/overlay/hotkey_listener.py",
   "projectdiablo2/scripts/overlay/overlay_metrics.py",
   "projectdiablo2/scripts/overlay/fps_tracker.py",
   "projectdiablo2/scripts/overlay/x11_hud.py",
