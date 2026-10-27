@@ -75,15 +75,14 @@ The production launcher uses **PD2's native controller support** through a virtu
 | **Select / Start** | Back / Start |
 | **L3 / R3** | Left / Right stick click |
 | **FN / Menu** | Guide button; firmware may reserve this input |
-| **SELECT + X** or **FN + X** | **Toggle On-Screen Keyboard** (Character creation & text entry) |
 
-### ⌨️ In-Game Hotkeys & Shortcuts / Skróty w grze
+### ⌨️ In-Game Hotkeys & Shortcuts
 
-| Shortcut / Skrót | Action / Działanie |
+| Shortcut | Action |
 |---|---|
-| **FN + X** lub **SELECT + X** | **On-Screen Keyboard (OSK)** — przełącz wirtualną klawiaturę do wprowadzania tekstu (np. tworzenie postaci) |
-| **FN + R1** (lub **SELECT + R1**) | **Performance Overlay Level** — przełącz poziom nakładki wydajności w czasie gry (`OFF -> Minimal FPS -> Bar -> Detailed HUD -> Full OSD -> OFF`) |
-| **FN + R2** (lub **SELECT + R2**) | **Reset Performance Data** — zresetuj wykres frametime oraz statystyki (`AVG`, `1% LOW`, `0.1%low`) |
+| **FN + X** or **SELECT + X** | **On-Screen Keyboard (OSK)** — toggle virtual keyboard for text input (e.g. character creation) |
+| **FN + R1** (or **SELECT + R1**) | **Performance Overlay Level** — toggle in-game performance overlay level (`OFF -> Minimal FPS -> Bar -> Detailed HUD -> Full OSD -> OFF`) |
+| **FN + R2** (or **SELECT + R2**) | **Reset Performance Data** — reset frametime graph and performance statistics (`AVG`, `1% LOW`, `0.1%low`) |
 
 ---
 
