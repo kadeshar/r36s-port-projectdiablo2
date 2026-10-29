@@ -1,6 +1,6 @@
 #!/bin/bash
 # PORTMASTER: projectdiablo2.zip, Project Diablo 2.sh
-# Experimental private offline PD2 launcher, v0.1.18.
+# Experimental private offline PD2 launcher, v1.3-test.1.
 umask 077
 ulimit -c 0
 BASE=$(cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
@@ -28,6 +28,9 @@ export PD2_DIAGNOSTIC="${PD2_DIAGNOSTIC:-off}"
 case "$PD2_DIAGNOSTIC" in off|present|sdl|glx|ddraw) ;; *) exit 1;; esac
 # Empty means use the user's stored choice; an explicit variant is session-only.
 if [[ -n ${PD2_GAME_RESOLUTION:-} ]]; then export PD2_GAME_RESOLUTION; else unset PD2_GAME_RESOLUTION; fi
+# Loot filter: 'default' or a *.filter name from port/filters; empty uses the
+# stored choice. Only safe names survive layout validation; nothing else here.
+if [[ -n ${PD2_LOOT_FILTER:-} && ${PD2_LOOT_FILTER} =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.filter$ ]]; then export PD2_LOOT_FILTER; else unset PD2_LOOT_FILTER; fi
 fixed_message() { printf '%s\n' "$1" > /dev/tty0 2>/dev/null || printf '%s\n' "$1" >&2; }
 for cmd in python3 timeout setsid unshare flock mount umount mountpoint mkfifo ps readlink stat chgrp runuser; do
  command -v "$cmd" >/dev/null || { fixed_message 'PD2: missing required system tool.'; exit 1; }
@@ -90,7 +93,7 @@ pd2_port_cleanup() {
 trap pd2_port_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-printf 'PD2_EVENT {"event":"phase","phase":"preflight","port_version":"0.1.18","runtime_version":"8.0"}\n'
+printf 'PD2_EVENT {"event":"phase","phase":"preflight","port_version":"1.3-test.1","runtime_version":"8.0"}\n'
 error() { printf 'PD2_EVENT {"event":"runtime_error","phase":"preflight","reason":"%s"}\n' "$1"; exit 1; }
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [[ -d /opt/system/Tools/PortMaster ]]; then controlfolder=/opt/system/Tools/PortMaster
@@ -144,6 +147,7 @@ python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --
 layout_get() { python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --get "$1"; }
 export PD2_WINE="$(layout_get wine)" PD2_BOX="$(layout_get box)" PD2_PREFIX="$(layout_get prefix)" PD2_WORK="$(layout_get work)" PD2_PROFILE="$(layout_get profile)" PD2_SWAP_AB="$(layout_get swap_ab)"
 export PD2_GAME_RESOLUTION="$(layout_get game_resolution)"
+export PD2_LOOT_FILTER="$(layout_get loot_filter)"
 "${SUDO[@]}" mount -t squashfs -o loop,ro "$PD2_PORT/runtime/weston_pkg_0.2.squashfs" "$PD2_RUN/weston" || error unsupported_runtime
 mounted_weston=1
 export PD2_WESTON="$PD2_RUN/weston"
@@ -155,7 +159,7 @@ export PD2_PARENT_MNT_NS="$(readlink /proc/self/ns/mnt)"
 "${SUDO[@]}" unshare --mount --propagation private setsid env \
  PD2_PORT="$PD2_PORT" PD2_RUN="$PD2_RUN" PD2_WESTON="$PD2_WESTON" PD2_USER="$PD2_USER" PD2_HOME="$PD2_HOME" PD2_STATE="$PD2_STATE" \
  PD2_WINE="$PD2_WINE" PD2_BOX="$PD2_BOX" PD2_PREFIX="$PD2_PREFIX" PD2_WORK="$PD2_WORK" PD2_PROFILE="$PD2_PROFILE" PD2_SWAP_AB="$PD2_SWAP_AB" \
- PD2_DIAGNOSTIC="$PD2_DIAGNOSTIC" PD2_GAME_RESOLUTION="$PD2_GAME_RESOLUTION" PD2_FPS="$PD2_FPS" PD2_AUDIO_TEST="$PD2_AUDIO_TEST" PD2_AUDIO_PROBE="$PD2_AUDIO_PROBE" PD2_START_MENU="$PD2_START_MENU" \
+ PD2_DIAGNOSTIC="$PD2_DIAGNOSTIC" PD2_GAME_RESOLUTION="$PD2_GAME_RESOLUTION" PD2_LOOT_FILTER="$PD2_LOOT_FILTER" PD2_FPS="$PD2_FPS" PD2_AUDIO_TEST="$PD2_AUDIO_TEST" PD2_AUDIO_PROBE="$PD2_AUDIO_PROBE" PD2_START_MENU="$PD2_START_MENU" \
  PD2_INPUT_MODE="$PD2_INPUT_MODE" PD2_CONTROLLER_TEST="$PD2_CONTROLLER_TEST" PD2_GPTOKEYB="$PD2_GPTOKEYB" PD2_CONTROLLER_CONFIG="$PD2_CONTROLLER_CONFIG" PD2_METRICS="$PD2_METRICS" PD2_PARENT_MNT_NS="$PD2_PARENT_MNT_NS" PD2_HOST_NATIVE_LIBS="${LD_LIBRARY_PATH:-}" \
  PD2_AUDIO_METRICS="$PD2_AUDIO_METRICS" PD2_AUDIO_DSOUND="$PD2_AUDIO_DSOUND" PD2_AUDIO_SDL="$PD2_AUDIO_SDL" PD2_AUDIO_VARIANT="$PD2_AUDIO_VARIANT" PD2_AUDIO_ROUTE_PROFILE="$PD2_AUDIO_ROUTE_PROFILE" \
  bash "$PD2_PORT/scripts/weston-session.sh" 3>&- 4>&- & runner_pid=$!

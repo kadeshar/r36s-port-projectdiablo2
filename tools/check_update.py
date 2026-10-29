@@ -2,7 +2,7 @@
 """Audit current data-free update without copying/extracting any asset."""
 import hashlib,json,pathlib,zipfile
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-VERSION='0.1.18'
+VERSION='1.3-test.1'
 PINNED={'wine-8.0-x86.tar.xz':(31185272,'d77d023bd9046547afccae5860dc6089b9d5cd9699f656b83e2f573bbf3fae6d'),'weston_pkg_0.2.squashfs':(55398400,'0bccaeebc11296bb1fe4278c9677cb82965c5a04bcd63745fa09d78228bc1a93'),'vc_redist.x86.exe':(13889072,'38c9437e6e9ef1db2671b3f0c879febec08521bd2c23231199f626b69ae1c65e'),'box86':(27311020,'5870bf87c45051b1eb98f461a81de88f7c3c88e399e9810c093179d91a2fd013')}
 p=ROOT/'dist/projectdiablo2-port-update.zip';allow=json.loads((ROOT/'release-files.json').read_text())
 with zipfile.ZipFile(p) as z:

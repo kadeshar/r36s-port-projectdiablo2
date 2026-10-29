@@ -225,20 +225,34 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
   exit 0
  fi
  menu_valid=0
+ menu_resolution=''
+ menu_fps=''
+ menu_filter=''
  if [[ "$menu_rc" == 0 ]]; then
-  case "$menu_selection" in
-   'default default'|'default 0'|'default 1'|'default 2'|'default 3'|'default 4'|\
-    'native default'|'native 0'|'native 1'|'native 2'|'native 3'|'native 4'|\
-    '640x480 default'|'640x480 0'|'640x480 1'|'640x480 2'|'640x480 3'|'640x480 4'|\
-    '800x600 default'|'800x600 0'|'800x600 1'|'800x600 2'|'800x600 3'|'800x600 4'|\
-    '1024x768 default'|'1024x768 0'|'1024x768 1'|'1024x768 2'|'1024x768 3'|'1024x768 4') menu_valid=1;;
-  esac
+  # Fixed three-token menu protocol: resolution fps loot_filter.
+  read -r menu_resolution menu_fps menu_filter menu_extra <<< "$menu_selection"
+  menu_res_ok=0
+  case "$menu_resolution" in default|640x480|800x600|1024x768|native) menu_res_ok=1;; esac
+  menu_fps_ok=0
+  case "$menu_fps" in default|0|1|2|3|4) menu_fps_ok=1;; esac
+  # 'default' is the shipped no-filter; anything else must be a safe, regular,
+  # non-symlink file in the port's filters directory (never gamedata).
+  menu_filter_ok=0
+  if [[ "$menu_filter" == default ]]; then
+   menu_filter_ok=1
+  elif [[ "$menu_filter" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.filter$ && -f "$PD2_PORT/filters/$menu_filter" && ! -L "$PD2_PORT/filters/$menu_filter" ]]; then
+   menu_filter_ok=1
+  fi
+  if [[ "$menu_res_ok" == 1 && "$menu_fps_ok" == 1 && "$menu_filter_ok" == 1 && -z "$menu_extra" ]]; then
+   menu_valid=1
+  fi
  fi
  if [[ "$menu_valid" == 1 ]]; then
-  menu_resolution="${menu_selection%% *}"
-  menu_fps="${menu_selection#* }"
   [[ "$menu_resolution" == default ]] || export PD2_GAME_RESOLUTION="$menu_resolution"
   [[ "$menu_fps" == default ]] || export PD2_FPS="$menu_fps"
+  export PD2_LOOT_FILTER="$menu_filter"
+  if [[ "$menu_filter" == default ]]; then menu_filter_status=default; else menu_filter_status=selected; fi
+  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"loot_filter","status":"%s"}\n' "$menu_filter_status"
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"start_menu","status":"selected"}\n'
  else
   # Launcher menu MUST wait for a visible menu and explicit confirmation. Never launch

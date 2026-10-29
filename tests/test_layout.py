@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import struct
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -871,6 +872,149 @@ class LayoutTests(unittest.TestCase):
         self.prepare(volatile=False)
         self.assertFalse(stale_file.exists())
         self.assertEqual(self.links[str(stale_file)], str(self.port / 'config/ddraw-gdi.ini'))
+
+    def prepare_filter(self, loot_filter, volatile=True):
+        """prepare() with an explicit session loot-filter override (menu path)."""
+        def fake_link(path, target):
+            layout.no_links(path.parent)
+            self.links[str(path)] = str(target)
+            self.link_calls.append((path, target))
+        def fake_probe(path, target, **kwargs):
+            path.touch(exist_ok=False)
+        with mock.patch.object(layout, 'link', side_effect=fake_link), mock.patch.object(Path, 'symlink_to', new=fake_probe), mock.patch.object(layout.shutil, 'disk_usage', return_value=mock.Mock(free=2 * 1024 ** 3)):
+            return layout.prepare(self.port, self.state, None, volatile, loot_filter=loot_filter)
+
+    def test_filter_content_allows_ansi_above_config_limit_but_bounds_size(self):
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        ansi = b'Name: Test \xa9\r\nLevel: 1\x02\xff\r\n'
+        big_ok = write(scratch, 'big-ok.filter', b'x' * (600 * 1024) + ansi)
+        self.assertEqual(layout.filter_content(big_ok), b'x' * (600 * 1024) + ansi)
+        exact = write(scratch, 'exact.filter', b'f' * layout.FILTER_LIMIT)
+        self.assertEqual(layout.filter_content(exact), b'f' * layout.FILTER_LIMIT)
+        oversize = write(scratch, 'oversize.filter', b'f' * (layout.FILTER_LIMIT + 1))
+        with self.assertRaises(layout.LayoutError):
+            layout.filter_content(oversize)
+        nul = write(scratch, 'nul.filter', b'ok\x00bytes')
+        with self.assertRaises(layout.LayoutError):
+            layout.filter_content(nul)
+        with self.assertRaises(layout.LayoutError):
+            layout.filter_content(scratch / 'missing.filter')
+        # CONFIG_LIMIT still applies to the other configs, only filters are exempt.
+        self.assertEqual(layout.CONFIG_LIMIT, 512 * 1024)
+        self.assertGreater(layout.FILTER_LIMIT, layout.CONFIG_LIMIT)
+
+    def test_filter_listing_is_flat_sorted_safe_names_only(self):
+        self.assertEqual(layout.filter_listing(self.port), [])
+        filters = self.port / 'filters'
+        write(filters, 'alpha.filter', b'a')
+        write(filters, 'Beta.filter', b'b')
+        write(filters, 'not-a-filter.txt', b'x')
+        write(filters, '.hidden.filter', b'x')
+        write(filters, 'bad name.filter', b'x')
+        write(filters / 'dir.filter', 'inner.filter', b'x')  # directory
+        max_name = 'n' * 128 + '.filter'  # exactly the maximum allowed length (135)
+        write(filters, max_name, b'x')
+        too_long = 'n' * 129 + '.filter'  # one byte beyond the maximum
+        write(filters, too_long, b'x')
+        oversize = write(filters, 'big.filter', b'f' * (layout.FILTER_LIMIT + 1))
+        expected = sorted(['Beta.filter', 'alpha.filter', max_name])
+        self.assertEqual(layout.filter_listing(self.port), expected)
+        # Symlinks are never listed (best effort: Windows may refuse creation).
+        try:
+            (filters / 'link.filter').symlink_to('alpha.filter')
+        except (OSError, ValueError):
+            pass
+        else:
+            self.assertEqual(layout.filter_listing(self.port), expected)
+            (filters / 'link.filter').unlink()
+        self.assertTrue(oversize.exists())
+
+    def test_apply_loot_filter_publishes_selected_default_and_missing_fallback(self):
+        self.prepare()
+        config = self.port / 'config'
+        good = write(self.port / 'filters', 'Good.filter', b'ANSI \xa9 filter body')
+        default_bytes = (self.port / 'defaults' / 'default.filter').read_bytes()
+        stderr = io.StringIO()
+        with mock.patch.object(sys, 'stderr', stderr):
+            self.assertEqual(layout.apply_loot_filter(self.port, config, 'Good.filter'), 'Good.filter')
+        self.assertEqual((config / 'default.filter').read_bytes(), good.read_bytes())
+        self.assertEqual(stderr.getvalue(), '')  # no announce: silent
+        stderr = io.StringIO()
+        with mock.patch.object(sys, 'stderr', stderr):
+            self.assertEqual(layout.apply_loot_filter(self.port, config, 'Good.filter', announce=True), 'Good.filter')
+        self.assertEqual(stderr.getvalue(),
+                         'PD2_EVENT {"event":"session_probe","phase":"preflight","check":"loot_filter","status":"selected"}\n')
+        stderr = io.StringIO()
+        with mock.patch.object(sys, 'stderr', stderr):
+            self.assertEqual(layout.apply_loot_filter(self.port, config, 'default', announce=True), 'default')
+        self.assertEqual((config / 'default.filter').read_bytes(), default_bytes)
+        self.assertIn('"status":"default"', stderr.getvalue())
+        # Missing or non-file names always report and fall back to the shipped default,
+        # replacing any stale published filter bytes.
+        write(self.port / 'filters', 'Ghost.filter', b'x')
+        (self.port / 'filters' / 'Ghost.filter').unlink()
+        (self.port / 'filters' / 'Dir.filter').mkdir()
+        for missing in ('Ghost.filter', 'Dir.filter'):
+            stderr = io.StringIO()
+            with mock.patch.object(sys, 'stderr', stderr):
+                self.assertEqual(layout.apply_loot_filter(self.port, config, missing), 'default')
+            self.assertEqual(stderr.getvalue(),
+                             'PD2_EVENT {"event":"session_probe","phase":"preflight","check":"loot_filter","status":"missing"}\n')
+            self.assertEqual((config / 'default.filter').read_bytes(), default_bytes)
+        with self.assertRaises(layout.LayoutError):
+            layout.apply_loot_filter(self.port, config, '../../evil')
+
+    def test_prepare_loot_filter_override_persists_and_plain_prepare_stays_silent(self):
+        settings = self.port / 'config' / 'settings.json'
+        stderr = io.StringIO()
+        with mock.patch.object(sys, 'stderr', stderr):
+            result = self.prepare()
+        self.assertEqual(result['loot_filter'], 'default')
+        fresh_settings = settings.read_bytes()
+        self.assertNotIn('loot_filter', json.loads(fresh_settings))
+        self.assertEqual(stderr.getvalue(), '')  # plain prepare: no filter events
+        self.prepare()
+        self.assertEqual(settings.read_bytes(), fresh_settings)  # byte-identical
+        good = write(self.port / 'filters', 'Good.filter', b'ANSI \xa9 body')
+        result = self.prepare_filter('Good.filter')
+        self.assertEqual(result['loot_filter'], 'Good.filter')
+        stored = json.loads(settings.read_bytes())
+        self.assertEqual(stored['loot_filter'], 'Good.filter')
+        self.assertEqual(self.session()['loot_filter'], 'Good.filter')
+        self.assertEqual((self.port / 'config' / 'default.filter').read_bytes(), good.read_bytes())
+        # The stored choice wins on later plain prepares and re-announces.
+        after_override = settings.read_bytes()
+        stderr = io.StringIO()
+        with mock.patch.object(sys, 'stderr', stderr):
+            result = self.prepare()
+        self.assertEqual(result['loot_filter'], 'Good.filter')
+        self.assertIn('"status":"selected"', stderr.getvalue())
+        self.assertEqual(settings.read_bytes(), after_override)  # no rewrite
+        # A missing override falls back to default and persists that fallback.
+        result = self.prepare_filter('Ghost.filter')
+        self.assertEqual(result['loot_filter'], 'default')
+        self.assertEqual(json.loads(settings.read_bytes())['loot_filter'], 'default')
+        self.assertEqual((self.port / 'config' / 'default.filter').read_bytes(),
+                         (self.port / 'defaults' / 'default.filter').read_bytes())
+        with self.assertRaises(layout.LayoutError):
+            self.prepare_filter('../../evil')
+
+    def test_prepare_rejects_invalid_loot_filter_parameter(self):
+        for bad in ('../../evil', 'bad name.filter', 'UPPER.DIR\\..', 7, b'bytes'):
+            with self.subTest(bad=bad), self.assertRaises(layout.LayoutError):
+                layout.prepare(self.port, self.state, None, False, loot_filter=bad)
+        # A valid regex name that does not exist is accepted (fallback inside prepare).
+        self.assertEqual(self.prepare_filter('Nope.filter')['loot_filter'], 'default')
+
+    def test_main_get_reports_stored_loot_filter(self):
+        write(self.port / 'filters', 'Good.filter', b'x')
+        self.prepare_filter('Good.filter')
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state),
+                                          '--get', 'loot_filter']), 0)
+        self.assertEqual(stdout.getvalue(), 'Good.filter\n')
 
 
 if __name__ == '__main__':

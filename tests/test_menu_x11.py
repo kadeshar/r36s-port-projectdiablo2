@@ -138,6 +138,9 @@ class Menu:
     fps = False
     fps_changed = False
     audio = 'default'
+    filters = ()
+    filter_index = 0
+    filter_label = 'DEFAULT'
 
 
 class ProtocolTests(unittest.TestCase):
@@ -221,26 +224,70 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn('  RESOLUTION: 640x480', labels)
         self.assertNotIn('  RESOLUTION: 800x600', labels)
 
-    def test_current_four_row_labels_and_selection_bounds(self):
+    def test_header_subtitle_default_is_centered(self):
+        screen, _ = self.screen()
+        self.assertEqual(screen.subtitle, 'R36S PORT')
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(Menu())
+        calls = [call.args for call in text.call_args_list if call.args[2] == 'R36S PORT']
+        self.assertEqual(len(calls), 1)
+        x, y, _, color = calls[0][:4]
+        self.assertEqual((y, color), (60, (185, 45, 35)))
+        self.assertEqual(x, (x11.WIDTH - len('R36S PORT') * 18) // 2)
+
+    def test_header_subtitle_version_uppercased_centered_and_bounded(self):
+        with mock.patch.object(x11.x11_probe, '_auth_status', return_value=('ready', b'k' * 16)), \
+             mock.patch.object(x11.socket, 'socket', return_value=FakeSocket()), \
+             mock.patch.object(x11.socket, 'AF_UNIX', 1, create=True):
+            screen = x11.Screen(FONT, LABELS, 'R36S PORT 1.3-test.1')
+        self.addCleanup(screen.close)
+        self.assertEqual(screen.subtitle, 'R36S PORT 1.3-TEST.1')
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(Menu())
+        calls = [call.args for call in text.call_args_list if call.args[2] == 'R36S PORT 1.3-TEST.1']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], (x11.WIDTH - len('R36S PORT 1.3-TEST.1') * 18) // 2)
+        with mock.patch.object(x11.x11_probe, '_auth_status', return_value=('ready', b'k' * 16)), \
+             mock.patch.object(x11.socket, 'socket', return_value=FakeSocket()), \
+             mock.patch.object(x11.socket, 'AF_UNIX', 1, create=True):
+            long = x11.Screen(FONT, LABELS, 'R36S PORT ' + '9' * 100)
+        self.addCleanup(long.close)
+        self.assertEqual(len(long.subtitle), x11.WIDTH // 18)
+        with mock.patch.object(long, '_text') as text:
+            long.draw(Menu())
+        calls = [call.args for call in text.call_args_list if call.args[2] == long.subtitle]
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(0 <= calls[0][0] < x11.WIDTH)
+
+    def test_current_five_row_labels_and_selection_bounds(self):
         import start_menu
         screen, _ = self.screen()
         with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': '800x600', 'PD2_FPS': '0'}):
             menu = start_menu.Menu()
+        self.assertEqual(menu.row, 2)  # opens on the loot-filter row
         with mock.patch.object(screen, '_text') as text:
             screen.draw(menu)
         labels = [call.args[2] for call in text.call_args_list]
-        self.assertIn('> ENTER SANCTUARY / LAUNCH', labels)
-        self.assertIn('  EXIT TO SYSTEM', labels)
-        self.assertIn('  PERF OVERLAY: OFF', labels)
+        self.assertIn('> LOOT FILTER: DEFAULT', labels)
         self.assertIn('  RESOLUTION: 800x600', labels)
-        self.assertFalse(any('DEFAULT' in label for label in labels))
-        for row in range(4):
+        self.assertIn('  PERF OVERLAY: OFF', labels)
+        self.assertIn('  ENTER SANCTUARY / LAUNCH', labels)
+        self.assertIn('  EXIT TO SYSTEM', labels)
+        for row in range(5):
             menu.row = row
             screen.draw(menu)
-        for row in (-1, 4, 5):
+        for row in (-1, 5, 6):
             menu.row = row
             with self.assertRaises(ValueError):
                 screen.draw(menu)
+        # An out-of-range filter choice is rejected as well.
+        menu.row = 2
+        menu.filters = ('One.filter',)
+        menu.filter_index = 2
+        with self.assertRaises(ValueError):
+            screen.draw(menu)
+        menu.filter_index = 1
+        screen.draw(menu)
 
     def test_resolved_labels_and_all_rows_fit_inside_highlight(self):
         import start_menu
@@ -262,7 +309,7 @@ class ProtocolTests(unittest.TestCase):
                         screen.draw(menu)
                     for call in text.call_args_list:
                         x, y, label = call.args[:3]
-                        if y in (118, 168, 218, 268):
+                        if y in (102, 148, 194, 240, 286):
                             self.assertLessEqual(x + len(label) * 18 - 3, 604)
 
     def test_frame_is_composed_offscreen_and_published_once(self):
@@ -480,6 +527,121 @@ class ProtocolTests(unittest.TestCase):
             thread.join(2)
         self.assertFalse(thread.is_alive())
         self.assertEqual(failures, [])
+
+
+class FloatingFilterNameTests(unittest.TestCase):
+    """Long filter names scroll in the SAME row after a 2 s hold. The
+    'LOOT FILTER: ' prefix stays static; only the name floats (marquee,
+    clipped to the row's 16-char name window)."""
+
+    NAME_X = 46 + (2 + len('LOOT FILTER: ')) * 18  # 316: name window start
+    NAME_WINDOW = 606 - NAME_X                     # 290 px = 16 chars
+
+    def screen(self):
+        server = FakeSocket()
+        with mock.patch.object(x11.x11_probe, '_auth_status', return_value=('ready', b'k' * 16)), \
+             mock.patch.object(x11.socket, 'socket', return_value=server), \
+             mock.patch.object(x11.socket, 'AF_UNIX', 1, create=True):
+            screen = x11.Screen(FONT, LABELS)
+        self.addCleanup(screen.close)
+        return screen, server
+
+    @staticmethod
+    def menu_for(name):
+        menu = Menu()
+        menu.row = 2
+        menu.filters = (name,)
+        menu.filter_index = 1
+        menu.filter_label = name[:16].upper()
+        return menu
+
+    def draw_texts(self, screen, menu, clock):
+        with mock.patch.object(x11.time, 'monotonic', clock):
+            with mock.patch.object(screen, '_text') as text:
+                screen.draw(menu)
+        return [call.args for call in text.call_args_list]
+
+    def row_calls(self, texts):
+        return [args for args in texts if len(args) >= 2 and args[1] == 194]
+
+    def marquee(self, texts):
+        return [args for args in self.row_calls(texts) if len(args) >= 6 and args[5] is not None]
+
+    def test_long_filter_floats_in_row_after_hold(self):
+        screen, _ = self.screen()
+        menu = self.menu_for('Hiim_Crafting_Sorceress_Focused.filter')  # 38 chars
+        clock = [1000.0]
+        # While held: one static row call with the truncated 16-char label.
+        row = self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))
+        self.assertEqual([args[2] for args in row], ['> LOOT FILTER: ' + 'HIIM_CRAFTING_SO'])
+        self.assertEqual(self.marquee(row), [])
+        clock[0] = 1001.9
+        self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
+        clock[0] = 1002.0
+        row = self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))
+        self.assertEqual(len(row), 2)
+        self.assertEqual(row[0][2], '> LOOT FILTER: ')          # static prefix
+        self.assertEqual(len(row[0]), 5)                        # no clip on the prefix
+        x, y, label, _color, _deadline, clip = row[1]
+        self.assertEqual(label, 'HIIM_CRAFTING_SORCERESS_FOCUSED.FILTER')
+        self.assertEqual(y, 194)
+        text_w = 38 * 18
+        self.assertEqual(x, self.NAME_X + self.NAME_WINDOW - int(2.0 * x11.FLOAT_SPEED) % (text_w + self.NAME_WINDOW))
+        self.assertEqual(clip, (self.NAME_X, 606))
+        clock[0] = 1005.0  # scrolling advances the marquee position
+        floating = self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0])))
+        self.assertEqual(floating[0][0], self.NAME_X + self.NAME_WINDOW - int(5.0 * x11.FLOAT_SPEED) % (text_w + self.NAME_WINDOW))
+
+    def test_prefix_static_only_name_moves(self):
+        screen, _ = self.screen()
+        menu = self.menu_for('Hiim_Crafting_Sorceress_Focused.filter')
+        clock = [1000.0]
+        self.draw_texts(screen, menu, lambda: clock[0])
+        clock[0] = 1002.0
+        first = self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))
+        clock[0] = 1004.0
+        second = self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))
+        self.assertEqual(first[0][:4], second[0][:4])  # identical static prefix (deadline varies)
+        self.assertNotEqual(first[1][0], second[1][0])  # name position advances
+
+    def test_row_or_choice_change_hides_and_restarts_float(self):
+        screen, _ = self.screen()
+        menu = self.menu_for('Hiim_Crafting_Sorceress_Focused.filter')
+        clock = [1000.0]
+        self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
+        clock[0] = 1002.0
+        self.assertEqual(len(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0])))), 1)
+        menu.row = 3  # leaving the filter row hides the float immediately
+        clock[0] = 1002.2
+        self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
+        menu.row = 2  # returning restarts the 2 s hold instead of flashing
+        self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
+        clock[0] = 1004.3
+        self.assertEqual(len(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0])))), 1)
+        menu.filter_index = 0  # DEFAULT never floats
+        self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
+
+    def test_short_names_never_float(self):
+        screen, _ = self.screen()
+        for name in ('A.filter', 'Short.filter', 'Ab1234567.filter'):  # <= 16 chars
+            with self.subTest(name=name):
+                menu = self.menu_for(name)
+                clock = [1000.0]
+                row = self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))
+                self.assertEqual(self.marquee(row), [])
+                clock[0] = 1010.0
+                row = self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))
+                self.assertEqual(self.marquee(row), [])
+                self.assertEqual(len(row), 1)  # plain static row, no prefix split
+        # The 17th character crosses the row-label cap and must float.
+        menu = self.menu_for('Ab12345678.filter')
+        clock = [1000.0]
+        self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
+        clock[0] = 1010.0
+        self.assertEqual(len(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0])))), 1)
+        menu = Menu()  # DEFAULT, no filter selected
+        clock[0] = 1010.0
+        self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
 
 
 @unittest.skipUnless(os.environ.get('PD2_TEST_XVFB') == '1', 'opt-in real Xvfb protocol test')

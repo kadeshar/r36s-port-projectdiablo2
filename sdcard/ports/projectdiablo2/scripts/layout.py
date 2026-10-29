@@ -13,8 +13,12 @@ import sys
 import tarfile
 import tempfile
 
-VERSION = '0.1.18'
+VERSION = '1.3-test.1'
 CONFIG_LIMIT = 512 * 1024
+# Community loot filters (default.filter) regularly exceed the 512 KiB config
+# bound; keep them bounded but generous. The volatile work tmpfs (16 MiB) holds
+# only the six work configs, so 4 MiB leaves ample headroom.
+FILTER_LIMIT = 4 * 1024 * 1024
 RUNTIME_LIMIT = 512 * 1024 * 1024
 JSON_CONFIGS = ('ProjectDiablo.json', 'SGD2FreeResolution.json', 'BH.json')
 WORK_CONFIGS = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw.ini')
@@ -377,12 +381,110 @@ def config_content(path, json_object=False):
     return content
 
 
+def work_config_bytes(path, name):
+    """Read one persistent/work config by name; the loot filter bypasses UTF-8."""
+    if name == LOOT_FILTER_NAME:
+        return filter_content(path)
+    return config_content(path, name in JSON_CONFIGS)
+
+
 def read_object(path):
     try:
         result = json.loads(config_content(path, json_object=True).decode('utf-8'))
     except (ValueError, UnicodeError):
         raise LayoutError('invalid_layout') from None
     return result
+
+
+LOOT_FILTER_NAME = 'default.filter'
+LOOT_FILTER_DEFAULT = 'default'
+# Flat *.filter names only; anchored so a directory or hidden entry can never
+# impersonate a filter. 128 chars keeps menu labels and shell quoting sane.
+LOOT_FILTER_NAME_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.filter\Z', re.ASCII)
+
+
+def filter_content(path):
+    """Bounded byte read of a loot filter; content passes through untouched.
+
+    Community filters are frequently ANSI (non-UTF-8) encoded, so no decoding
+    or re-encoding is allowed; only the size bound and a NUL check apply.
+    """
+    path = regular(path)
+    if path.stat().st_size > FILTER_LIMIT:
+        raise LayoutError('invalid_layout')
+    with path.open('rb') as stream:
+        content = stream.read(FILTER_LIMIT + 1)
+    if len(content) > FILTER_LIMIT or b'\x00' in content:
+        raise LayoutError('invalid_layout')
+    return content
+
+
+def filter_listing(port):
+    """User filters are regular *.filter files in port/filters, sorted by name.
+
+    Gamedata is read-only and never scanned; a missing directory simply means
+    no user filters exist. Symlinks and oversized files are skipped, never
+    followed.
+    """
+    directory = pathlib.Path(port) / 'filters'
+    try:
+        no_links(directory)
+        entries = list(directory.iterdir())
+    except (OSError, LayoutError):
+        return []
+    names = []
+    for path in entries:
+        name = path.name
+        if not LOOT_FILTER_NAME_RE.fullmatch(name) or path.is_symlink():
+            continue
+        try:
+            regular(path)
+            if path.stat().st_size > FILTER_LIMIT:
+                continue
+        except (OSError, LayoutError):
+            continue
+        names.append(name)
+    return sorted(names)
+
+
+def apply_loot_filter(port, config, name, announce=False):
+    """Publish the selected filter as config/default.filter, atomically.
+
+    name is 'default' (the shipped no-filter default) or a file listed by
+    filter_listing. A missing or invalid name falls back to 'default' and is
+    reported with a closed enum event; paths and contents never reach logs.
+    Status events are emitted only when announce is set, so plain prepares
+    stay silent; a missing file is always reported. Returns the effective name.
+    """
+    port = pathlib.Path(port)
+    config = pathlib.Path(config)
+    if name == LOOT_FILTER_DEFAULT:
+        source = port / 'defaults' / LOOT_FILTER_NAME
+    else:
+        if not LOOT_FILTER_NAME_RE.fullmatch(name):
+            raise LayoutError('invalid_profile')
+        source = port / 'filters' / name
+        try:
+            no_links(source.parent)
+            present = source.is_file()
+        except LayoutError:
+            present = False
+        if not present:
+            print('PD2_EVENT {"event":"session_probe","phase":"preflight","check":"loot_filter","status":"missing"}',
+                  file=sys.stderr, flush=True)
+            source = port / 'defaults' / LOOT_FILTER_NAME
+            name = LOOT_FILTER_DEFAULT
+    content = filter_content(source)
+    active = config / LOOT_FILTER_NAME
+    no_links(active)
+    previous = filter_content(active) if active.exists() else None
+    if previous != content:
+        atomic_bytes(active, content)
+    if announce:
+        status = 'default' if name == LOOT_FILTER_DEFAULT else 'selected'
+        print('PD2_EVENT {"event":"session_probe","phase":"preflight","check":"loot_filter","status":"%s"}' % status,
+              file=sys.stderr, flush=True)
+    return name
 
 
 def companion_file(port):
@@ -609,9 +711,12 @@ def restore_input_config(incoming, previous):
     return result
 
 
-def prepare(port, state, data_override=None, volatile_work=False, input_mode=None, game_resolution=None):
+def prepare(port, state, data_override=None, volatile_work=False, input_mode=None, game_resolution=None, loot_filter=None):
     # A supplied session override is strictly whitelisted before any mutation.
     if game_resolution is not None and (type(game_resolution) is not str or game_resolution not in GAME_RESOLUTIONS):
+        raise LayoutError('invalid_profile')
+    if loot_filter is not None and (type(loot_filter) is not str
+                                    or (loot_filter != LOOT_FILTER_DEFAULT and not LOOT_FILTER_NAME_RE.fullmatch(loot_filter))):
         raise LayoutError('invalid_profile')
     if input_mode not in (None, 'mapper', 'native'):
         raise LayoutError('invalid_profile')
@@ -720,13 +825,33 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
         raise LayoutError('invalid_profile')
     if game_resolution is not None:
         resolution = game_resolution
+    # Loot filter: the stored choice persists; an explicit session override
+    # (launcher menu selection) wins and is persisted so the next menu starts
+    # from it. A missing file falls back to the shipped no-filter default.
+    stored_filter = opts.get('loot_filter', LOOT_FILTER_DEFAULT)
+    if type(stored_filter) is not str or (stored_filter != LOOT_FILTER_DEFAULT
+                                          and not LOOT_FILTER_NAME_RE.fullmatch(stored_filter)):
+        raise LayoutError('invalid_profile')
+    # Events and settings persistence happen only for an explicit session
+    # override or an active non-default stored choice; plain prepares keep
+    # settings.json byte-identical and stderr free of filter events.
+    announce = loot_filter is not None or stored_filter != LOOT_FILTER_DEFAULT
+    effective_filter = apply_loot_filter(port, config,
+                                         loot_filter if loot_filter is not None else stored_filter,
+                                         announce=announce)
+    if loot_filter is not None and opts.get('loot_filter') != effective_filter:
+        opts['loot_filter'] = effective_filter
+        atomic_json(settings, opts)
     active_names = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw-gdi.ini')
     for name in active_names:
         active = config / name
         no_links(active)
         if not active.exists():
             atomic_bytes(active, config_content(port / 'defaults' / name, name in JSON_CONFIGS))
-        config_content(active, name in JSON_CONFIGS)
+        if name == LOOT_FILTER_NAME:
+            filter_content(active)
+        else:
+            config_content(active, name in JSON_CONFIGS)
     migrate_display(config)
     migrate_save_path(config)
     prefix = state / 'wineprefix'
@@ -777,7 +902,10 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
         destination = work / 'ProjectD2' / name
         if volatile_work:
             # Wine may replace these by rename; links to persistent config break it.
-            content = config_content(active, name in JSON_CONFIGS)
+            if name == LOOT_FILTER_NAME:
+                content = filter_content(active)
+            else:
+                content = config_content(active, name in JSON_CONFIGS)
             if name == 'ProjectDiablo.json' and input_mode is not None:
                 content = input_config(content, input_mode)
             if name == 'ddraw.ini':
@@ -790,7 +918,11 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
                     'singlecpu': 'false', 'maxgameticks': '-1',
                     'inject_resolution': resolution if resolution != 'native' else '1068x600',
                 })
-            if not destination.exists() or config_content(destination, name in JSON_CONFIGS) != content:
+            if name == LOOT_FILTER_NAME:
+                differs = destination.exists() and filter_content(destination) != content
+            else:
+                differs = destination.exists() and config_content(destination, name in JSON_CONFIGS) != content
+            if not destination.exists() or differs:
                 atomic_bytes(destination, content)
         else:
             if destination.exists() and not destination.is_symlink():
@@ -822,7 +954,7 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
         z.unlink()
     elif z.exists():
         raise LayoutError('invalid_layout')
-    result = {'wine': str(wine), 'box': str(box), 'prefix': str(prefix), 'work': str(work), 'profile': opts['profile'], 'swap_ab': opts['swap_ab'], 'game_resolution': resolution, 'volatile_work': bool(volatile_work)}
+    result = {'wine': str(wine), 'box': str(box), 'prefix': str(prefix), 'work': str(work), 'profile': opts['profile'], 'swap_ab': opts['swap_ab'], 'game_resolution': resolution, 'loot_filter': effective_filter, 'volatile_work': bool(volatile_work)}
     if input_mode is not None:
         result['input_mode'] = input_mode
     atomic_session_json(state / 'session-layout.json', result)
@@ -847,10 +979,10 @@ def sync_config(port, state):
     changes = []
     # Complete preflight before touching any persistent config or backup.
     for name in WORK_CONFIGS:
-        incoming = config_content(work / 'ProjectD2' / name, name in JSON_CONFIGS)
+        incoming = work_config_bytes(work / 'ProjectD2' / name, name)
         active_name = 'ddraw-' + session['profile'] + '.ini' if name == 'ddraw.ini' else name
         active = config / active_name
-        previous = config_content(active, name in JSON_CONFIGS)
+        previous = work_config_bytes(active, name)
         if name == 'ddraw.ini':
             continue  # Never persist the session-only GDI template.
         if name == 'ProjectDiablo.json' and session.get('input_mode') in ('native', 'mapper'):
@@ -865,7 +997,7 @@ def sync_config(port, state):
         old_backup = backup / active.name
         no_links(old_backup)
         if old_backup.exists():
-            config_content(old_backup, active.name in JSON_CONFIGS)
+            work_config_bytes(old_backup, active.name)
         for path in (active.with_name(active.name + '.new'), old_backup.with_name(old_backup.name + '.new')):
             no_links(path)
             if path.exists():
@@ -885,7 +1017,7 @@ def main(argv=None):
     parser.add_argument('--data')
     parser.add_argument('--volatile-work', action='store_true')
     parser.add_argument('--sync-config', action='store_true')
-    parser.add_argument('--get', choices=['wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution'])
+    parser.add_argument('--get', choices=['wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution', 'loot_filter'])
     args = parser.parse_args(argv)
     try:
         if args.sync_config:
@@ -899,7 +1031,8 @@ def main(argv=None):
         else:
             prepare(pathlib.Path(args.port), pathlib.Path(args.state), args.data, args.volatile_work,
                     input_mode=os.environ.get('PD2_INPUT_MODE', 'mapper'),
-                    game_resolution=os.environ.get('PD2_GAME_RESOLUTION'))
+                    game_resolution=os.environ.get('PD2_GAME_RESOLUTION'),
+                    loot_filter=os.environ.get('PD2_LOOT_FILTER') or None)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, tarfile.TarError, LayoutError) as error:
         reason = str(error) if isinstance(error, LayoutError) else 'invalid_layout'
         if reason not in ('invalid_layout', 'invalid_profile', 'insufficient_space', 'unsupported_runtime'):

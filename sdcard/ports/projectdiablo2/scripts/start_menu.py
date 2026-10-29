@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Session-only menu on the same authenticated X11 session as the game.
 
-stdout is a fixed two-token protocol (resolution fps), not shell code. Exit 10 means cancel.
-No settings, game files, input logs, sudo, downloads or persistent writes.
+stdout is a fixed three-token protocol (resolution fps loot_filter), not shell code.
+Exit 10 means cancel. No settings writes, game files, input logs, sudo,
+downloads or persistent writes; the launcher persists the confirmed choice.
 The normal launcher prepares PortMaster, Weston and X11 before this runs.
 FPS ON selects an automatic render-FPS HUD from the first game frames.
 """
@@ -16,6 +17,7 @@ RESOLUTIONS = ('default', '640x480', '800x600', '1024x768', 'native')
 LABELS = ('640x480', '640x480', '800x600', '1024x768', '1068x600')
 OVERLAY_LEVELS = ('OFF', 'LEVEL 1', 'LEVEL 2', 'LEVEL 3', 'LEVEL 4')
 CANCEL = 10
+LOOT_FILTER_DEFAULT = 'default'
 EVENT = struct.Struct('@llHHi')  # Linux input_event: native timeval (aarch64/ARM32).
 PAD_ACTIONS = {0x220: 'up', 0x221: 'down', 0x222: 'left', 0x223: 'right',
                103: 'up', 108: 'down', 105: 'left', 106: 'right',
@@ -34,6 +36,41 @@ def get_pad_actions():
     return PAD_ACTIONS
 
 
+def _filter_options():
+    """User loot filters are read-only listed here; never modified by the menu.
+
+    'DEFAULT' (no filtering) is always index 0; each regular *.filter file in
+    port/filters follows in name order. A listing failure degrades to DEFAULT
+    only and is reported with a closed enum event, never with a path.
+    """
+    port = os.environ.get('PD2_PORT')
+    if not port:
+        return []
+    try:
+        import layout
+        names = layout.filter_listing(port)
+    except (ImportError, OSError, ValueError):
+        print('PD2_EVENT {"event":"session_probe","phase":"launch","check":"loot_filter","status":"unavailable"}',
+              file=sys.stderr, flush=True)
+        return []
+    return names
+
+
+
+def _subtitle():
+    """Header subtitle 'R36S PORT <version>'.
+
+    The version comes from the layout version pin (single source of truth;
+    never hardcoded here). A layout import failure degrades to 'R36S PORT'
+    so the menu always draws its header.
+    """
+    try:
+        import layout
+        version = str(getattr(layout, 'VERSION', '')).strip()
+    except (ImportError, OSError, ValueError, AttributeError):
+        version = ''
+    return ('R36S PORT ' + version) if version else 'R36S PORT'
+
 
 class Menu:
     def __init__(self):
@@ -50,7 +87,23 @@ class Menu:
         inherited_fps = os.environ.get('PD2_FPS', '0')
         self.inherited_fps_level = int(inherited_fps) if inherited_fps in ('0', '1', '2', '3', '4') else 0
         self.inherited_fps = self.inherited_fps_level > 0
+        # Loot filter choice: index 0 is always 'DEFAULT' (the shipped no-
+        # filter). The previous confirmed choice (PD2_LOOT_FILTER) is selected
+        # again so the menu opens on the user's last pick; a stale or missing
+        # name safely falls back to DEFAULT.
+        self.filters = _filter_options()
+        self.filter_index = 0
+        inherited_filter = os.environ.get('PD2_LOOT_FILTER', LOOT_FILTER_DEFAULT)
+        if inherited_filter in self.filters:
+            self.filter_index = self.filters.index(inherited_filter) + 1
         self.result = None
+
+    @property
+    def filter_label(self):
+        """Bitmap-font label: uppercase only, truncated to fit one text row."""
+        if self.filter_index == 0:
+            return 'DEFAULT'
+        return self.filters[self.filter_index - 1].upper()[:16]
 
     def action(self, action):
         if self.result is not None:
@@ -58,7 +111,7 @@ class Menu:
         if action == 'cancel':
             self.result = 'cancel'
         elif action in ('up', 'down'):
-            self.row = (self.row + (-1 if action == 'up' else 1)) % 4
+            self.row = (self.row + (-1 if action == 'up' else 1)) % 5
         elif action in ('left', 'right', 'accept'):
             if self.row == 0:
                 self.resolution = (self.resolution + (-1 if action == 'left' else 1)) % len(RESOLUTIONS)
@@ -73,14 +126,27 @@ class Menu:
                 else:  # accept: toggle between off and on/level1
                     self.fps = 0 if current > 0 else 1
                 self.fps_changed = True
+            elif self.row == 2:
+                count = len(self.filters) + 1
+                self.filter_index = (self.filter_index + (-1 if action == 'left' else 1)) % count
             elif action == 'accept':
-                self.result = 'launch' if self.row == 2 else 'cancel'
+                self.result = 'launch' if self.row == 3 else 'cancel'
 
     def selection(self):
         if self.result != 'launch':
             raise ValueError('not confirmed')
+        filter_name = (LOOT_FILTER_DEFAULT if self.filter_index == 0
+                       else self.filters[self.filter_index - 1])
         return (RESOLUTIONS[self.resolution],
-                str(int(self.fps)) if self.fps_changed else 'default')
+                str(int(self.fps)) if self.fps_changed else 'default',
+                filter_name)
+
+    def float_active(self):
+        """A long filter name is held on the filter row: its full name
+        animates (marquee) in the row and the menu must repaint on a timer."""
+        if self.row != 2 or self.filter_index == 0:
+            return False
+        return len(self.filters[self.filter_index - 1]) > 16
 
 
 class KeyDecoder:
@@ -258,7 +324,7 @@ class Screen:
     """Direct core-X11 client: no SDL video backend or native GUI library."""
     def __new__(cls):
         from menu_x11 import Screen as X11Screen
-        return X11Screen(FONT, LABELS)
+        return X11Screen(FONT, LABELS, _subtitle())
 
 
 def run(screen, pad, sleep=time.sleep):
@@ -272,14 +338,19 @@ def run(screen, pad, sleep=time.sleep):
     while menu.result is None:
         # Handle all input from this frame before repainting, but never accept
         # a second action once launch/cancel has already been confirmed.
-        before = (menu.row, menu.resolution, menu.fps, menu.fps_changed)
+        before = (menu.row, menu.resolution, menu.fps, menu.fps_changed, menu.filter_index)
         for action in pad.actions() + screen.actions():
             menu.action(action)
         if menu.result is None:
             # Static menus need no periodic repaint. Expose recovery is handled
             # by screen.actions(); coalesce input into at most one new frame.
-            after = (menu.row, menu.resolution, menu.fps, menu.fps_changed)
+            after = (menu.row, menu.resolution, menu.fps, menu.fps_changed, menu.filter_index)
             if after != before:
+                screen.draw(menu)
+            elif menu.float_active():
+                # A long filter name is held on the filter row: repaint on the
+                # loop timer so its full name keeps scrolling in the row even
+                # with no further input.
                 screen.draw(menu)
             sleep(0.02)
     return menu.selection() if menu.result == 'launch' else None
@@ -295,6 +366,12 @@ def main(screen_factory=Screen, pad_factory=Pad, stdout=None, stderr=None):
         selection = run(screen, pad)
         if selection is None:
             return CANCEL
+        # Closed enum audit trail; the count is the number of listed user
+        # filters, never a name or path.
+        count = len(_filter_options())
+        status = 'selected' if selection[2] != LOOT_FILTER_DEFAULT else 'default'
+        print('PD2_EVENT {"event":"session_probe","phase":"launch","check":"loot_filter","status":"'
+              + status + '","count":' + str(count) + '}', file=stderr, flush=True)
         # Whitelisted protocol only. No eval/source or persistent settings.
         print(' '.join(selection), file=stdout, flush=True)
         return 0

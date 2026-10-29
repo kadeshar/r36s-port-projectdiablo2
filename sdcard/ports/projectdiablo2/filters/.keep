@@ -1,0 +1,11 @@
+# Loot filter drop directory.
+#
+# Place one or more *.filter files here to make them selectable from the
+# launcher menu. Only regular files whose names match
+#   [A-Za-z0-9][A-Za-z0-9._-]{0,127}.filter
+# are listed; everything else (directories, symlinks, other extensions,
+# oversized files > 4 MiB) is ignored. The menu always shows DEFAULT first,
+# which maps to the shipped no-filter default.filter.
+#
+# See docs/LOOT-FILTER.md for details. This file is not a filter and is
+# never loaded by the game.

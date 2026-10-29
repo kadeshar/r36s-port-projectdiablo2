@@ -220,6 +220,7 @@ def validate_event(value, allow_summary=False):
             'audio_alsa_capture': ('complete', 'limited', 'unavailable'),
             'audio_alsa_endpoint': ('render_seen', 'capture_only', 'not_observed'),
             'audio_test': ('invalid',),
+            'loot_filter': ('selected', 'default', 'missing', 'unavailable'),
         }
         for stage in ('default', 'plughw', 'control', 'cards', 'devices', 'stream', 'params'):
             allowed['audio_alsa_' + stage] = ('attempted', 'not_observed', 'missing', 'denied', 'busy', 'invalid', 'unsupported', 'other_error')
@@ -281,7 +282,13 @@ def validate_event(value, allow_summary=False):
             fields.add('detail')
             if value.get('detail') not in ('no_log', 'silent', 'libasound', 'load_error', 'alsa_error', 'unknown', 'capture_error', 'capture_timeout'):
                 return None
-        phases = (('preflight', 'launch') if check == 'native_cast' else
+        if check == 'loot_filter' and 'count' in value:
+            # Optional bounded listing count (number of available user filters);
+            # never a path or name, so no dynamic string is ever accepted.
+            fields.add('count')
+            if not _integer(value.get('count'), 0, 512):
+                return None
+        phases = (('preflight', 'launch') if check in ('native_cast', 'loot_filter') else
                   ('launch', 'shutdown') if check == 'audio_output' else ('launch',))
         if value.get('phase') not in phases or set(value) != fields:
             return None

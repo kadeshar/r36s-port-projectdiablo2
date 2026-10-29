@@ -1,8 +1,11 @@
 """Synthetic menu/input/launcher tests: never open DRM, pad or run a game."""
 import importlib.util
 import io
+import json
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 import struct
 import subprocess
@@ -32,7 +35,7 @@ class FakeScreen:
         return next(self.frames, ['cancel'])
 
     def draw(self, menu):
-        self.draws.append((menu.row, menu.resolution, menu.fps))
+        self.draws.append((menu.row, menu.resolution, menu.fps, menu.fps_changed))
 
     def close(self):
         self.closed = True
@@ -57,16 +60,23 @@ class MenuTests(unittest.TestCase):
         self.assertEqual((menu.row, menu.resolution, menu.fps, menu.result), (2, 0, False, None))
         with self.assertRaises(ValueError):
             menu.selection()
+        # Row 2 is the loot-filter row: confirming it cycles filters only.
         for action in ('accept',):
             menu.action(action)
-        self.assertEqual(menu.selection(), ('default', 'default'))
+        self.assertIsNone(menu.result)
+        with self.assertRaises(ValueError):
+            menu.selection()
+        menu.action('down')
+        menu.action('accept')
+        self.assertEqual(menu.selection(), ('default', 'default', 'default'))
 
     def test_inherited_values_are_displayed_without_overriding_selection(self):
         with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': '1024x768', 'PD2_FPS': '1'}):
             menu = m.Menu()
         self.assertEqual((menu.inherited_resolution, menu.inherited_fps), ('1024x768', True))
+        menu.action('down')
         menu.action('accept')
-        self.assertEqual(menu.selection(), ('default', 'default'))
+        self.assertEqual(menu.selection(), ('default', 'default', 'default'))
 
     def test_first_fps_toggle_inverts_the_inherited_setting(self):
         with mock.patch.dict(os.environ, {'PD2_FPS': '1'}):
@@ -75,15 +85,17 @@ class MenuTests(unittest.TestCase):
         menu.action('accept')
         self.assertFalse(menu.fps)
         menu.action('down')
+        menu.action('down')
         menu.action('accept')
-        self.assertEqual(menu.selection(), ('default', '0'))
+        self.assertEqual(menu.selection(), ('default', '0', 'default'))
 
     def test_missing_inherited_resolution_defaults_to_lcd(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             menu = m.Menu()
         self.assertEqual((menu.inherited_resolution, menu.inherited_fps), ('640x480', False))
+        menu.action('down')
         menu.action('accept')
-        self.assertEqual(menu.selection(), ('default', 'default'))
+        self.assertEqual(menu.selection(), ('default', 'default', 'default'))
 
     def test_explicit_800x600_inheritance_and_selection_are_preserved(self):
         with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': '800x600'}):
@@ -96,8 +108,9 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(m.LABELS[menu.resolution], '800x600')
         menu.action('down')
         menu.action('down')
+        menu.action('down')
         menu.action('accept')
-        self.assertEqual(menu.selection(), ('800x600', 'default'))
+        self.assertEqual(menu.selection(), ('800x600', 'default', 'default'))
 
     def test_invalid_inherited_resolution_uses_safe_display_default(self):
         with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': 'invalid', 'PD2_FPS': 'invalid'}):
@@ -119,8 +132,9 @@ class MenuTests(unittest.TestCase):
                     if fps == '0':
                         menu.action('accept')
                 menu.action('down')
+                menu.action('down')
                 menu.action('accept')
-                self.assertEqual(menu.selection(), (resolution, fps))
+                self.assertEqual(menu.selection(), (resolution, fps, 'default'))
                 choices.add(menu.selection())
                 menu.action('cancel')
                 self.assertEqual(menu.result, 'launch')
@@ -149,25 +163,98 @@ class MenuTests(unittest.TestCase):
         self.assertFalse(menu.fps)
         menu.action('down')
         menu.action('right')
-        self.assertIsNone(menu.result)  # only accept launches
+        self.assertIsNone(menu.result)  # row 2 cycles filters, never launches
         menu.action('accept')
-        self.assertEqual(menu.selection(), ('default', '0'))
+        self.assertIsNone(menu.result)  # confirming the filter row still does not launch
+        menu.action('down')
+        menu.action('accept')
+        self.assertEqual(menu.selection(), ('default', '0', 'default'))
         menu = m.Menu()
         menu.action('down')
         self.assertEqual(menu.row, 3)
         menu.action('down')
+        self.assertEqual(menu.row, 4)
+        menu.action('down')
         self.assertEqual(menu.row, 0)
         menu.action('up')
-        self.assertEqual(menu.row, 3)
+        self.assertEqual(menu.row, 4)
 
     def test_cancel_button_and_cancel_row(self):
-        for actions in (['cancel'], ['down', 'accept']):
+        for actions in (['cancel'], ['down', 'down', 'accept']):
             menu = m.Menu()
             for action in actions:
                 menu.action(action)
             self.assertEqual(menu.result, 'cancel')
             with self.assertRaises(ValueError):
                 menu.selection()
+
+    def test_filter_row_cycles_selects_and_wraps(self):
+        with mock.patch.object(m, '_filter_options', return_value=['Alpha.filter', 'Beta.filter']):
+            menu = m.Menu()
+        self.assertEqual(menu.filter_index, 0)
+        self.assertEqual(menu.filter_label, 'DEFAULT')
+        menu.action('right')
+        self.assertEqual((menu.filter_index, menu.filter_label), (1, 'ALPHA.FILTER'))
+        menu.action('right')
+        self.assertEqual((menu.filter_index, menu.filter_label), (2, 'BETA.FILTER'))
+        menu.action('right')
+        self.assertEqual(menu.filter_index, 0)
+        menu.action('left')
+        self.assertEqual(menu.filter_index, 2)
+        menu.action('accept')
+        self.assertEqual(menu.filter_index, 0)  # confirm cycles too
+        self.assertIsNone(menu.result)
+        menu.action('right')
+        menu.action('right')
+        menu.action('down')
+        menu.action('accept')
+        self.assertEqual(menu.selection(), ('default', 'default', 'Beta.filter'))
+
+    def test_filter_label_is_uppercase_and_truncated(self):
+        name = 'a' * 40 + '.filter'
+        with mock.patch.object(m, '_filter_options', return_value=[name]):
+            menu = m.Menu()
+        menu.action('right')
+        self.assertEqual(len(menu.filter_label), 16)
+        self.assertEqual(menu.filter_label, menu.filter_label.upper())
+
+    def test_inherited_filter_opens_on_last_choice_and_stale_name_falls_back(self):
+        with mock.patch.object(m, '_filter_options', return_value=['Alpha.filter', 'Beta.filter']):
+            with mock.patch.dict(os.environ, {'PD2_LOOT_FILTER': 'Beta.filter'}):
+                menu = m.Menu()
+            self.assertEqual((menu.filter_index, menu.filter_label), (2, 'BETA.FILTER'))
+            with mock.patch.dict(os.environ, {'PD2_LOOT_FILTER': 'Deleted.filter'}):
+                stale = m.Menu()
+            self.assertEqual(stale.filter_index, 0)
+
+    def test_filter_listing_unavailable_degrades_to_default_with_closed_event(self):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {'PD2_PORT': '/private/port'}), \
+                mock.patch.dict(sys.modules, {'layout': None}), \
+                mock.patch.object(sys, 'stderr', stderr):
+            self.assertEqual(m._filter_options(), [])
+        line = stderr.getvalue().strip()
+        event = json.loads(line.removeprefix('PD2_EVENT '))
+        self.assertEqual(event, {'event': 'session_probe', 'phase': 'launch',
+                                 'check': 'loot_filter', 'status': 'unavailable'})
+        self.assertNotIn('/private/port', stderr.getvalue())
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(m._filter_options(), [])  # no port: silent, no event
+
+    def test_main_emits_three_tokens_and_closed_loot_filter_event(self):
+        screen = FakeScreen([['down'], ['accept']])
+        pad = FakePad()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(m, '_filter_options', return_value=['Alpha.filter']):
+            result = m.main(lambda: screen, lambda: pad, stdout, stderr)
+        self.assertEqual(result, 0)
+        self.assertEqual(stdout.getvalue(), 'default default default\n')
+        events = [json.loads(line.removeprefix('PD2_EVENT '))
+                  for line in stderr.getvalue().splitlines() if line.startswith('PD2_EVENT ')]
+        self.assertEqual(events, [{'event': 'session_probe', 'phase': 'launch',
+                                   'check': 'loot_filter', 'status': 'default', 'count': 1}])
+        for line in (stdout.getvalue() + stderr.getvalue()).splitlines():
+            self.assertNotIn('Alpha.filter', line)
 
     def test_real_r36s_codes_and_keyboard(self):
         decoder = m.KeyDecoder(m.PAD_ACTIONS)
@@ -245,17 +332,26 @@ class MenuTests(unittest.TestCase):
             closed.assert_called_once_with(8)
 
     def test_pad_navigation_and_keyboard_confirm(self):
-        pad = FakePad([['up', 'up', 'right', 'right', 'down', 'accept', 'down']])
+        pad = FakePad([['up', 'up', 'right', 'right', 'down', 'accept', 'down', 'down']])
         screen = FakeScreen([['accept']])
-        self.assertEqual(m.run(screen, pad, sleep=lambda _: None), ('800x600', '1'))
+        self.assertEqual(m.run(screen, pad, sleep=lambda _: None), ('800x600', '1', 'default'))
 
     def test_protocol_cancel_error_and_cleanup(self):
-        for actions, expected, output in (([['accept']], 0, 'default default\n'),
-                                          ([['cancel']], 10, '')):
+        launch_event = {'event': 'session_probe', 'phase': 'launch',
+                        'check': 'loot_filter', 'status': 'default', 'count': 0}
+        for actions, expected, output, loot_event in (
+                (([['down'], ['accept']], 0, 'default default default\n', launch_event),
+                 ([['cancel']], 10, '', None))):
             screen, pad = FakeScreen(actions), FakePad()
             stdout, stderr = io.StringIO(), io.StringIO()
             result = m.main(lambda: screen, lambda: pad, stdout, stderr)
-            self.assertEqual((result, stdout.getvalue(), stderr.getvalue()), (expected, output, ''))
+            self.assertEqual((result, stdout.getvalue()), (expected, output))
+            lines = [line for line in stderr.getvalue().splitlines() if line.startswith('PD2_EVENT ')]
+            if loot_event is None:
+                self.assertEqual(lines, [])
+            else:
+                self.assertEqual(len(lines), 1)
+                self.assertEqual(json.loads(lines[0].removeprefix('PD2_EVENT ')), loot_event)
             self.assertTrue(screen.closed and pad.closed)
         screen = FakeScreen()
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -271,9 +367,20 @@ class MenuTests(unittest.TestCase):
         module = types.SimpleNamespace(Screen=factory)
         with mock.patch.dict(sys.modules, {'menu_x11': module}), mock.patch.dict(os.environ, {'DISPLAY': ':0'}):
             self.assertIs(m.Screen(), factory.return_value)
-            factory.assert_called_once_with(m.FONT, m.LABELS)
+            factory.assert_called_once_with(m.FONT, m.LABELS, m._subtitle())
             self.assertEqual(os.environ['DISPLAY'], ':0')
         self.assertTrue(all(len(glyph) == 14 for glyph in m.FONT.values()))
+
+    def test_subtitle_uses_layout_version_pin(self):
+        fake = types.SimpleNamespace(VERSION='1.3-test.1')
+        with mock.patch.dict(sys.modules, {'layout': fake}):
+            self.assertEqual(m._subtitle(), 'R36S PORT 1.3-test.1')
+
+    def test_subtitle_falls_back_without_layout(self):
+        with mock.patch.dict(sys.modules, {'layout': None}):
+            self.assertEqual(m._subtitle(), 'R36S PORT')
+        with mock.patch.dict(sys.modules, {'layout': types.SimpleNamespace(VERSION='   ')}):
+            self.assertEqual(m._subtitle(), 'R36S PORT')
 
     def test_ports_accept_key_is_discarded_and_never_autostarts(self):
         screen, pad = FakeScreen(), FakePad()
@@ -282,14 +389,44 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(len(screen.draws), 1)  # Idle polls must not repaint.
 
     def test_idle_and_noop_input_do_not_redraw_but_changes_do(self):
-        screen = FakeScreen([[], [], ['left'], ['up'], [], ['accept'], [], ['cancel']])
+        screen = FakeScreen([[], ['up'], [], ['accept']])
         self.assertIsNone(m.run(screen, FakePad(), sleep=lambda _: None))
-        self.assertEqual(screen.draws, [(2, 0, False), (1, 0, False), (1, 0, True)])
+        self.assertEqual(screen.draws, [(2, 0, 0, False), (1, 0, 0, False), (1, 0, 1, True)])
 
     def test_input_batch_paints_only_its_final_state(self):
         screen = FakeScreen([['up', 'up', 'right', 'down'], ['cancel']])
         self.assertIsNone(m.run(screen, FakePad(), sleep=lambda _: None))
-        self.assertEqual(screen.draws, [(2, 0, False), (1, 1, False)])
+        self.assertEqual(screen.draws, [(2, 0, 0, False), (1, 1, 0, False)])
+
+    def test_float_active_matrix(self):
+        # 'DEFAULT' is virtual (index 0); _filter_options lists real files only.
+        with mock.patch.object(m, '_filter_options',
+                               return_value=('Short.filter', 'Hiim_Crafting_Sorceress_Focused.filter')):
+            menu = m.Menu()
+        for index, row, expected in ((0, 2, False), (1, 2, False), (2, 2, True),
+                                     (2, 0, False), (2, 1, False), (2, 3, False), (2, 4, False)):
+            with self.subTest(index=index, row=row):
+                menu.filter_index = index
+                menu.row = row
+                self.assertEqual(menu.float_active(), expected)
+
+    def test_long_filter_float_repaints_without_input(self):
+        # While a long filter name is held on row 2, the marquee animates: the
+        # loop repaints on its timer even with no new input.
+        with mock.patch.object(m, '_filter_options',
+                               return_value=('Hiim_Crafting_Sorceress_Focused.filter',)), \
+                mock.patch.dict(os.environ, {'PD2_LOOT_FILTER': 'Hiim_Crafting_Sorceress_Focused.filter'}):
+            screen = FakeScreen([[], [], [], [], ['cancel']])
+            self.assertIsNone(m.run(screen, FakePad(), sleep=lambda _: None))
+        self.assertEqual(len(screen.draws), 5)  # initial + 4 animation frames
+
+    def test_short_filter_never_animates_repaint(self):
+        # A short filter name never floats: idle polling must stay repaint-free.
+        with mock.patch.object(m, '_filter_options', return_value=('Short.filter',)), \
+                mock.patch.dict(os.environ, {'PD2_LOOT_FILTER': 'Short.filter'}):
+            screen = FakeScreen([[], [], [], ['cancel']])
+            self.assertIsNone(m.run(screen, FakePad(), sleep=lambda _: None))
+        self.assertEqual(len(screen.draws), 1)
 
     def test_display_error_logs_only_fixed_code_and_never_selection(self):
         def failed():
@@ -343,16 +480,20 @@ class LauncherContractTests(unittest.TestCase):
         self.assertEqual(m.LABELS, ('640x480', '640x480', '800x600', '1024x768', '1068x600'))
         self.assertIn('x', m.FONT)
         self.assertEqual(m.LABELS[0], '640x480')
-        for resolution in m.RESOLUTIONS:
-            for fps in ('default', '0', '1', '2', '3', '4'):
-                self.assertIn("'" + resolution + ' ' + fps + "'", self.weston)
-        protocol = self.weston.split('case "$menu_selection" in', 1)[1].split('esac', 1)[0]
-        expected = {resolution + ' ' + fps for resolution in m.RESOLUTIONS
-                    for fps in ('default', '0', '1', '2', '3', '4')}
-        self.assertEqual(set(re.findall(r"'([^']+)'", protocol)), expected)
-        self.assertEqual(len(re.findall(r"'([^']+)'", protocol)), 30)
-        self.assertIn('menu_resolution="${menu_selection%% *}"', self.weston)
-        self.assertIn('menu_fps="${menu_selection#* }"', self.weston)
+        # Fixed three-token protocol: resolution fps loot_filter. Each field is
+        # validated against its own closed whitelist; a fourth token fails.
+        self.assertIn('read -r menu_resolution menu_fps menu_filter menu_extra <<< "$menu_selection"', self.weston)
+        self.assertIn('case "$menu_resolution" in default|640x480|800x600|1024x768|native) menu_res_ok=1;; esac', self.weston)
+        self.assertIn('case "$menu_fps" in default|0|1|2|3|4) menu_fps_ok=1;; esac', self.weston)
+        self.assertIn('[[ "$menu_filter" == default ]]', self.weston)
+        self.assertIn(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.filter$', self.weston)
+        self.assertIn('-f "$PD2_PORT/filters/$menu_filter"', self.weston)
+        self.assertIn('! -L "$PD2_PORT/filters/$menu_filter"', self.weston)
+        self.assertIn('-z "$menu_extra"', self.weston)
+        # The menu itself prints exactly the three whitelisted tokens.
+        menu_source = (SCRIPTS / 'start_menu.py').read_text(encoding='utf-8')
+        self.assertIn("print(' '.join(selection), file=stdout, flush=True)", menu_source)
+        self.assertIn("return (RESOLUTIONS[self.resolution]", menu_source)
 
     def test_audio_forwarded_to_unprivileged_game_with_off_fallback(self):
         self.assertIn('ln -s "$PD2_PORT/scripts/run-game.sh" "$R/game-session.sh"', self.weston)
@@ -387,15 +528,18 @@ class LauncherContractTests(unittest.TestCase):
                                       block.split('if [[ "$menu_valid" == 1 ]]; then', 1)[1], maxsplit=1)
         self.assertIn('[[ "$menu_resolution" == default ]] || export PD2_GAME_RESOLUTION="$menu_resolution"', selected)
         self.assertIn('[[ "$menu_fps" == default ]] || export PD2_FPS="$menu_fps"', selected)
+        self.assertIn('export PD2_LOOT_FILTER="$menu_filter"', selected)
+        self.assertIn('"check":"loot_filter"', selected)
         self.assertIn('"status":"selected"', selected)
         self.assertIn('"status":"failed"', fallback)
         self.assertIn('>&2', fallback)
         self.assertNotIn('"status":"selected"', fallback)
         self.assertNotIn('export ', fallback)
+        self.assertNotIn('PD2_LOOT_FILTER', fallback)
         self.assertIn('exit 1', fallback)
         # No accidental resetting of other launch modes or persistent settings.
         assigned = re.findall(r'\b(PD2_[A-Z_]+)=', block)
-        self.assertCountEqual(assigned, ['PD2_GAME_RESOLUTION', 'PD2_FPS'])
+        self.assertCountEqual(assigned, ['PD2_GAME_RESOLUTION', 'PD2_FPS', 'PD2_LOOT_FILTER'])
         self.assertNotIn('settings.json', block)
 
 
@@ -408,41 +552,69 @@ class LauncherShellTests(unittest.TestCase):
     No compositor, mount, sudo, game, DRM, audio or input device is opened.
     """
 
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='pd2-menu-harness-'))
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.port = self.tmp / 'port'
+        filters = self.port / 'filters'
+        filters.mkdir(parents=True)
+        (filters / 'Good.filter').write_text('synthetic filter body\n', encoding='utf-8')
+        self.symlink_filter = None
+        try:
+            (filters / 'Link.filter').symlink_to('Good.filter')
+            self.symlink_filter = 'Link.filter'
+        except OSError:
+            pass
+
     def test_selected_failure_cancel_and_disabled_environment(self):
         text = (SCRIPTS / 'weston-session.sh').read_text(encoding='utf-8')
         block = text.split('stage x11_ready', 1)[1].split('stage volatile_work_prepare', 1)[0]
         harness = ('set -u\n'
                    'runuser() { printf "%s" "$MOCK_RESULT"; return "$MOCK_RC"; }\n'
-                   + block + '\nprintf "FLAGS:%s|%s|%s|%s|%s\\n" '
-                   '"$PD2_GAME_RESOLUTION" "$PD2_FPS" "$PD2_INPUT_MODE" '
+                   + block + '\nprintf "FLAGS:%s|%s|%s|%s|%s|%s\\n" '
+                   '"$PD2_GAME_RESOLUTION" "$PD2_FPS" "$PD2_LOOT_FILTER" "$PD2_INPUT_MODE" '
                    '"$PD2_CONTROLLER_TEST" "$PD2_AUDIO_TEST"\n'
                    'printf "VOLATILE_AND_GAME_WOULD_START\\n"\n')
         cases = []
         for resolution in m.RESOLUTIONS:
             for fps in ('default', '0', '1', '2', '3', '4'):
-                # Current menu has two fields; audio is not a menu choice.
-                cases.append((resolution + ' ' + fps, '0', '1', 'selected',
+                # Current menu has three fields; audio is not a menu choice.
+                cases.append((resolution + ' ' + fps + ' default', '0', '1', 'selected',
                               '1024x768' if resolution == 'default' else resolution,
-                              '1' if fps == 'default' else fps, '0'))
-        for result, rc in (('', '1'), ('native 0 1', '1'), ('', '0'),
+                              '1' if fps == 'default' else fps, 'default', '0'))
+        # A named filter is accepted only for a regular, non-symlink file that
+        # actually exists under the port's filters directory (real temp port).
+        cases.append(('default default Good.filter', '0', '1', 'selected',
+                      '1024x768', '1', 'Good.filter', '0'))
+        for result, rc in (('', '1'), ('native 0 default', '1'), ('', '0'),
                            ('native 0 1\necho BAD', '0'), ('$(echo BAD) 1 1', '0'),
                            ('default 2 0', '0'), ('native  0 1', '0'), (' native 0 1', '0'),
                            ('native', '0'), ('default default extra', '0'), ('native 0 2', '0'),
                            ('native 0 ON', '0'), ('native 0 1 extra', '0'),
                            ('native\t0 1', '0'), ('native 0 1 ', '0'),
-                           ('1068x600 0 0', '0'), ('native 0 1;echo BAD', '0')):
-            cases.append((result, rc, '1', 'failed', None, None, None))
-        cases += [('native 0 1', '0', '0', None, '1024x768', '1', '0'),
-                  ('native 0 1', '10', '1', 'cancelled', None, None, None)]
-        for result, rc, enabled, status, resolution, fps, audio in cases:
+                           ('1068x600 0 0', '0'), ('native 0 1;echo BAD', '0'),
+                           ('default default Missing.filter', '0'),
+                           ('default default ..%2fBad.filter', '0'),
+                           ('native 0 Good.filter extra', '0')):
+            cases.append((result, rc, '1', 'failed', None, None, None, None))
+        if self.symlink_filter:
+            cases.append(('default default ' + self.symlink_filter, '0', '1',
+                          'failed', None, None, None, None))
+        cases += [('native 0 default', '0', '0', None, '1024x768', '1', 'default', '0'),
+                  ('native 0 default', '10', '1', 'cancelled', None, None, None, None)]
+        for result, rc, enabled, status, resolution, fps, filter_name, audio in cases:
             with self.subTest(result=result, rc=rc, enabled=enabled):
                 env = dict(os.environ, MOCK_RESULT=result, MOCK_RC=rc, PD2_START_MENU=enabled,
-                           PD2_GAME_RESOLUTION='1024x768', PD2_FPS='1', PD2_INPUT_MODE='mapper',
-                           PD2_CONTROLLER_TEST='1', PD2_AUDIO_TEST='0', PD2_USER='fake-user',
-                           PD2_PORT='/fake/path with spaces', W='/fake/weston', CRUSTY_LIBSDL='/fake/resolved64.so')
+                           PD2_GAME_RESOLUTION='1024x768', PD2_FPS='1', PD2_LOOT_FILTER='default',
+                           PD2_INPUT_MODE='mapper', PD2_CONTROLLER_TEST='1', PD2_AUDIO_TEST='0',
+                           PD2_USER='fake-user', PD2_PORT=str(self.port), W='/fake/weston',
+                           CRUSTY_LIBSDL='/fake/resolved64.so')
                 process = subprocess.run([os.environ.get('PD2_TEST_BASH', 'bash'), '-c', harness],
                                          env=env, capture_output=True, text=True)
                 self.assertEqual(process.returncode, 1 if status == 'failed' else 0, process.stderr)
+                if status == 'selected':
+                    loot_status = 'selected' if filter_name != 'default' else 'default'
+                    self.assertIn('"check":"loot_filter","status":"' + loot_status + '"', process.stdout)
                 if status:
                     self.assertIn('"status":"' + status + '"', process.stdout)
                 else:
@@ -451,7 +623,8 @@ class LauncherShellTests(unittest.TestCase):
                     self.assertNotIn('FLAGS:', process.stdout)
                     self.assertNotIn('VOLATILE_AND_GAME_WOULD_START', process.stdout)
                 else:
-                    self.assertIn('FLAGS:' + resolution + '|' + fps + '|mapper|1|' + audio, process.stdout)
+                    self.assertIn('FLAGS:' + resolution + '|' + fps + '|' + filter_name + '|mapper|1|' + audio,
+                                  process.stdout)
                     self.assertIn('VOLATILE_AND_GAME_WOULD_START', process.stdout)
                 self.assertNotIn('\nBAD', process.stdout)
 

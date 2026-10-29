@@ -80,6 +80,23 @@ class SafeLogTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(self.rows()[0], value)
 
+    def test_loot_filter_statuses_are_closed_and_count_is_bounded(self):
+        for phase in ('preflight', 'launch'):
+            for status in ('selected', 'default', 'missing', 'unavailable'):
+                value = dict(event='session_probe', phase=phase, check='loot_filter', status=status)
+                self.assertEqual(safe_log.validate_event(value), value)
+                # Optional integer count: the number of listed user filters.
+                for count in (0, 1, 512):
+                    self.assertEqual(safe_log.validate_event(dict(value, count=count)), dict(value, count=count))
+                for bad in (513, -1, '2', 1.0, True, None):
+                    self.assertIsNone(safe_log.validate_event(dict(value, count=bad)))
+                # Never a file name, path or other dynamic string.
+                for extra in ({'name': 'Private.filter'}, {'path': '/private/filter.filter'},
+                              {'detail': 'private'}, {'raw': 'x'}):
+                    self.assertIsNone(safe_log.validate_event(dict(value, **extra)))
+                self.assertIsNone(safe_log.validate_event(dict(value, status='private.filter')))
+                self.assertIsNone(safe_log.validate_event(dict(value, phase='game')))
+
     def test_retired_variant_events_are_rejected(self):
         for check, status in (('performance_profile', 'opengl'), ('renderer_variant', 'gles2'),
                               ('box_variant', 'a35'), ('tuning_profile', 'gl-kms'),

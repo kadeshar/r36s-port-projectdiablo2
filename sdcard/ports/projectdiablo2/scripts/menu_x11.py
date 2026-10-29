@@ -15,6 +15,8 @@ TIMEOUT = 20.0
 MAX_FRAME = 262144
 MAX_EVENTS = 1024
 WIDTH, HEIGHT = 640, 480
+FLOAT_DELAY = 2.0  # seconds a long filter name is held before the plaque appears
+FLOAT_SPEED = 48.0  # pixels/second marquee scroll for names wider than the plaque
 KEYSYMS = {0xff52: 'up', 0xff54: 'down', 0xff51: 'left',
            0xff53: 'right', 0xff0d: 'accept', 0x20: 'accept',
            0xff1b: 'cancel', 0xff8d: 'accept'}
@@ -103,10 +105,13 @@ def _setup(data):
 
 
 class Screen:
-    def __init__(self, font, labels):
+    def __init__(self, font, labels, subtitle='R36S PORT'):
         self.socket = None
         self.window = self.gc = self.pixmap = None
         self.font, self.labels = dict(font), tuple(labels)
+        # Bitmap font is uppercase 5x7 with an 18-pixel advance; keep the
+        # header within one screen width for any port version string.
+        self.subtitle = str(subtitle).upper()[:WIDTH // 18]
         self._buffer = bytearray()
         self._sequence = 0
         self._menu = None
@@ -116,6 +121,8 @@ class Screen:
         self._initializing = True
         self._mapped = self._exposed = False
         self._pending = []
+        self._float_key = None
+        self._float_since = 0.0
         if len(self.labels) not in (4, 5) or ' ' not in self.font:
             raise ValueError('valid labels and a space glyph required')
         for glyph in self.font.values():
@@ -331,7 +338,9 @@ class Screen:
                 body.extend(struct.pack('<hhHH', x, y, width, height))
             self._request(70, 0, body, deadline)
 
-    def _text(self, x, y, text, color, deadline):
+    def _text(self, x, y, text, color, deadline, clip=None):
+        # clip=(min_x, max_x) confines glyphs to a sub-window (floating plaque);
+        # default clips only at the screen edge.
         rectangles = []
         for char in text:
             glyph = self.font.get(char, self.font[' '])
@@ -339,6 +348,8 @@ class Screen:
                 bits = int(glyph[row * 2:row * 2 + 2], 16)
                 for col in range(5):
                     px, py = x + col * 3, y + row * 3
+                    if clip is not None and not clip[0] <= px < clip[1]:
+                        continue
                     if bits & (1 << (4 - col)) and 0 <= px < WIDTH and 0 <= py < HEIGHT:
                         rectangles.append((px, py, min(3, WIDTH - px), min(3, HEIGHT - py)))
             x += 18
@@ -347,7 +358,9 @@ class Screen:
     def draw(self, menu):
         if self.socket is None:
             raise MenuDisplayError('protocol_error')
-        if menu.row not in range(4) or menu.resolution not in range(len(self.labels)):
+        filters = getattr(menu, 'filters', ()) or ()
+        if (menu.row not in range(5) or menu.resolution not in range(len(self.labels))
+                or getattr(menu, 'filter_index', 0) not in range(len(filters) + 1)):
             raise ValueError('invalid menu selection')
         self._menu = menu
         self._repaint = False
@@ -374,9 +387,9 @@ class Screen:
             (627, 12, 1, 456),
         ], crimson_frame, deadline)
 
-        # Header titles
+        # Header titles; the versioned subtitle is centered for any length.
         self._text(167, 26, 'PROJECT DIABLO II', (235, 195, 60), deadline)
-        self._text(86, 60, 'LORD OF DESTRUCTION - R36S', (185, 45, 35), deadline)
+        self._text((WIDTH - len(self.subtitle) * 18) // 2, 60, self.subtitle, (185, 45, 35), deadline)
 
         # Decorative header divider lines
         self._rectangles([(40, 94, 560, 2)], (160, 125, 45), deadline)
@@ -395,16 +408,18 @@ class Screen:
         else:
             fps_idx = 0
         overlay_levels = ('OFF', 'LEVEL 1', 'LEVEL 2', 'LEVEL 3', 'LEVEL 4')
-        # Plain numeric resolution names fit the 548-pixel text area.
+        # Plain numeric resolution names and 16-char filter names fit the
+        # 558-pixel text area (31 glyphs including the selection prefix).
         rows = (
             'RESOLUTION: ' + resolution,
             'PERF OVERLAY: ' + overlay_levels[fps_idx],
+            'LOOT FILTER: ' + getattr(menu, 'filter_label', 'DEFAULT'),
             'ENTER SANCTUARY / LAUNCH',
             'EXIT TO SYSTEM',
         )
 
         # Highlight background box for selected row
-        sel_y = 118 + 50 * menu.row
+        sel_y = 102 + 46 * menu.row
         self._rectangles([(34, sel_y - 4, 572, 32)], (42, 14, 14), deadline)
         self._rectangles([
             (34, sel_y - 4, 572, 2),
@@ -413,23 +428,52 @@ class Screen:
             (604, sel_y - 4, 2, 32),
         ], (210, 170, 60), deadline)
 
+        # Row labels truncate filter names to 16 chars. While a longer name is
+        # held on the filter row, its full name floats in the SAME row: the
+        # 'LOOT FILTER: ' prefix stays static while only the name scrolls inside
+        # the row's name window (clipped). The timer restarts whenever the row
+        # or the choice changes; the loop timer repaints keep it moving.
+        float_name = None
+        float_key = None
+        if menu.row == 2 and menu.filter_index > 0:
+            candidate = filters[menu.filter_index - 1].upper()
+            if len(candidate) > 16:
+                float_key = (menu.filter_index, candidate)
+                if self._float_key != float_key:
+                    self._float_key = float_key
+                    self._float_since = time.monotonic()
+                elif time.monotonic() - self._float_since >= FLOAT_DELAY:
+                    float_name = candidate
+        if float_key is None:
+            self._float_key = None
+
         # Draw rows text
         for i, label in enumerate(rows):
             is_sel = (i == menu.row)
             prefix = '> ' if is_sel else '  '
             color = (255, 225, 100) if is_sel else (185, 175, 160)
-            self._text(46, 118 + 50 * i, prefix + label, color, deadline)
+            y = 102 + 46 * i
+            if i == 2 and float_name is not None:
+                # Static 'LOOT FILTER: ' prefix; the full name scrolls in place.
+                self._text(46, y, prefix + 'LOOT FILTER: ', color, deadline)
+                name_x = 46 + (2 + len('LOOT FILTER: ')) * 18
+                window = 606 - name_x
+                text_w = len(float_name) * 18
+                progress = int((time.monotonic() - self._float_since) * FLOAT_SPEED) % (text_w + window)
+                self._text(name_x + window - progress, y, float_name, color, deadline, (name_x, 606))
+            else:
+                self._text(46, y, prefix + label, color, deadline)
 
         # Decorative footer divider lines
-        self._rectangles([(40, 334, 560, 1)], (95, 20, 20), deadline)
-        self._rectangles([(40, 336, 560, 2)], (160, 125, 45), deadline)
+        self._rectangles([(40, 330, 560, 1)], (95, 20, 20), deadline)
+        self._rectangles([(40, 332, 560, 2)], (160, 125, 45), deadline)
 
         # Footer control instructions
         footer_color = (140, 130, 120)
         for y, label in (
-            (354, 'DPAD / ARROWS: NAVIGATE / CHANGE'),
-            (388, 'A / START / ENTER: SELECT'),
-            (422, 'B / SELECT / ESC: QUIT'),
+            (348, 'DPAD / ARROWS: NAVIGATE / CHANGE'),
+            (382, 'A / START / ENTER: SELECT'),
+            (416, 'B / SELECT / ESC: QUIT'),
         ):
             self._text(46, y, label, footer_color, deadline)
 
