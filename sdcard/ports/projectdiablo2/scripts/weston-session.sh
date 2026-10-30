@@ -10,7 +10,23 @@ chmod 644 "$ORIGINAL_RUN/adapter.pid"
 ALIAS="/run/pd2-r36s-$BASHPID"
 seat_pid=; weston_pid=; app_pid=; compositor_log_pid=; orig_swappiness=; alias_mounted=0; alias_created=0; tmp_mounted=0; run_mounted=0; host_run_mounted=0; work_mounted=0
 error() { printf 'PD2_EVENT {"event":"runtime_error","reason":"%s","phase":"runtime"}\n' "$1"; }
-stage() { printf 'PD2_EVENT {"event":"runtime_stage","phase":"runtime","stage":"%s"}\n' "$1"; }
+last_event_ms=
+now_ms() {
+ local t
+ t=$(date +%s%3N)
+ [[ "$t" =~ ^[0-9]+$ ]] || t=$(( $(date +%s) * 1000 ))
+ printf '%s' "$t"
+}
+# Append elapsed_ms = wall time since the previous stage marker in this
+# process, so each JSONL line shows the cost of the work before it.
+emit() {
+ local t e=''
+ t=$(now_ms)
+ if [[ -n "${last_event_ms:-}" ]]; then e=',"elapsed_ms":'$(( t - last_event_ms )); fi
+ last_event_ms=$t
+ printf 'PD2_EVENT {%s%s}\n' "$1" "$e"
+}
+stage() { emit "\"event\":\"runtime_stage\",\"phase\":\"runtime\",\"stage\":\"$1\""; }
 source "$PD2_PORT/scripts/private-namespace.sh" || { error runtime_tool_missing;exit 2; }
 stop_pid() {
  local pid=$1 group=${2:-0}
@@ -52,7 +68,7 @@ cleanup() {
  [[ "$work_mounted" == 1 ]] && umount "$PD2_WORK" 2>/dev/null
  [[ -n "$orig_swappiness" && -w /proc/sys/vm/swappiness ]] && echo "$orig_swappiness" > /proc/sys/vm/swappiness 2>/dev/null || true
  pd2_namespace_close
- printf 'PD2_EVENT {"event":"runtime_exit","phase":"runtime","rc":%s}\n' "$rc"
+ emit "\"event\":\"runtime_exit\",\"phase\":\"runtime\",\"rc\":$rc"
  exit "$rc"
 }
 trap cleanup EXIT
@@ -254,6 +270,7 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
   if [[ "$menu_filter" == default ]]; then menu_filter_status=default; else menu_filter_status=selected; fi
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"loot_filter","status":"%s"}\n' "$menu_filter_status"
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"start_menu","status":"selected"}\n'
+  stage menu_selected
  else
   # Launcher menu MUST wait for a visible menu and explicit confirmation. Never launch
   # the game after a missing/broken menu or an invalid selection protocol.

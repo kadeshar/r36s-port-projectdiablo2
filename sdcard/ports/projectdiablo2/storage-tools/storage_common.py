@@ -6,10 +6,16 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import tempfile
 
 
 class StorageError(Exception):
     pass
+
+
+STAMP_FILE = 'runtime-verify.stamp'
+STAMP_SCHEMA = 1
+STAMP_MAX_BYTES = 65536
 
 
 def no_links(path):
@@ -118,7 +124,66 @@ def ensure_state_image(port, info):
         raise
 
 
-def validated(port):
+def read_verify_stamp(port):
+    """Read the write-verified integrity stamp; raise StorageError if absent."""
+    stamp_path = port / 'logs' / STAMP_FILE
+    try:
+        if stamp_path.is_symlink() or stamp_path.stat().st_size > STAMP_MAX_BYTES:
+            raise StorageError('Verification stamp missing or unreadable')
+        stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
+    except StorageError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise StorageError('Verification stamp missing or unreadable: ' + str(exc))
+    if (not isinstance(stamp, dict) or type(stamp.get('schema_version')) is not int
+            or stamp['schema_version'] != STAMP_SCHEMA
+            or not isinstance(stamp.get('wine'), dict)
+            or not isinstance(stamp.get('artifacts'), dict)):
+        raise StorageError('Unsupported verification stamp')
+    return stamp
+
+
+def write_verify_stamp(port, info, pins, wine_size):
+    """Atomically publish a stamp after a full digest validation."""
+    stamp = {
+        'schema_version': STAMP_SCHEMA,
+        'wine': {'size': wine_size, 'sha256': info.get('wine_sha256')},
+        'artifacts': {name: {'size': pin.get('size'), 'sha256': pin.get('sha256')}
+                      for name, pin in pins.items()},
+        'state_bytes': info.get('state_bytes'),
+    }
+    stamp_path = port / 'logs' / STAMP_FILE
+    stamp_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=str(stamp_path.parent),
+                                         prefix=STAMP_FILE + '.', suffix='.tmp',
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(stamp, stream, indent=1, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(str(temporary), str(stamp_path))
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+def validated(port, trust_stamp=False, write_stamp=False, trust_fallback_full=False):
+    """Validate the storage payload and runtime artifacts.
+
+    trust_stamp: accept a previously write-verified stamp (sizes only).
+    trust_fallback_full: on a missing/stale stamp, run the full digest path
+    instead of failing (used by in-session preflight; the session adapter
+    fails closed because its launcher already validated the same launch).
+    write_stamp: publish a fresh stamp after a full digest validation.
+    """
     port = no_links(Path(port).absolute())
     if port.name not in ('projectdiablo2', 'projectdiablo2-sd') or not port.is_dir():
         raise StorageError('Expected isolated projectdiablo2 payload')
@@ -130,8 +195,7 @@ def validated(port):
     wine = regular(port / info['wine_file'])
     ensure_state_image(port, info)
     state = regular(port / info['state_file'])
-    if (type(info.get('wine_size')) is not int or wine.stat().st_size != info['wine_size']
-            or digest(wine) != info.get('wine_sha256')):
+    if type(info.get('wine_size')) is not int or wine.stat().st_size != info['wine_size']:
         raise StorageError('Read-only Wine image integrity failed')
     if type(info.get('state_bytes')) is not int or not 1024**3 <= info['state_bytes'] <= 8 * 1024**3:
         raise StorageError('Unsupported state image size')
@@ -148,15 +212,46 @@ def validated(port):
             or any(not isinstance(a, dict) for a in artifacts)
             or {a.get('file') for a in artifacts} != names):
         raise StorageError('Unsupported runtime manifest')
-    pins = {}
-    for item in artifacts:
-        name = item['file']
-        path = regular(port / 'runtime' / name)
-        if path.stat().st_size != item.get('size') or digest(path) != item.get('sha256'):
-            raise StorageError('Bundled runtime integrity failed: ' + name)
-        pins[name] = item
+    pins = {item['file']: item for item in artifacts}
+    # trusted stays False until the stamp is read AND cross-checked against
+    # both manifests; anything else falls through to the full digest path.
+    trusted = False
+    if trust_stamp:
+        try:
+            stamp = read_verify_stamp(port)
+            # The stamp pins the same hashes as the manifests; a stale or
+            # tampered stamp can never substitute for a full validation.
+            if (stamp['wine'].get('size') != info.get('wine_size')
+                    or stamp['wine'].get('sha256') != info.get('wine_sha256')
+                    or stamp.get('state_bytes') != info.get('state_bytes')):
+                raise StorageError('Verification stamp does not match storage manifest')
+            for item in artifacts:
+                entry = stamp['artifacts'].get(item['file'])
+                if (not isinstance(entry, dict) or entry.get('size') != item.get('size')
+                        or entry.get('sha256') != item.get('sha256')):
+                    raise StorageError('Verification stamp does not match runtime manifest: ' + item['file'])
+            trusted = True
+        except StorageError:
+            if not trust_fallback_full:
+                raise
+    if trusted:
+        # Trusted fast path: sizes only, no digests. The stamp was written by a
+        # full digest validation (storage_launcher --check or first preflight).
+        for item in artifacts:
+            path = regular(port / 'runtime' / item['file'])
+            if path.stat().st_size != item.get('size'):
+                raise StorageError('Bundled runtime size failed: ' + item['file'])
+    else:
+        if digest(wine) != info.get('wine_sha256'):
+            raise StorageError('Read-only Wine image integrity failed')
+        for item in artifacts:
+            path = regular(port / 'runtime' / item['file'])
+            if path.stat().st_size != item.get('size') or digest(path) != item.get('sha256'):
+                raise StorageError('Bundled runtime integrity failed: ' + item['file'])
     if info.get('source_wine_sha256') != pins['wine-8.0-x86.tar.xz']['sha256']:
         raise StorageError('Wine image source does not match authenticated archive')
+    if write_stamp:
+        write_verify_stamp(port, info, pins, wine.stat().st_size)
     return port, info, pins
 
 

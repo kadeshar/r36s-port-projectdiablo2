@@ -1017,5 +1017,80 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), 'Good.filter\n')
 
 
+class DumpTests(unittest.TestCase):
+    """The single --dump spawn that replaces one --get per key in preflight."""
+
+    def setUp(self):
+        # makedirs, not mkdtemp: the 0o700 DACL mkdtemp sets blocks nested writes on Windows.
+        self.root = Path(os.path.join(tempfile.gettempdir(), '.layout-dump-' + uuid.uuid4().hex))
+        self.root.mkdir()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.port = self.root / 'port'
+        self.state = self.root / 'state'
+        self.port.mkdir()
+        self.state.mkdir()
+
+    def _write_session(self, session):
+        (self.state / 'session-layout.json').write_text(json.dumps(session), encoding='utf-8')
+
+    def test_dump_prints_all_nine_keys_tab_separated(self):
+        self._write_session({
+            'wine': '/r/wine', 'box': '/r/box86', 'prefix': '/s/prefix',
+            'work': '/s/work', 'profile': 'gdi', 'swap_ab': True,
+            'input_mode': 'mapper', 'game_resolution': '640x480',
+            'loot_filter': 'default', 'volatile_work': False,
+        })
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state), '--dump']), 0)
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual([line.split('\t')[0] for line in lines],
+                         ['wine', 'box', 'prefix', 'work', 'profile', 'swap_ab',
+                          'input_mode', 'game_resolution', 'loot_filter'])
+        values = dict(line.split('\t', 1) for line in lines)
+        self.assertEqual(values['wine'], '/r/wine')
+        self.assertEqual(values['swap_ab'], '1')
+        self.assertEqual(values['input_mode'], 'mapper')
+        self.assertEqual(values['game_resolution'], '640x480')
+
+    def test_dump_boolean_false_prints_zero(self):
+        self._write_session({
+            'wine': '/r/wine', 'box': '/r/box86', 'prefix': '/s/prefix',
+            'work': '/s/work', 'profile': 'gdi', 'swap_ab': False,
+            'input_mode': 'native', 'game_resolution': '800x600',
+            'loot_filter': 'default',
+        })
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state), '--dump']), 0)
+        values = dict(line.split('\t', 1) for line in stdout.getvalue().splitlines())
+        self.assertEqual(values['swap_ab'], '0')
+
+    def test_dump_missing_key_reports_invalid_layout(self):
+        self._write_session({'wine': '/r/wine'})
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state), '--dump']), 1)
+        lines = stdout.getvalue().splitlines()
+        # The first key is printed before the missing key aborts the rest.
+        self.assertEqual(lines[0], 'wine\t/r/wine')
+        self.assertEqual(lines[-1].strip(), 'PD2_EVENT ' + json.dumps(
+            {'event': 'runtime_error', 'reason': 'invalid_layout', 'phase': 'preflight'}))
+
+    def test_dump_rejects_volatile_work_and_data_combinations(self):
+        self._write_session({
+            'wine': '/r/wine', 'box': '/r/box86', 'prefix': '/s/prefix',
+            'work': '/s/work', 'profile': 'gdi', 'swap_ab': False,
+            'input_mode': 'mapper', 'game_resolution': '640x480',
+            'loot_filter': 'default',
+        })
+        for extra in (['--volatile-work'], ['--data', '/d']):
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state), '--dump'] + extra), 1)
+            self.assertEqual(stdout.getvalue().strip(), 'PD2_EVENT ' + json.dumps(
+                {'event': 'runtime_error', 'reason': 'invalid_layout', 'phase': 'preflight'}))
+
+
 if __name__ == '__main__':
     unittest.main()

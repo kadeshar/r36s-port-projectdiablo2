@@ -33,7 +33,9 @@ def run(args):
     if os.readlink('/proc/self/ns/mnt') == args.parent_ns:
         raise StorageError('Refusing mounts in parent namespace')
     user = pwd.getpwuid(args.uid)
-    port, info, pins = validated(args.port)
+    # Trust the stamp from the already-held launcher session lock (size-only)
+    # to keep session startup off the multi-sha256 path; stale/missing fails closed.
+    port, info, pins = validated(args.port, trust_stamp=True)
     image = port / info['state_file']
     # Loop devices are global even when mounts are private. Never attach an image
     # already kept alive by an orphaned namespace or a manual diagnostic mount.

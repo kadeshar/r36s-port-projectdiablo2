@@ -19,19 +19,33 @@ export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET
 export SDL_GAMECONTROLLERCONFIG="$PD2_CONTROLLER_CONFIG" SDL_VIDEODRIVER=x11
 export FONTCONFIG_FILE="$PD2_WESTON/fonts/fonts.conf"
 mapper_pid=; mapper_metrics_pid=; navigator_pid=; osk_pid=; game_pid=; metrics_pid=; fps_pid=; audio_probe_pid=; audio_capture_pid=; wine_ready=0
-winebus_restore_attempted=0; audio_restore_attempted=0; dsound_restore_attempted=0
-winebus_restore_file="$PD2_PREFIX/drive_c/pd2-winebus-restore.reg"
-audio_restore_file="$PD2_PREFIX/drive_c/pd2-audio-restore.reg"
+dsound_restore_attempted=0
 dsound_restore_file="$PD2_PREFIX/drive_c/pd2-dsound-restore.reg"
 setup_step=initial
+last_event_ms=
+now_ms() {
+ local t
+ t=$(date +%s%3N)
+ [[ "$t" =~ ^[0-9]+$ ]] || t=$(( $(date +%s) * 1000 ))
+ printf '%s' "$t"
+}
+# Append elapsed_ms = wall time since the previous stage/phase marker in this
+# process, so each JSONL line shows the cost of the work before it.
+emit() {
+ local t e=''
+ t=$(now_ms)
+ if [[ -n "${last_event_ms:-}" ]]; then e=',"elapsed_ms":'$(( t - last_event_ms )); fi
+ last_event_ms=$t
+ printf 'PD2_EVENT {%s%s}\n' "$1" "$e"
+}
 step() {
  setup_step=$1
- printf 'PD2_EVENT {"event":"setup_stage","phase":"launch","stage":"%s","status":"begin"}\n' "$setup_step"
+ emit "\"event\":\"setup_stage\",\"phase\":\"launch\",\"stage\":\"$setup_step\",\"status\":\"begin\""
 }
 step_failed() {
- printf 'PD2_EVENT {"event":"setup_stage","phase":"launch","stage":"%s","status":"failed"}\n' "$setup_step"
+ emit "\"event\":\"setup_stage\",\"phase\":\"launch\",\"stage\":\"$setup_step\",\"status\":\"failed\""
 }
-phase() { printf 'PD2_EVENT {"event":"phase","phase":"%s","profile":"%s"}\n' "$1" "$PD2_PROFILE"; }
+phase() { emit "\"event\":\"phase\",\"phase\":\"$1\",\"profile\":\"$PD2_PROFILE\""; }
 error() { step_failed; printf 'PD2_EVENT {"event":"runtime_error","reason":"%s","phase":"launch","rc":%s}\n' "$1" "$2"; }
 # Apply armhf preload only to ARM32 Box86, never the native 64-bit shell/Python.
 refresh_box_env() {
@@ -56,27 +70,6 @@ stop_wine() {
  timeout --kill-after=5 10 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wineserver" -k; kill_rc=$?
  timeout --kill-after=5 30 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wineserver" -w; wait_rc=$?
  [[ "$wait_rc" == 0 && ( "$kill_rc" == 0 || "$kill_rc" == 1 ) ]]
-}
-restore_winebus() {
- [[ -e "$winebus_restore_file" || -L "$winebus_restore_file" ]] || return 0
- winebus_restore_attempted=1
- python3 -B "$PD2_PORT/scripts/winebus_config.py" --prefix "$PD2_PREFIX" --validate || return 1
- setup_cmd reg.exe import 'C:\pd2-winebus-restore.reg' || return 1
- stop_wine || return 1
- python3 -B "$PD2_PORT/scripts/winebus_config.py" --prefix "$PD2_PREFIX" --retire || return 1
- printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"winebus_backend","status":"restored"}\n'
-}
-# Restore the opt-in Audio experiment, including interrupted sessions.
-# Only the original Audio value is restored; no mixer/system writes.
-restore_audio() {
- [[ -e "$audio_restore_file" || -L "$audio_restore_file" ]] || return 0
- audio_restore_attempted=1
- python3 -B "$PD2_PORT/scripts/audio_config.py" --prefix "$PD2_PREFIX" --validate || return 1
- stop_wine || return 1
- setup_cmd reg.exe import 'C:\pd2-audio-restore.reg' || return 1
- stop_wine || return 1
- python3 -B "$PD2_PORT/scripts/audio_config.py" --prefix "$PD2_PREFIX" --retire || return 1
- printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_backend","status":"restored"}\n'
 }
 # Restore the opt-in DirectSound experiment, including interrupted sessions.
 # Only the five named DirectSound strings are restored; no other registry data.
@@ -249,16 +242,8 @@ cleanup() {
  stop_owned "$osk_pid"
  stop_owned "$mapper_pid"
  stop_owned "$game_pid"
- # Restore ONLY the three backed-up flags after game exit. Keep the marker on
- # failure; the next startup (including mapper fallback) retries restoration.
- if [[ "$wine_ready" == 1 && "$winebus_restore_attempted" == 0 ]] && ! restore_winebus; then
-  error invalid_layout 1
-  [[ "$rc" == 0 ]] && rc=1
- fi
- if [[ "$wine_ready" == 1 && "$audio_restore_attempted" == 0 ]] && ! restore_audio; then
-  error invalid_layout 1
-  [[ "$rc" == 0 ]] && rc=1
- fi
+ # The opt-in DirectSound backup is the only remaining restore marker. Batched
+ # winebus/audio values are deterministic per launch and are never restored.
  if [[ "$wine_ready" == 1 && "$dsound_restore_attempted" == 0 ]] && ! restore_dsound; then
   error invalid_layout 1
   [[ "$rc" == 0 ]] && rc=1
@@ -422,9 +407,14 @@ done
 export WINESERVER="$PD2_STATE/wine-launchers/wineserver" WINELOADER="$PD2_STATE/wine-launchers/wine"
 # These DOS drive links live on Linux/ext4, not exFAT. No copying of game files.
 ln -sfn "$PD2_PORT/runtime" "$WINEPREFIX/dosdevices/r:"
-# Quiesce only our private prefix before setup/recovery. No global process kill.
+# Quiesce only our private prefix before setup. The lock file exists only
+# while a wineserver holds the prefix; a fresh boot skips both launches.
 step prefix_quiesce
-stop_wine || { error timeout 1; exit 1; }
+if [[ -e "$WINEPREFIX/lock" ]]; then
+ stop_wine || { error timeout 1; exit 1; }
+fi
+# Backup/restore markers from the pre-batch flow are inert now; drop them once.
+rm -f -- "$PD2_PREFIX/drive_c/pd2-winebus-restore.reg" "$PD2_PREFIX/drive_c/pd2-audio-restore.reg"
 if [[ ! -f "$WINEPREFIX/.initialized" ]]; then
  step prefix_initialize
  if [[ -f "$WINEPREFIX/.initializing" ]]; then error prefix_incomplete 1; exit 1; fi
@@ -441,29 +431,15 @@ if [[ ! -f "$WINEPREFIX/.initialized" ]]; then
  for dll in msvcp140.dll vcruntime140.dll; do
    [[ -f "$WINEPREFIX/drive_c/windows/system32/$dll" ]] || { error missing_library 1; exit 1; }
  done
- setup_cmd reg.exe add 'HKCU\Software\Wine\AppDefaults\Game.exe\DllOverrides' /v ddraw /t REG_SZ /d 'native,builtin' /f || exit 1
  mv "$WINEPREFIX/.initializing" "$WINEPREFIX/.initialized"
 fi
 wine_ready=1
 # Recover a previous interrupted controller experiment BEFORE selecting a mode.
-step recover_winebus
-restore_winebus || { error invalid_layout 1; exit 1; }
-step recover_audio
-restore_audio || { error invalid_layout 1; exit 1; }
 step recover_dsound
 restore_dsound || { error invalid_layout 1; exit 1; }
 if [[ "$audio_test" == 1 ]]; then
- # Export the existing parent key: success also proves a missing Drivers/Audio.
- # Publish a durable, Audio-only restore marker BEFORE touching the registry.
- step audio_prepare
- python3 -B "$PD2_PORT/scripts/audio_config.py" --prefix "$PD2_PREFIX" --prepare-export || { error invalid_layout 1; exit 1; }
- step audio_export
- setup_cmd reg.exe export 'HKCU\Software\Wine' 'C:\pd2-audio-export.reg' /y || { error invalid_layout 1; exit 1; }
- step audio_snapshot
- python3 -B "$PD2_PORT/scripts/audio_config.py" --prefix "$PD2_PREFIX" --snapshot || { error invalid_layout 1; exit 1; }
- step audio_select
- setup_cmd reg.exe add 'HKCU\Software\Wine\Drivers' /v Audio /t REG_SZ /d alsa /f || { error invalid_layout 1; exit 1; }
- stop_wine || { error timeout 1; exit 1; }
+ # The Drivers/Audio value is applied by the single batched registry import
+ # below (registry_batch): deterministic per launch, no backup/restore.
  # Only this opt-in session selects the time32 ARM32 libasound. Wine is
  # quiescent before switching; native ARM32 probes inherit the same path.
  if python3 -B "$PD2_PORT/scripts/audio_compat.py" --port "$PD2_PORT" --work "$PD2_WORK"; then
@@ -520,39 +496,49 @@ DSOUND_VER2
 else
  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"dsound_profile","status":"off"}\n'
 fi
+# One regedit import applies every deterministic session value in a single
+# Wine launch. winebus DWORDs are plain assignments in both modes: native
+# enables the udevd thread; mapper writes the documented defaults (0 == absent
+# for winebus readers), which also undoes an earlier native session without
+# delete lines. Save Path keeps its own reg.exe add: its trailing backslash
+# before the closing quote is an escape-ambiguity edge in .reg parsers.
+step registry_batch
+reg_file="$PD2_PREFIX/drive_c/pd2-setup.reg"
+{
+ printf 'Windows Registry Editor Version 5.00\r\n\r\n'
+ printf '[HKEY_CURRENT_USER\\Software\\Blizzard Entertainment\\Diablo II]\r\n"InstallPath"="C:\\\\Diablo II"\r\n\r\n'
+ printf '[HKEY_CURRENT_USER\\Software\\Wine\\Explorer]\r\n"Desktop"="Default"\r\n\r\n'
+ printf '[HKEY_CURRENT_USER\\Software\\Wine\\Explorer\\Desktops]\r\n"Default"="640x480"\r\n\r\n'
+ printf '[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\Game.exe\\DllOverrides]\r\n"ddraw"="native,builtin"\r\n\r\n'
+ if [[ "$audio_test" == 1 ]]; then
+  printf '[HKEY_CURRENT_USER\\Software\\Wine\\Drivers]\r\n"Audio"="alsa"\r\n\r\n'
+ fi
+ if [[ "$input_mode" == native ]]; then
+  printf '[HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\winebus]\r\n"Enable SDL"=dword:00000000\r\n"DisableInput"=dword:00000000\r\n"DisableUdevd"=dword:00000001\r\n\r\n'
+ else
+  printf '[HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\winebus]\r\n"Enable SDL"=dword:00000000\r\n"DisableInput"=dword:00000000\r\n"DisableUdevd"=dword:00000000\r\n\r\n'
+ fi
+} > "$reg_file" || { error invalid_layout 1; exit 1; }
+setup_cmd regedit /s 'C:\pd2-setup.reg' || { rm -f -- "$reg_file"; error invalid_layout 1; exit 1; }
+rm -f -- "$reg_file"
 if [[ "$input_mode" == native ]]; then
- # Backup durable original DWORDs/missing values before the first mutation.
- # SDL is not compiled in this Wine. Explicitly select its Linux evdev/udev
- # backend; inotify avoids relying on a daemon monitor in the mount namespace.
- step winebus_prepare
- python3 -B "$PD2_PORT/scripts/winebus_config.py" --prefix "$PD2_PREFIX" --prepare-export || { error invalid_layout 1; exit 1; }
- step winebus_export
- setup_cmd reg.exe export 'HKLM\System\CurrentControlSet\Services\winebus' 'C:\pd2-winebus-export.reg' /y || { error invalid_layout 1; exit 1; }
- step winebus_snapshot
- python3 -B "$PD2_PORT/scripts/winebus_config.py" --prefix "$PD2_PREFIX" --snapshot || { error invalid_layout 1; exit 1; }
- step winebus_select
- for flag in 'Enable SDL' DisableInput; do
-  setup_cmd reg.exe add 'HKLM\System\CurrentControlSet\Services\winebus' /v "$flag" /t REG_DWORD /d 0 /f || { error invalid_layout 1; exit 1; }
- done
- setup_cmd reg.exe add 'HKLM\System\CurrentControlSet\Services\winebus' /v DisableUdevd /t REG_DWORD /d 1 /f || { error invalid_layout 1; exit 1; }
- # Registry flags are consumed by winebus at startup, not dynamically.
- stop_wine || { error timeout 1; exit 1; }
  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"winebus_backend","status":"udev"}\n'
 fi
+# winebus service flags and the audio driver are consumed by wineserver at
+# server startup, not dynamically; the server started for the import must die
+# before the game's server starts.
+step registry_quiesce
+stop_wine || { error timeout 1; exit 1; }
 # Wineboot may recreate Z:. Remove just this prefix's host filesystem mapping.
 if [[ -L "$WINEPREFIX/dosdevices/z:" ]]; then unlink "$WINEPREFIX/dosdevices/z:"; fi
 # Installer drive is not exposed to the running game either.
 if [[ -L "$WINEPREFIX/dosdevices/r:" ]]; then unlink "$WINEPREFIX/dosdevices/r:"; fi
-# Repair location settings for EXISTING prefixes too, without moving any saves.
-# The S: link is validated/renewed by layout.py and still targets port/saves.
+# Repair the save location for EXISTING prefixes too, without moving any
+# saves. The other location values (InstallPath, Explorer desktops, ddraw
+# override) come from the batched registry import above; the S: link is
+# validated/renewed by layout.py and still targets port/saves.
 step game_registry
-setup_cmd reg.exe add 'HKCU\Software\Blizzard Entertainment\Diablo II' /v InstallPath /t REG_SZ /d 'C:\Diablo II' /f || { error invalid_layout 1; exit 1; }
 setup_cmd reg.exe add 'HKCU\Software\Blizzard Entertainment\Diablo II' /v 'Save Path' /t REG_SZ /d 'S:\' /f || { error invalid_layout 1; exit 1; }
-# PD2 uses the selected 800x600/1024x768 game surface; cnc-ddraw maps it
-# into this native-size desktop, including mouse coordinates.
-setup_cmd reg.exe add 'HKCU\Software\Wine\Explorer' /v Desktop /t REG_SZ /d Default /f || { error invalid_layout 1; exit 1; }
-setup_cmd reg.exe add 'HKCU\Software\Wine\Explorer\Desktops' /v Default /t REG_SZ /d '640x480' /f || { error invalid_layout 1; exit 1; }
-setup_cmd reg.exe add 'HKCU\Software\Wine\AppDefaults\Game.exe\DllOverrides' /v ddraw /t REG_SZ /d 'native,builtin' /f || true
 cd "$PD2_WORK/ProjectD2" || { error invalid_layout 1; exit 1; }
 # Counts/statuses only: never names or contents of characters/configuration.
 python3 -B "$PD2_PORT/scripts/session_probe.py" --port "$PD2_PORT" --state "$PD2_STATE" || true

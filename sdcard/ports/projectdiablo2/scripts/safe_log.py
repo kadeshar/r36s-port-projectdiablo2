@@ -44,7 +44,7 @@ LIB_RE = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,95}\.so(?:\.[0-9]{1,6}){0,5
 PHASES = frozenset(("preflight", "runtime", "launch", "game", "shutdown", "export"))
 REASONS = frozenset(("missing_library", "fault", "timeout", "signal", "nonzero_exit", "logger_failure", "unsupported_runtime", "invalid_layout", "insufficient_space", "insufficient_ram", "invalid_profile", "missing_drm_device", "missing_uinput", "display_conflict", "namespace_unavailable", "compositor_failed", "compositor_timeout", "prefix_incomplete", "vc_install_failed", "namespace_isolation_required", "run_isolation_failed", "alias_setup_failed", "tmp_isolation_failed", "volatile_work_failed", "seatd_failed", "seatd_timeout", "x11_probe_failed", "runtime_tool_missing", "namespace_cleanup_failed", "graphics_provider_missing", "graphics_provider_invalid", "egl_init_failed", "gbm_init_failed", "gl_context_failed", "sdl_init_failed", "compositor_module_failed", "driver_access_denied", "x11_socket_failed", "xwayland_exec_failed", "xwayland_start_failed", "xwayland_font_failed", "xauth_prepare_failed"))
 MACHINES = frozenset(("armv7l", "aarch64", "x86_64", "i386", "i686", "unknown"))
-STAGES = frozenset(('namespace_setup', 'namespace_ready', 'volatile_work_prepare', 'volatile_work_ready', 'library_probe', 'seatd_start', 'seatd_ready', 'weston_start', 'x11_probe', 'x11_ready'))
+STAGES = frozenset(('namespace_setup', 'namespace_ready', 'volatile_work_prepare', 'volatile_work_ready', 'library_probe', 'seatd_start', 'seatd_ready', 'weston_start', 'x11_probe', 'x11_ready', 'menu_selected'))
 GRAPHICS_ROLES = frozenset(('sdl', 'egl', 'gles', 'gbm', 'drm'))
 GRAPHICS_ARCHES = frozenset(('aarch64', 'armhf'))
 GRAPHICS_STATUSES = frozenset(('ready', 'missing', 'invalid', 'probe_failed'))
@@ -54,7 +54,7 @@ COMMON = frozenset(("phase", "profile", "port_version", "runtime_version", "mach
 FREQUENCY_RANGES = {'cpu_freq_khz': 10_000_000, 'cpu_max_freq_khz': 10_000_000, 'gpu_freq_hz': 10_000_000_000, 'gpu_max_freq_hz': 10_000_000_000}
 SESSION_METRICS = frozenset(('sample_monotonic_ms', 'system_cpu_pct_x100', 'swap_total_mb', 'swap_free_mb', 'swap_in_pages', 'swap_out_pages', 'system_major_faults', 'game_processes', 'game_cpu_user_ms', 'game_cpu_system_ms', 'game_cpu_pct_x100', 'game_rss_kb', 'game_swap_kb', 'game_major_faults')) | frozenset('pressure_'+resource+'_'+kind+'_'+metric for resource in ('cpu','memory','io') for kind in ('some','full') for metric in ('avg10_x100','total_us'))
 SESSION_METRICS = SESSION_METRICS | frozenset(role+'_'+suffix for role in ('compositor','mapper') for suffix in ('processes','cpu_user_ms','cpu_system_ms','cpu_pct_x100','rss_kb','swap_kb','major_faults'))
-SETUP_STAGES = frozenset(('initial','prefix_quiesce','prefix_initialize','recover_winebus','recover_audio','recover_dsound','audio_prepare','audio_export','audio_snapshot','audio_select','audio_route','dsound_prepare','dsound_export','dsound_snapshot','dsound_select','dsound_verify','winebus_prepare','winebus_export','winebus_snapshot','winebus_select','game_registry','game_start','prefix_shutdown','graphics_test'))
+SETUP_STAGES = frozenset(('initial','prefix_quiesce','prefix_initialize','recover_winebus','recover_audio','recover_dsound','audio_prepare','audio_export','audio_snapshot','audio_select','audio_route','dsound_prepare','dsound_export','dsound_snapshot','dsound_select','dsound_verify','winebus_prepare','winebus_export','winebus_snapshot','winebus_select','registry_batch','registry_quiesce','game_registry','game_start','prefix_shutdown','graphics_test'))
 METRICS = frozenset(("available_ram_mb", "disk_mb", "temperature_mc", "duration_ms")) | FREQUENCY_RANGES.keys() | SESSION_METRICS
 AUDIO_PCM_COUNTERS = frozenset(('write_calls','write_frames','short_writes','mmap_begin_calls','mmap_commit_calls','mmap_frames','hw_params_calls','start_calls','prepare_calls','resume_calls','drop_calls','drain_calls','recover_calls','recover_epipe_calls','recover_successes','close_calls','error_results','epipe_results','estrpipe_results','eagain_results','eintr_results','other_error_results'))
 AUDIO_PCM_ROLES = frozenset(('game', 'probe', 'server', 'wine', 'unknown', 0, 1, 2, 3, 4))
@@ -62,16 +62,16 @@ AUDIO_PCM_FIELDS = AUDIO_PCM_COUNTERS | frozenset(('event','schema','role','sour
 AUDIO_HARDWARE_PCM_FIELDS = frozenset(('event', 'state', 'sample_monotonic_ms', 'owner_pid', 'delay', 'avail', 'hw_ptr', 'appl_ptr', 'format', 'access', 'channels', 'rate_hz', 'period_frames', 'buffer_frames', 'avail_min', 'start_threshold', 'stop_threshold', 'card', 'device'))
 COUNTS = frozenset(("input_lines", "accepted_events", "omitted_lines", "oversized_lines", "written_events", "limited_events"))
 FIELDS = {
-    "phase": COMMON | {"event"},
+    "phase": COMMON | {"event", "elapsed_ms"},
     "runtime_error": COMMON | {"event", "reason", "rc", "library"},
-    "runtime_exit": COMMON | {"event", "rc", "duration_ms"},
-    "runtime_stage": COMMON | {"event", "stage"},
+    "runtime_exit": COMMON | {"event", "rc", "duration_ms", "elapsed_ms"},
+    "runtime_stage": COMMON | {"event", "stage", "elapsed_ms"},
     "graphics_probe": COMMON | {"event", "role", "arch", "status"},
     "compositor_note": COMMON | {"event", "note"},
     "x11_probe": frozenset(('event', 'phase', 'check', 'status', 'duration_ms', 'mode', 'owner')),
     "session_probe": frozenset(('event', 'phase', 'check', 'status', 'count', 'detail', 'alsa_rc', 'arch', 'node', 'device_kind', 'device_major', 'device_minor', 'syscall_rc', 'fd', 'request')),
     "metrics": COMMON | METRICS | {"event", "game_scope"},
-    "setup_stage": frozenset(('event','phase','stage','status')),
+    "setup_stage": frozenset(('event','phase','stage','status','elapsed_ms')),
     "render_sample": frozenset(('event','backend','frames','duration_ms','width','height')),
     "render_status": frozenset(('event','backend','status','width','height')),
     "graphics_layer": frozenset(('event','schema','probe','stage','status','backend','renderer','frame','code')),
@@ -99,6 +99,8 @@ def validate_event(value, allow_summary=False):
         return None
     if not set(value) <= FIELDS[event]:
         return None
+    if value.get("elapsed_ms") is not None and not _integer(value.get("elapsed_ms"), 0, 36000000):
+        return None
     if event == "summary":
         counts = value.get("counts")
         if type(counts) is not dict or set(counts) != COUNTS:
@@ -107,7 +109,7 @@ def validate_event(value, allow_summary=False):
             return None
         return {"event": "summary", "counts": dict(counts)}
     if event == 'setup_stage':
-        if set(value) != FIELDS[event] or value.get('phase') != 'launch' or type(value.get('stage')) is not str or value['stage'] not in SETUP_STAGES or value.get('status') not in ('begin','failed','ready'):
+        if not set(value) <= FIELDS[event] or value.get('phase') != 'launch' or type(value.get('stage')) is not str or value['stage'] not in SETUP_STAGES or value.get('status') not in ('begin','failed','ready'):
             return None
     if event in ('render_sample','render_status'):
         if set(value) != FIELDS[event] or value.get('backend') not in ('gdi','opengl','unknown'):

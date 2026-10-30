@@ -593,5 +593,57 @@ class SafeLogTests(unittest.TestCase):
         self.assertNoSecrets(contents["logs/session-001.jsonl"])
 
 
+class TimingStageTests(unittest.TestCase):
+    """elapsed_ms timing fields and the batched-registry stage names."""
+
+    def test_setup_stage_accepts_batched_registry_stages(self):
+        for stage in ('registry_batch', 'registry_quiesce'):
+            value = dict(event='setup_stage', phase='launch', stage=stage, status='ready')
+            self.assertEqual(safe_log.validate_event(value), value)
+        value = dict(event='setup_stage', phase='launch', stage='registry_batch', status='begin', elapsed_ms=1234)
+        self.assertEqual(safe_log.validate_event(value), value)
+        value = dict(event='setup_stage', phase='launch', stage='registry_batch', status='failed', elapsed_ms=0)
+        self.assertEqual(safe_log.validate_event(value), value)
+
+    def test_setup_stage_keeps_legacy_stage_names(self):
+        for stage in ('recover_winebus', 'recover_audio', 'winebus_prepare', 'audio_select', 'dsound_verify'):
+            value = dict(event='setup_stage', phase='launch', stage=stage, status='ready')
+            self.assertEqual(safe_log.validate_event(value), value)
+
+    def test_setup_stage_rejects_unknown_stage_phase_or_status(self):
+        base = dict(event='setup_stage', phase='launch', stage='registry_batch', status='ready')
+        self.assertIsNone(safe_log.validate_event(dict(base, stage='winebus_export_recovery')))
+        self.assertIsNone(safe_log.validate_event(dict(base, phase='preflight')))
+        self.assertIsNone(safe_log.validate_event(dict(base, status='done')))
+        self.assertIsNone(safe_log.validate_event(dict(base, extra='field')))
+
+    def test_setup_stage_elapsed_ms_is_bounded_integer(self):
+        base = dict(event='setup_stage', phase='launch', stage='registry_batch', status='ready')
+        for bad in (-1, 36000001, 1.5, '123'):
+            with self.subTest(bad=bad):
+                self.assertIsNone(safe_log.validate_event(dict(base, elapsed_ms=bad)))
+        self.assertEqual(safe_log.validate_event(dict(base, elapsed_ms=36000000)), dict(base, elapsed_ms=36000000))
+
+    def test_phase_event_carries_elapsed_ms(self):
+        value = dict(event='phase', phase='runtime', elapsed_ms=8765)
+        self.assertEqual(safe_log.validate_event(value), value)
+        self.assertIsNone(safe_log.validate_event(dict(value, elapsed_ms=-4)))
+        self.assertIsNone(safe_log.validate_event(dict(value, elapsed_ms='8765')))
+        self.assertIsNone(safe_log.validate_event(dict(value, phase='desktop')))
+
+    def test_runtime_stage_accepts_menu_selected(self):
+        value = dict(event='runtime_stage', stage='menu_selected')
+        self.assertEqual(safe_log.validate_event(value), value)
+        value = dict(event='runtime_stage', stage='menu_selected', elapsed_ms=4321)
+        self.assertEqual(safe_log.validate_event(value), value)
+        self.assertIsNone(safe_log.validate_event(dict(event='runtime_stage', stage='menu_launched')))
+
+    def test_runtime_exit_carries_elapsed_ms(self):
+        value = dict(event='runtime_exit', rc=0, phase='shutdown', duration_ms=1500, elapsed_ms=250)
+        self.assertEqual(safe_log.validate_event(value), value)
+        self.assertIsNone(safe_log.validate_event(dict(value, elapsed_ms=36000001)))
+        self.assertIsNone(safe_log.validate_event(dict(value, rc=40000)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -93,7 +93,23 @@ pd2_port_cleanup() {
 trap pd2_port_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-printf 'PD2_EVENT {"event":"phase","phase":"preflight","port_version":"1.3-test.1","runtime_version":"8.0"}\n'
+last_event_ms=
+now_ms() {
+ local t
+ t=$(date +%s%3N)
+ [[ "$t" =~ ^[0-9]+$ ]] || t=$(( $(date +%s) * 1000 ))
+ printf '%s' "$t"
+}
+# Append elapsed_ms = wall time since the previous phase marker in this
+# process, so each JSONL line shows the cost of the work before it.
+emit() {
+ local t e=''
+ t=$(now_ms)
+ if [[ -n "${last_event_ms:-}" ]]; then e=',"elapsed_ms":'$(( t - last_event_ms )); fi
+ last_event_ms=$t
+ printf 'PD2_EVENT {%s%s}\n' "$1" "$e"
+}
+emit "\"event\":\"phase\",\"phase\":\"preflight\",\"port_version\":\"1.3-test.1\",\"runtime_version\":\"8.0\""
 error() { printf 'PD2_EVENT {"event":"runtime_error","phase":"preflight","reason":"%s"}\n' "$1"; exit 1; }
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [[ -d /opt/system/Tools/PortMaster ]]; then controlfolder=/opt/system/Tools/PortMaster
@@ -120,21 +136,16 @@ export PD2_GPTOKEYB="${GPTOKEYB:-}" PD2_CONTROLLER_CONFIG="${sdl_controllerconfi
 # Disable inherited instrumentation before any runtime can print input or memory.
 for key in ${!BOX86_@} ${!WINE@}; do unset "$key"; done
 mkdir -p "$PD2_RUN/gamedata" "$PD2_RUN/weston"
-# Verify all artifacts BEFORE asking the kernel to mount an image.
+# Verify the runtime BEFORE asking the kernel to mount an image. This child
+# trusts the stamp produced by its already-locked launcher session; a missing
+# or stale stamp fails over to full validation before mounting anything.
 python3 - "$PD2_PORT" <<'PY'
-import hashlib,json,pathlib,sys
+import sys
+port=sys.argv[1]
+sys.path.insert(0,port+'/storage-tools')
 try:
- p=pathlib.Path(sys.argv[1]);m=json.loads((p/'runtime-manifest.json').read_text())
- required={'wine-8.0-x86.tar.xz','box86','weston_pkg_0.2.squashfs','vc_redist.x86.exe'}
- if not isinstance(m.get('artifacts'),list) or len(m['artifacts'])!=4 or {a['file'] for a in m['artifacts']}!=required:raise ValueError()
- if (p/'runtime').is_symlink():raise ValueError()
- for a in m['artifacts']:
-  f=p/'runtime'/a['file']
-  if f.is_symlink() or f.stat().st_size!=a['size']:raise ValueError()
-  h=hashlib.sha256()
-  with f.open('rb') as s:
-   for b in iter(lambda:s.read(1048576),b''):h.update(b)
-  if h.hexdigest()!=a['sha256']:raise ValueError()
+ import storage_common
+ storage_common.validated(port,trust_stamp=True,trust_fallback_full=True)
 except Exception:
  print('PD2_EVENT {"event":"runtime_error","reason":"unsupported_runtime","phase":"preflight"}')
  sys.exit(1)
@@ -144,16 +155,27 @@ PY
 mounted_data=1
 "${SUDO[@]}" mount -o remount,bind,ro "$PD2_RUN/gamedata" || error invalid_layout
 python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --data "$PD2_RUN/gamedata/Diablo II" || exit 1
-layout_get() { python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --get "$1"; }
-export PD2_WINE="$(layout_get wine)" PD2_BOX="$(layout_get box)" PD2_PREFIX="$(layout_get prefix)" PD2_WORK="$(layout_get work)" PD2_PROFILE="$(layout_get profile)" PD2_SWAP_AB="$(layout_get swap_ab)"
-export PD2_GAME_RESOLUTION="$(layout_get game_resolution)"
-export PD2_LOOT_FILTER="$(layout_get loot_filter)"
+# One --dump spawn replaces the former six --get python spawns.
+layout_dump=$(python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --dump) || exit 1
+while IFS=$'\t' read -r layout_key layout_value; do
+ case "$layout_key" in
+  wine) export PD2_WINE="$layout_value";;
+  box) export PD2_BOX="$layout_value";;
+  prefix) export PD2_PREFIX="$layout_value";;
+  work) export PD2_WORK="$layout_value";;
+  profile) export PD2_PROFILE="$layout_value";;
+  swap_ab) export PD2_SWAP_AB="$layout_value";;
+  game_resolution) export PD2_GAME_RESOLUTION="$layout_value";;
+  loot_filter) export PD2_LOOT_FILTER="$layout_value";;
+ esac
+done <<< "$layout_dump"
 "${SUDO[@]}" mount -t squashfs -o loop,ro "$PD2_PORT/runtime/weston_pkg_0.2.squashfs" "$PD2_RUN/weston" || error unsupported_runtime
 mounted_weston=1
 export PD2_WESTON="$PD2_RUN/weston"
-printf 'PD2_EVENT {"event":"phase","phase":"runtime","profile":"%s"}\n' "$PD2_PROFILE"
-python3 "$PD2_PORT/scripts/metrics.py" --port "$PD2_PORT" || true
-export PD2_METRICS="$(python3 "$PD2_PORT/scripts/metrics.py" --port "$PD2_PORT" --enabled)"
+emit "\"event\":\"phase\",\"phase\":\"runtime\",\"profile\":\"$PD2_PROFILE\""
+# One metrics spawn: preflight sample goes to the log stream (stderr), the
+# enabled token to stdout.
+export PD2_METRICS="$(python3 "$PD2_PORT/scripts/metrics.py" --port "$PD2_PORT" --preflight)"
 export PD2_PARENT_MNT_NS="$(readlink /proc/self/ns/mnt)"
 # Only explicit variables are forwarded through sudo; user Wine runs via runuser.
 "${SUDO[@]}" unshare --mount --propagation private setsid env \

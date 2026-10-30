@@ -1018,16 +1018,26 @@ def main(argv=None):
     parser.add_argument('--volatile-work', action='store_true')
     parser.add_argument('--sync-config', action='store_true')
     parser.add_argument('--get', choices=['wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution', 'loot_filter'])
+    parser.add_argument('--dump', action='store_true')
     args = parser.parse_args(argv)
     try:
         if args.sync_config:
-            if args.get or args.volatile_work or args.data:
+            if args.get or args.dump or args.volatile_work or args.data:
                 raise LayoutError('invalid_layout')
             sync_config(pathlib.Path(args.port), pathlib.Path(args.state))
         elif args.get:
             result = read_object(pathlib.Path(args.state).absolute() / 'session-layout.json')
             value = result[args.get]
             print('1' if value is True else '0' if value is False else value)
+        elif args.dump:
+            if args.volatile_work or args.data:
+                raise LayoutError('invalid_layout')
+            # Single spawn replaces one --get per key; values are NUL-free paths
+            # and bounded tokens, so TAB separation is unambiguous.
+            result = read_object(pathlib.Path(args.state).absolute() / 'session-layout.json')
+            for key in ('wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution', 'loot_filter'):
+                value = result[key]
+                print('%s\t%s' % (key, '1' if value is True else '0' if value is False else value))
         else:
             prepare(pathlib.Path(args.port), pathlib.Path(args.state), args.data, args.volatile_work,
                     input_mode=os.environ.get('PD2_INPUT_MODE', 'mapper'),

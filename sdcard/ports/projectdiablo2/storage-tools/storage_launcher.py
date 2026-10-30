@@ -81,36 +81,9 @@ def launch(port, mode):
             raise StorageError(err)
     log("Required system tools verified: sudo, unshare, mount, umount, losetup, runuser, bash, python3")
 
-    try:
-        port, info, pins = validated(port)
-        log("Validated storage manifest and runtime integrity successfully")
-    except Exception as exc:
-        log(f"Validation failed: {exc}", level='ERROR')
-        fixed_message(f"PD2 SD: validation failed: {exc}")
-        raise
-
-    box_path = str(port / 'runtime/box86')
-    try:
-        os.chmod(box_path, 0o755)
-    except OSError:
-        pass
-    if not os.access(box_path, os.R_OK | os.X_OK):
-        err = 'Bundled Box86 is not executable; ROM filesystem must allow exec'
-        log(err, level='ERROR')
-        fixed_message('PD2 SD: box86 not executable (check ROM filesystem mount)')
-        raise StorageError(err)
-    log("Box86 executable verified")
-
-    if mode == 'launch':
-        try:
-            game_loc = source_data(port)
-            log(f"Game data source: {'local projectdiablo2-sd/gamedata' if game_loc is None else str(game_loc)}")
-        except Exception as exc:
-            log(f"Game data resolution failed: {exc}", level='ERROR')
-            fixed_message("PD2 SD: Diablo II game files not found")
-            raise
-
     with contextlib.ExitStack() as stack:
+        # Serialize validation and stamp publication with adapter startup. A
+        # shared stamp temp file must never be written by concurrent launchers.
         log("Acquiring session locks...")
         try:
             stack.enter_context(lock(port / 'storage/session.lock'))
@@ -121,6 +94,40 @@ def launch(port, mode):
             log(f"Failed to acquire session lock: {exc}", level='ERROR')
             fixed_message("PD2 SD: another game session is running")
             raise
+
+        try:
+            # Every fresh launcher process performs full digest validation.
+            # Only its child adapter may trust the resulting session stamp.
+            port, info, pins = validated(port, write_stamp=True)
+            if mode == 'check':
+                log("Full runtime integrity validation completed; stamp refreshed")
+            else:
+                log("Validated storage manifest and runtime integrity successfully")
+        except Exception as exc:
+            log(f"Validation failed: {exc}", level='ERROR')
+            fixed_message(f"PD2 SD: validation failed: {exc}")
+            raise
+
+        box_path = str(port / 'runtime/box86')
+        try:
+            os.chmod(box_path, 0o755)
+        except OSError:
+            pass
+        if not os.access(box_path, os.R_OK | os.X_OK):
+            err = 'Bundled Box86 is not executable; ROM filesystem must allow exec'
+            log(err, level='ERROR')
+            fixed_message('PD2 SD: box86 not executable (check ROM filesystem mount)')
+            raise StorageError(err)
+        log("Box86 executable verified")
+
+        if mode == 'launch':
+            try:
+                game_loc = source_data(port)
+                log(f"Game data source: {'local projectdiablo2-sd/gamedata' if game_loc is None else str(game_loc)}")
+            except Exception as exc:
+                log(f"Game data resolution failed: {exc}", level='ERROR')
+                fixed_message("PD2 SD: Diablo II game files not found")
+                raise
 
         parent_ns = os.readlink('/proc/self/ns/mnt')
         adapter = no_links(port / 'storage-tools/storage_session.py')

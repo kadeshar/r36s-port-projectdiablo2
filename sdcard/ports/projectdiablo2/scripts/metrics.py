@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Numeric local metrics plus fixed scope enums. No process identity dumps."""
-import argparse,itertools,json,os,pathlib,re,shutil,stat,time
+import argparse,itertools,json,os,pathlib,re,shutil,stat,sys,time
 
 
 _COUNTER_MAX=10**18
@@ -359,18 +359,19 @@ def collect_snapshot(port, *, sys_root='/sys', proc_root='/proc', disk_usage=Non
  return fields
 
 
-def snapshot(port, role='game', **kwargs):
+def snapshot(port, role='game', file=None, **kwargs):
  fields=collect_snapshot(port,**kwargs)
  if role in ('compositor','mapper'):
   fields={role+k[4:] if k.startswith('game_') else k:v for k,v in fields.items()}
- print('PD2_EVENT '+json.dumps(fields),flush=True)
+ print('PD2_EVENT '+json.dumps(fields),flush=True,file=file or sys.stdout)
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--port',required=True);p.add_argument('--pid',type=int);p.add_argument('--enabled',action='store_true');p.add_argument('--role',choices=('game','compositor','mapper'),default='game')
- p.add_argument('--wine-prefix');p.add_argument('--uid',type=int);p.add_argument('--wine-exe');a=p.parse_args()
+ p.add_argument('--wine-prefix');p.add_argument('--uid',type=int);p.add_argument('--wine-exe')
+ p.add_argument('--preflight',action='store_true');a=p.parse_args()
  if len({value is None for value in (a.wine_prefix,a.uid,a.wine_exe)})!=1:return 1
  if a.wine_prefix is not None and (a.role!='game' or a.pid is None):return 1
- if a.enabled:
+ if a.enabled or a.preflight:
   try:
    f=pathlib.Path(a.port)/'config/settings.json'
    enabled=False
@@ -378,6 +379,11 @@ def main():
     with f.open(encoding='utf-8') as stream:text=stream.read(65537)
     enabled=len(text)<=65536 and json.loads(text).get('metrics') is True
   except (OSError,ValueError,TypeError,AttributeError):enabled=False
+  if a.preflight:
+   # One spawn: sample goes to the log stream (stderr), token to stdout.
+   # The sample is best-effort; the token must always be printed.
+   try:snapshot(a.port,file=sys.stderr)
+   except Exception:pass
   print('1' if enabled else '0');return 0
  if a.pid is not None and a.pid<=1:return 1
  try:sampler=MetricsSampler(a.pid,wine_prefix=a.wine_prefix,uid=a.uid,wine_exe=a.wine_exe)

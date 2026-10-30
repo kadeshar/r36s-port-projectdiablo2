@@ -23,7 +23,7 @@ class ShellTests(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory(prefix='.shell-');self.base=pathlib.Path(self.temp.name)
   self.port=self.base/'port with spaces';self.state=self.base/'state';self.prefix=self.state/'wineprefix';self.work=self.state/'game'
-  for p in [self.port/'scripts',self.port/'defaults',self.port/'runtime',self.work/'ProjectD2',self.prefix/'dosdevices',self.prefix/'drive_c',self.port/'compat/xinput-probe',self.base/'run',self.base/'bin']:
+  for p in [self.port/'scripts',self.port/'defaults',self.port/'runtime',self.work/'ProjectD2',self.prefix/'dosdevices',self.prefix/'drive_c',self.port/'logs',self.port/'compat/xinput-probe',self.base/'run',self.base/'bin']:
    p.mkdir(parents=True,exist_ok=True)
   self.mock_proc=self.base/'mock-proc';self.mock_proc.mkdir()
   (self.mock_proc/'cards').write_bytes(b' 2 [rk817          ]: rk817-codec - rk817-codec\n')
@@ -32,6 +32,11 @@ class ShellTests(unittest.TestCase):
   (self.base/'mock-alsa.conf').write_bytes(b'# synthetic system ALSA fixture\n')
   (self.prefix/'.initialized').touch()
   (self.port/'scripts/layout.py').write_text('import sys\n# Synthetic config sync is covered separately by test_layout.\nraise SystemExit(0)\n')
+  (self.port/'scripts/run-layer.sh').write_text((SCRIPTS/'run-layer.sh').read_text())
+  daemon='import signal,time\nstop=[False]\ndef h(s,f):\n stop[0]=True\nsignal.signal(signal.SIGTERM,h);signal.signal(signal.SIGINT,h)\ns0=time.monotonic()\nwhile not stop[0] and time.monotonic()-s0<60:time.sleep(.1)\n'
+  (self.port/'scripts/osk.py').write_text(daemon)
+  (self.port/'scripts/overlay').mkdir(parents=True,exist_ok=True)
+  (self.port/'scripts/overlay/performance_overlay.py').write_text(daemon)
   (self.port/'scripts/session_probe.py').write_text((SCRIPTS/'session_probe.py').read_text())
   (self.port/'scripts/audio_compat.py').write_text('''import json,os,pathlib,sys
 failed=bool(os.environ.get('MOCK_COMPAT_FAIL'))
@@ -51,7 +56,7 @@ v=dict(event='session_probe',phase='launch',check='audio_native_default',status=
 if code:v['alsa_rc']=code
 print('PD2_EVENT '+json.dumps(v,separators=(',',':')))
 ''')
-  for helper in ('winebus_config.py','audio_dsound.py','xinput_result.py','audio_config.py','audio_result.py','fps_counter.py','fps_renderer.py'):
+  for helper in ('winebus_config.py','audio_dsound.py','xinput_result.py','audio_config.py','audio_result.py','fps_counter.py','fps_renderer.py','present_renderer.py'):
    code=(SCRIPTS/helper).read_text()
    if helper=='audio_config.py':
     route_call=('route(args.run, proc_root=Path(%r), snd_root=Path(%r), alsa_base=Path(%r), device_status=lambda p: "ready", profile=args.profile).items()' % (str(self.mock_proc),str(self.mock_snd),str(self.base/'mock-alsa.conf')))
@@ -94,6 +99,8 @@ raise SystemExit(1)
   (self.port/'compat/xinput-probe/xinput-probe.exe').write_bytes((SCRIPTS.parent/'compat/xinput-probe/xinput-probe.exe').read_bytes())
   hud=self.port/'compat/fps-renderer/ddraw.dll';hud.parent.mkdir(parents=True)
   hud.write_bytes((SCRIPTS.parent/'compat/fps-renderer/ddraw.dll').read_bytes())
+  pres=self.port/'compat/present-renderer/ddraw.dll';pres.parent.mkdir(parents=True)
+  pres.write_bytes((SCRIPTS.parent/'compat/present-renderer/ddraw.dll').read_bytes())
   original=self.port/'compat/cnc-ddraw/ddraw.dll';original.parent.mkdir(parents=True)
   original.write_bytes(b'synthetic upstream renderer')
   (self.work/'ProjectD2/ddraw.dll').symlink_to(original)
@@ -127,14 +134,20 @@ if pathlib.Path(args[0]).name=='wineserver' and '-w' in args:
  if record.exists():
   pid=json.loads(record.read_text())['pid']; status=pathlib.Path('/proc')/str(pid)/'stat'
   call['fps_alive']=status.exists() and status.read_text().split()[2]!='Z'
-with open(os.environ['MOCK_CALLS'],'a') as f:f.write(json.dumps(call)+'\\n')
-if pathlib.Path(args[0]).name=='wineserver' and '-k' in args and os.environ.get('MOCK_STOP_AFTER_GAME_FAIL') and (release.parent/'game-started').exists():raise SystemExit(2)
+if pathlib.Path(args[0]).name=='wineserver' and '-k' in args and os.environ.get('MOCK_STOP_AFTER_GAME_FAIL') and (release.parent/'game-started').exists():
+ with open(os.environ['MOCK_CALLS'],'a') as f:f.write(json.dumps(call)+'\\n')
+ raise SystemExit(2)
 prog=pathlib.Path(args[0]).name
 if prog=='wine' and len(args)>1:
- if args[1]=='reg.exe' and '640x480' in args and os.environ.get('MOCK_DESKTOP_FAIL'):raise SystemExit(1)
+ if args[1]=='regedit' and len(args)>=3 and args[2]=='/s':
+  # Emulate a registry import: record the generated .reg file for assertions.
+  if os.environ.get('MOCK_REGEDIT_FAIL'):raise SystemExit(1)
+  fname=args[-1].split('\\\\')[-1]
+  regpath=pathlib.Path(os.environ['WINEPREFIX'])/('drive_c/'+fname)
+  call['regedit_file']=fname
+  if regpath.exists():call['regedit']=regpath.read_text(encoding='utf-8')
  if args[1]=='reg.exe' and 'Save Path' in args and os.environ.get('MOCK_SAVE_PATH_FAIL'):raise SystemExit(1)
  if args[1:3]==['reg.exe','import'] and os.environ.get('MOCK_RESTORE_FAIL'):raise SystemExit(1)
- if args[1]=='reg.exe' and 'DisableInput' in args and os.environ.get('MOCK_FLAG_FAIL'):raise SystemExit(1)
  if args[1]=='reg.exe' and any('DirectSound' in a for a in args) and os.environ.get('MOCK_DSOUND_ADD_FAIL'):raise SystemExit(1)
  if args[1:3]==['reg.exe','export'] and os.environ.get('MOCK_EXPORT_FAIL'):raise SystemExit(1)
  if args[1:3]==['reg.exe','export']:
@@ -198,6 +211,7 @@ if prog=='wine' and len(args)>1:
   time.sleep(120)
  if any(a.endswith('Game.exe') for a in args[1:]):
   (release.parent/'game-started').touch()
+  with open(os.environ['MOCK_CALLS'],'a') as f:f.write(json.dumps(call)+'\\n')
   if os.environ.get('MOCK_GAME_DELAY'):time.sleep(float(os.environ['MOCK_GAME_DELAY']))
   if os.environ.get('MOCK_GAME_SLEEP'):time.sleep(120)
   print('secret-CD-key-ABCD-EFGH private account player-name')
@@ -205,6 +219,7 @@ if prog=='wine' and len(args)>1:
  if args[1].endswith('vc_redist.x86.exe'):
   p=pathlib.Path(os.environ['WINEPREFIX'])/'drive_c/windows/system32';p.mkdir(parents=True,exist_ok=True)
   (p/'msvcp140.dll').touch();(p/'vcruntime140.dll').touch()
+with open(os.environ['MOCK_CALLS'],'a') as f:f.write(json.dumps(call)+'\\n')
 raise SystemExit(0)
 ''')
   self.executable(self.base/'bin/mapper', '''#!/usr/bin/python3
@@ -327,42 +342,45 @@ while True:time.sleep(.1)
    r,_=self.execute({'PD2_INPUT_MODE':'native','PD2_CONTROLLER_TEST':'1','MOCK_XINPUT_MISSING':'1'});self.assertEqual(r.returncode,0,r.stdout)
    self.assertIn('"check":"xinput_devices","status":"missing"',r.stdout)
    self.assertIn('"check":"xinput_axes","status":"unavailable"',r.stdout)
- def test_native_winebus_flags_restart_then_restore_originals(self):
-   r,_=self.execute({'PD2_INPUT_MODE':'native'});self.assertEqual(r.returncode,0,r.stdout)
-   calls=self.records();game=next(i for i,v in enumerate(calls) if any(a.endswith('Game.exe') for a in v['args'][1:]))
-   for flag,value in (('Enable SDL','0'),('DisableInput','0'),('DisableUdevd','1')):
-    index=next(i for i,v in enumerate(calls) if flag in v['args'] and '/d' in v['args'])
-    self.assertEqual(calls[index]['args'][calls[index]['args'].index('/d')+1],value);self.assertLess(index,game)
-   last_flag=next(i for i,v in enumerate(calls) if 'DisableUdevd' in v['args'])
-   self.assertTrue(any(last_flag<i<game and '-k' in v['args'] for i,v in enumerate(calls)))
-   restores=[(i,v) for i,v in enumerate(calls) if v.get('restore_kind')=='winebus']
-   self.assertEqual(len(restores),1);self.assertGreater(restores[0][0],game)
-   restored=restores[0][1]['restore'];self.assertIn('"Enable SDL"=dword:00000002',restored)
-   self.assertIn('"DisableInput"=dword:00000001',restored);self.assertIn('"DisableUdevd"=-',restored)
-   self.assertNotIn('OtherValue',restored)
-   self.assertFalse((self.prefix/'drive_c/pd2-winebus-restore.reg').exists())
- def test_export_preflight_preserves_unrelated_file_before_wine_write(self):
-   target=self.prefix/'drive_c/pd2-winebus-export.reg';target.write_text('unrelated private text')
-   r,_=self.execute({'PD2_INPUT_MODE':'native'});self.assertEqual(r.returncode,1,r.stdout)
-   self.assertEqual(target.read_text(),'unrelated private text')
-   self.assertFalse(any(any('pd2-winebus-export.reg' in arg for arg in v['args']) for v in self.records()))
-   self.assertNotIn('unrelated private text',r.stdout)
- def test_failed_export_does_not_mutate_flags_and_retry_succeeds(self):
-   r,_=self.execute({'PD2_INPUT_MODE':'native','MOCK_EXPORT_FAIL':'1'});self.assertEqual(r.returncode,1,r.stdout)
-   self.assertFalse(any('Enable SDL' in v['args'] for v in self.records()))
-   self.assertFalse((self.prefix/'drive_c/pd2-winebus-restore.reg').exists())
-   r,_=self.execute({'PD2_INPUT_MODE':'native'});self.assertEqual(r.returncode,0,r.stdout)
-   self.assertFalse((self.prefix/'drive_c/pd2-winebus-restore.reg').exists())
- def test_partial_registry_failure_restores_before_exit(self):
-   r,_=self.execute({'PD2_INPUT_MODE':'native','MOCK_FLAG_FAIL':'1'});self.assertEqual(r.returncode,1,r.stdout)
-   self.assertTrue(any('restore' in v for v in self.records()))
-   self.assertFalse((self.prefix/'drive_c/pd2-winebus-restore.reg').exists())
-   self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args']) for v in self.records()))
- def test_interrupted_winebus_marker_recovers_when_server_is_absent(self):
-   r,_=self.execute({'PD2_INPUT_MODE':'native','MOCK_RESTORE_FAIL':'1'});self.assertEqual(r.returncode,1,r.stdout)
-   marker=self.prefix/'drive_c/pd2-winebus-restore.reg';self.assertTrue(marker.is_file())
-   r,_=self.execute({'MOCK_STOP_NOSERVER':'1'});self.assertEqual(r.returncode,0,r.stdout);self.assertFalse(marker.exists())
-   self.assertIn('"check":"winebus_backend","status":"restored"',r.stdout)
+ def test_native_winebus_batch_applied_by_single_regedit(self):
+  r,_=self.execute({'PD2_INPUT_MODE':'native'});self.assertEqual(r.returncode,0,r.stdout)
+  calls=self.records();game=next(k for k,v in enumerate(calls) if any(a.endswith('Game.exe') for a in v['args'][1:]))
+  regit=[k for k,v in enumerate(calls) if v.get('regedit_file')=='pd2-setup.reg']
+  self.assertEqual(len(regit),1)
+  content=calls[regit[0]]['regedit']
+  self.assertIn('[HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\winebus]',content)
+  self.assertIn('"Enable SDL"=dword:00000000',content)
+  self.assertIn('"DisableInput"=dword:00000000',content)
+  self.assertIn('"DisableUdevd"=dword:00000001',content)
+  self.assertIn('"InstallPath"="C:\\\\Diablo II"',content)
+  self.assertIn('"ddraw"="native,builtin"',content)
+  self.assertNotIn('Save Path',content)
+  self.assertLess(regit[0],game)
+  # The import's wineserver must be killed before the game's server starts.
+  self.assertTrue(any(regit[0]<k<game and '-k' in v['args'] for k,v in enumerate(calls)))
+  self.assertFalse(any(v.get('restore_kind') for v in calls))
+  self.assertFalse((self.prefix/'drive_c/pd2-winebus-restore.reg').exists())
+  self.assertFalse((self.prefix/'drive_c/pd2-setup.reg').exists())
+  self.assertIn('"check":"winebus_backend","status":"udev"',r.stdout)
+ def test_regedit_failure_never_launches_game(self):
+  r,_=self.execute({'PD2_INPUT_MODE':'native','MOCK_REGEDIT_FAIL':'1'});self.assertEqual(r.returncode,1,r.stdout)
+  self.assertIn('invalid_layout',r.stdout)
+  self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args'][1:]) for v in self.records()))
+  self.assertFalse((self.prefix/'drive_c/pd2-setup.reg').exists())
+ def test_mapper_mode_batch_writes_default_winebus_flags(self):
+  r,_=self.execute();self.assertEqual(r.returncode,0,r.stdout)
+  calls=self.records()
+  regit=[v for v in calls if v.get('regedit_file')=='pd2-setup.reg']
+  self.assertEqual(len(regit),1)
+  self.assertIn('"DisableUdevd"=dword:00000000',regit[0]['regedit'])
+  self.assertNotIn('"status":"restored"',r.stdout)
+  self.assertFalse(any(v.get('restore_kind') for v in calls))
+ def test_old_winebus_restore_marker_is_inert_and_removed(self):
+  marker=self.prefix/'drive_c/pd2-winebus-restore.reg'
+  marker.write_bytes(b'\xff\xfe'+'stale'.encode('utf-16-le'))
+  r,_=self.execute({'PD2_INPUT_MODE':'native'});self.assertEqual(r.returncode,0,r.stdout)
+  self.assertFalse(marker.exists())
+  self.assertNotIn('"status":"restored"',r.stdout)
  def test_virtual_gamepad_probe_failure_stops_before_any_wine_call(self):
    r,_=self.execute({'PD2_INPUT_MODE':'native','MOCK_PROBE_FAIL':'1'});self.assertEqual(r.returncode,1,r.stdout)
    self.assertIn('denied',r.stdout);self.assertFalse(any(pathlib.Path(v['args'][0]).name=='wine' for v in self.records()))
@@ -380,9 +398,12 @@ while True:time.sleep(.1)
  def test_native_desktop_reapplied_to_existing_prefix_before_game(self):
   r,_=self.execute();self.assertEqual(r.returncode,0,r.stdout)
   calls=self.records()
-  desktop=next(i for i,v in enumerate(calls) if '640x480' in v['args'])
-  game=next(i for i,v in enumerate(calls) if any(a.endswith('Game.exe') for a in v['args'][1:]))
-  self.assertLess(desktop,game)
+  regit=next(k for k,v in enumerate(calls) if v.get('regedit_file')=='pd2-setup.reg')
+  game=next(k for k,v in enumerate(calls) if any(a.endswith('Game.exe') for a in v['args'][1:]))
+  content=calls[regit]['regedit']
+  self.assertIn('[HKEY_CURRENT_USER\\Software\\Wine\\Explorer\\Desktops]',content)
+  self.assertIn('"Default"="640x480"',content)
+  self.assertLess(regit,game)
   self.assertFalse(any('1024x768' in v['args'] for v in calls))
  def test_save_path_repaired_each_launch_in_existing_prefix(self):
   for _ in range(2):
@@ -400,10 +421,11 @@ while True:time.sleep(.1)
   self.assertIn('invalid_layout',r.stdout)
   self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args'][1:]) for v in self.records()))
   self.assertFalse((self.base/'mapper.json').exists())
- def test_failed_native_desktop_never_launches_game(self):
-  r,_=self.execute({'MOCK_DESKTOP_FAIL':'1'});self.assertEqual(r.returncode,1,r.stdout)
-  self.assertIn('invalid_layout',r.stdout)
-  self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args'][1:]) for v in self.records()))
+ def test_setup_stages_report_elapsed_ms(self):
+  r,_=self.execute();self.assertEqual(r.returncode,0,r.stdout)
+  stages=[json.loads(line.split(' ',1)[1]) for line in r.stdout.splitlines() if line.startswith('PD2_EVENT ') and '"event":"setup_stage"' in line]
+  self.assertGreater(len(stages),1)
+  self.assertTrue(any(v.get('elapsed_ms') is not None for v in stages))
  def test_portmaster_macro_trailing_kill_flag(self):
   r,_=self.execute({'PD2_GPTOKEYB':self.env['PD2_GPTOKEYB']+' -1'});self.assertEqual(r.returncode,0,r.stdout)
   self.assertEqual(self.mapper()['args'].count('-1'),1)
@@ -439,32 +461,23 @@ while True:time.sleep(.1)
   self.assertFalse(any('Audio' in v['args'] or any('pd2-audio' in a for a in v['args']) for v in self.records()))
   self.assertFalse((self.base/'run/alsa-pd2.conf').exists())
   self.assertFalse((self.prefix/'drive_c/pd2-audio-restore.reg').exists())
- def test_audio_restore_marker_recovers_before_next_game(self):
-  import importlib.util
-  sys.path.insert(0,str(SCRIPTS))
-  self.addCleanup(lambda: sys.path.remove(str(SCRIPTS)))
-  spec=importlib.util.spec_from_file_location('restore_audio_fixture',SCRIPTS/'audio_config.py')
-  audio=importlib.util.module_from_spec(spec);spec.loader.exec_module(audio)
+ def test_old_audio_restore_marker_is_inert_and_removed(self):
   marker=self.prefix/'drive_c/pd2-audio-restore.reg'
-  marker.write_bytes(audio.restore_bytes({'Audio':{'type':1,'data':'pulse\0'.encode('utf-16-le')}}))
+  marker.write_bytes(b'\xff\xfe'+'stale'.encode('utf-16-le'))
   marker.chmod(0o600)
-  result,_=self.execute({'MOCK_RESTORE_FAIL':'1'});self.assertEqual(result.returncode,1,result.stdout)
-  self.assertTrue(marker.exists())
-  result,_=self.execute({'MOCK_STOP_NOSERVER':'1'});self.assertEqual(result.returncode,0,result.stdout)
+  result,_=self.execute();self.assertEqual(result.returncode,0,result.stdout)
   self.assertFalse(marker.exists())
-  self.assertIn('"check":"audio_backend","status":"restored"',result.stdout)
- def test_audio_opt_in_snapshots_forces_then_restores_only_audio(self):
+  self.assertNotIn('"status":"restored"',result.stdout)
+ def test_audio_opt_in_selects_alsa_via_batched_registry(self):
   result,_=self.execute({'PD2_AUDIO_TEST':'1'});self.assertEqual(result.returncode,0,result.stdout)
   calls=self.records()
   self.assertTrue(any(any(a.endswith('Game.exe') for a in v['args']) for v in calls))
-  self.assertTrue(any(v.get('restore_kind')=='audio' for v in calls))
-  game=next(i for i,v in enumerate(calls) if any(a.endswith('Game.exe') for a in v['args']))
-  export=next(i for i,v in enumerate(calls) if 'export' in v['args'] and any('pd2-audio-export' in a for a in v['args']))
-  force=next(i for i,v in enumerate(calls) if 'Audio' in v['args'])
-  restore=next(i for i,v in enumerate(calls) if v.get('restore_kind')=='audio')
-  self.assertLess(export,force);self.assertLess(force,game);self.assertLess(game,restore)
-  self.assertIn('hex(1):70,00,75,00,6c,00,73,00,65,00,00,00',calls[restore]['restore'])
-  self.assertNotIn('OtherAudio',calls[restore]['restore'])
+  regit=[v for v in calls if v.get('regedit_file')=='pd2-setup.reg']
+  self.assertEqual(len(regit),1)
+  self.assertIn('[HKEY_CURRENT_USER\\Software\\Wine\\Drivers]',regit[0]['regedit'])
+  self.assertIn('"Audio"="alsa"',regit[0]['regedit'])
+  self.assertFalse(any('export' in v['args'] for v in calls))
+  self.assertFalse(any(v.get('restore_kind') for v in calls))
   self.assertFalse((self.prefix/'drive_c/pd2-audio-restore.reg').exists())
   self.assertIn('"check":"audio_backend","status":"alsa"',result.stdout)
  def test_default_audio_uses_native_dsoal_winmm_without_fallback(self):
@@ -649,7 +662,7 @@ while True:time.sleep(.1)
   result,_=self.execute({'PD2_AUDIO_METRICS':'1'})
   self.assertEqual(result.returncode,0,result.stdout)
   self.assertIn('"check":"audio_metrics_library","status":"ready"',result.stdout)
-  self.assertIn('"check":"audio_metrics_capture","status":"ready"',result.stdout)
+  self.assertIn('"check":"audio_metrics_capture","status":"ready"',(self.port/'logs/wine-game.log').read_text())
   calls=self.records()
   game=next(v for v in calls if any(a.endswith('Game.exe') for a in v['args']))
   self.assertTrue(game['libraries'].startswith(str(self.work/'.alsa-audio-metrics')))
@@ -756,10 +769,12 @@ while True:time.sleep(.1)
    if child.exists():
     try:os.kill(int(child.read_text()),signal.SIGTERM)
     except ProcessLookupError:pass
- def test_audio_export_failure_does_not_force_audio_or_launch_game(self):
-  result,_=self.execute({'PD2_AUDIO_TEST':'1','MOCK_EXPORT_FAIL':'1'})
+ def test_batch_failure_with_audio_opt_in_never_launches_game(self):
+  result,_=self.execute({'PD2_AUDIO_TEST':'1','MOCK_REGEDIT_FAIL':'1'})
   self.assertEqual(result.returncode,1,result.stdout)
+  self.assertIn('invalid_layout',result.stdout)
   self.assertFalse(any('Audio' in v['args'] or any(a.endswith('Game.exe') for a in v['args']) for v in self.records()))
+  self.assertFalse((self.prefix/'drive_c/pd2-setup.reg').exists())
  def test_short_game_exits_without_waiting_for_fps_grace(self):
   result,duration=self.execute({'PD2_FPS':'1','MOCK_GAME_DELAY':'0.1'})
   self.assertEqual(result.returncode,0,result.stdout)
@@ -769,8 +784,8 @@ while True:time.sleep(.1)
    result,duration=self.execute({'PD2_FPS':'1','MOCK_GAME_DELAY':'0.1'})
    self.assertEqual(result.returncode,0,result.stdout)
    self.assertLess(duration,8)
-   self.assertIn('"check":"fps_counter","status":"renderer"',result.stdout)
-   self.assertEqual((self.work/'ProjectD2/ddraw.dll').read_bytes(),(self.port/'compat/fps-renderer/ddraw.dll').read_bytes())
+   self.assertIn('"check":"fps_counter","status":"overlay"',result.stdout)
+   self.assertEqual((self.work/'ProjectD2/ddraw.dll').read_bytes(),(self.port/'compat/present-renderer/ddraw.dll').read_bytes())
    self.assertFalse((self.work/'ProjectD2/ddraw.dll').is_symlink())
    self.assertFalse(any(any(a.endswith('pd2-fps-hotkey.exe') for a in v['args']) for v in self.records()))
  def test_fps_off_keeps_original_renderer(self):
@@ -778,11 +793,12 @@ while True:time.sleep(.1)
    self.assertEqual(result.returncode,0,result.stdout)
    self.assertIn('"check":"fps_counter","status":"disabled"',result.stdout)
    self.assertTrue((self.work/'ProjectD2/ddraw.dll').is_symlink())
- def test_fps_prepare_failure_is_optional_and_game_still_runs(self):
-  (self.port/'compat/fps-renderer/ddraw.dll').write_bytes(b'MZbad')
-  result,_=self.execute({'PD2_FPS':'1','MOCK_GAME_DELAY':'0.1'});self.assertEqual(result.returncode,0,result.stdout)
+ def test_fps_prepare_failure_fails_with_invalid_layout(self):
+  (self.port/'compat/present-renderer/ddraw.dll').write_bytes(b'MZbad')
+  result,_=self.execute({'PD2_FPS':'1','MOCK_GAME_DELAY':'0.1'});self.assertEqual(result.returncode,1,result.stdout)
   self.assertIn('"check":"fps_counter","status":"unavailable"',result.stdout)
-  self.assertTrue(any(any(a.endswith('Game.exe') for a in v['args']) for v in self.records()))
+  self.assertIn('invalid_layout',result.stdout)
+  self.assertFalse(any(any(a.endswith('Game.exe') for a in v['args']) for v in self.records()))
  def test_controller_probe_skips_audio_mutations_and_fps(self):
   result,_=self.execute({'PD2_INPUT_MODE':'native','PD2_CONTROLLER_TEST':'1','PD2_FPS':'1'})
   self.assertEqual(result.returncode,0,result.stdout)
@@ -854,6 +870,8 @@ while True:time.sleep(.1)
      self.assertIn('C:\\Diablo II\\ProjectD2',probe['args'])
     self.assertTrue(any(v['args'][0].endswith('wineserver') and '-w' in v['args'] for v in self.records()))
  def test_diagnostic_setup_timeout_has_precise_stage(self):
+  # A leftover wineserver leaves the prefix lock behind; quiesce must time out.
+  (self.prefix/'lock').touch()
   result,_=self.execute({'MOCK_QUIESCE_TIMEOUT':'1'})
   self.assertNotEqual(result.returncode,0)
   self.assertIn('"stage":"prefix_quiesce","status":"failed"',result.stdout)
