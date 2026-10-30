@@ -13,7 +13,7 @@ import sys
 import tarfile
 import tempfile
 
-VERSION = '1.3-test.1'
+VERSION = '1.3'
 CONFIG_LIMIT = 512 * 1024
 # Community loot filters (default.filter) regularly exceed the 512 KiB config
 # bound; keep them bounded but generous. The volatile work tmpfs (16 MiB) holds

@@ -109,7 +109,7 @@ pd2_port_cleanup() {
 trap pd2_port_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-printf 'PD2_EVENT {"event":"phase","phase":"preflight","port_version":"1.3-test.1","runtime_version":"8.0"}\n'
+printf 'PD2_EVENT {"event":"phase","phase":"preflight","port_version":"1.3","runtime_version":"8.0"}\n'
 error() { printf 'PD2_EVENT {"event":"runtime_error","phase":"preflight","reason":"%s"}\n' "$1"; exit 1; }
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [[ -d /opt/system/Tools/PortMaster ]]; then controlfolder=/opt/system/Tools/PortMaster

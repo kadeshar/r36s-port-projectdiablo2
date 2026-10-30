@@ -1,6 +1,6 @@
 #!/bin/bash
 # PORTMASTER: projectdiablo2.zip, Project Diablo 2.sh
-# Experimental private offline PD2 launcher, v1.3-test.1.
+# Experimental private offline PD2 launcher, v1.3.
 umask 077
 ulimit -c 0
 BASE=$(cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
@@ -109,7 +109,7 @@ emit() {
  last_event_ms=$t
  printf 'PD2_EVENT {%s%s}\n' "$1" "$e"
 }
-emit "\"event\":\"phase\",\"phase\":\"preflight\",\"port_version\":\"1.3-test.1\",\"runtime_version\":\"8.0\""
+emit "\"event\":\"phase\",\"phase\":\"preflight\",\"port_version\":\"1.3\",\"runtime_version\":\"8.0\""
 error() { printf 'PD2_EVENT {"event":"runtime_error","phase":"preflight","reason":"%s"}\n' "$1"; exit 1; }
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [[ -d /opt/system/Tools/PortMaster ]]; then controlfolder=/opt/system/Tools/PortMaster
