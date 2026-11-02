@@ -93,11 +93,15 @@ PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT = 0x220, 0x221, 0x222, 0x223
 PAD_A, PAD_B, PAD_X, PAD_Y = 0x131, 0x130, 0x133, 0x134
 PAD_START, PAD_SELECT = 0x2c1, 0x2c0
 PAD_L3, PAD_R3, PAD_MENU = 0x2c2, 0x2c3, 0x2c4
+PAD_GUIDE = PAD_MENU
 
 PAD_BUTTON_ACTIONS = {
     PAD_UP: 'up', PAD_DOWN: 'down', PAD_LEFT: 'left', PAD_RIGHT: 'right',
+    103: 'up', 108: 'down', 105: 'left', 106: 'right',
     PAD_A: 'select', PAD_B: 'backspace', PAD_X: 'space', PAD_Y: 'caps',
     PAD_START: 'confirm', PAD_SELECT: 'cancel', PAD_MENU: 'cancel',
+    0x13b: 'confirm', 0x13a: 'cancel', 0x13c: 'cancel',
+    28: 'confirm', 1: 'cancel', 57: 'space', 14: 'backspace',
 }
 
 # X11 keysyms
@@ -840,6 +844,98 @@ def evread(nr, size):
     return (2 << 30) | (size << 16) | (ord('E') << 8) | nr
 
 
+def bits_set(mask, *codes):
+    return all(bool(mask & (1 << code)) for code in codes)
+
+
+def bitmap(text, word_bits=64):
+    """sysfs prints space-separated unsigned-long words, highest first."""
+    value = 0
+    for word in text.split():
+        value = (value << word_bits) | int(word, 16)
+    return value
+
+
+def physical_devices(root='/sys/class/input'):
+    """List evdev devices that can be handheld pads."""
+    found = []
+    for event in sorted(Path(root).glob('event[0-9]*')):
+        base = event / 'device'
+        try:
+            name = (base / 'name').read_text().strip()
+            vid = int((base / 'id/vendor').read_text().strip(), 16)
+            pid = int((base / 'id/product').read_text().strip(), 16)
+            ev = bitmap((base / 'capabilities/ev').read_text(), struct.calcsize('@L') * 8)
+            keys = bitmap((base / 'capabilities/key').read_text(), struct.calcsize('@L') * 8)
+            axes = bitmap((base / 'capabilities/abs').read_text(), struct.calcsize('@L') * 8)
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if not bits_set(ev, EV_KEY, EV_ABS):
+            continue
+        found.append(('/dev/input/' + event.name, name, vid, pid, keys, axes))
+    return found
+
+
+PORTMASTER_PAD_IDS = {
+    (0x484b, 0x1100),  # R36S / OGS / Powkiddy RGB10 MAX
+    (0x484b, 0x1101),  # RG353V / RG353P / RG353M / RK3566
+    (0x484b, 0x1000),  # Odroid Go Advance / RK2020
+    (0x484b, 0x1111),  # Anbernic RG552
+    (0x0912, 0x0031),  # Anbernic RG351P / RG351M / RG351V / RG351MP
+    (0x0003, 0x0003),  # Gameforce Chi
+    (0x8d96, 0x0221),  # GameKiddy Pixel
+    (0x045e, 0x028e),  # Xbox 360 / XInput Controller
+}
+
+PORTMASTER_PAD_NAMES = (
+    'go-super', 'gamepad', 'retrogame_joypad', 'joystick', 'joypad',
+    'anbernic', 'odroidgo', 'gameforce', 'rk2020', 'trimui',
+    'rg351', 'rg353', 'rg552', 'gkd', 'xbox', '8bitdo', 'playstation'
+)
+
+PORTMASTER_BY_PATH = (
+    '/dev/input/by-path/platform-odroidgo3-joypad-event-joystick',
+    '/dev/input/by-path/platform-odroidgo2-joypad-event-joystick',
+    '/dev/input/by-path/platform-ff300000.usb-usb-0:1.2:1.0-event-joystick',
+    '/dev/input/by-path/platform-gameforce-gamepad-event-joystick',
+    '/dev/input/by-path/platform-singleadc-joypad-event-joystick',
+    '/dev/input/by-path/platform-gamekiddy-joypad-event-joystick',
+)
+
+
+def choose_pad(devices):
+    """Pick handheld gamepad recognized across PortMaster ecosystem,
+    or any compatible pad with face buttons and axes."""
+    # 1. PortMaster by-path matches
+    for bp in PORTMASTER_BY_PATH:
+        if os.path.exists(bp):
+            try:
+                resolved = os.path.realpath(bp)
+                for dev in devices:
+                    if dev[0] == resolved:
+                        return dev
+            except OSError:
+                pass
+
+    # 2. Recognized Vendor:Product IDs with face buttons
+    for dev in devices:
+        if (dev[2], dev[3]) in PORTMASTER_PAD_IDS and bits_set(dev[4], PAD_A, PAD_B):
+            return dev
+
+    # 3. Recognized device names with face buttons
+    for dev in devices:
+        name_lower = dev[1].lower()
+        if any(k in name_lower for k in PORTMASTER_PAD_NAMES) and bits_set(dev[4], PAD_A, PAD_B):
+            return dev
+
+    # 4. Universal fallback: any device reporting A/B face buttons and X/Y axes
+    for dev in devices:
+        if bits_set(dev[4], PAD_A, PAD_B) and bits_set(dev[5], ABS_X, ABS_Y):
+            return dev
+
+    return devices[0] if devices else None
+
+
 class PadReader:
     """Read controller events from R36S gamepad evdev descriptor."""
     def __init__(self, fd, held=()):
@@ -872,24 +968,31 @@ class PadReader:
                         if code in PAD_BUTTON_ACTIONS:
                             acts.append(PAD_BUTTON_ACTIONS[code])
             elif kind == EV_ABS:
-                # Analog stick threshold detection with debouncing
-                if code == ABS_X:
-                    if value > 16000 and self.stick_x != 1:
+                if code in (ABS_X, 0x10):  # ABS_X, ABS_HAT0X
+                    if code == 0x10:
+                        val_dir = 1 if value > 0 else (-1 if value < 0 else 0)
+                    else:
+                        val_dir = 1 if value > 16000 else (-1 if value < -16000 else 0)
+                    if val_dir == 1 and self.stick_x != 1:
                         acts.append('right')
                         self.stick_x = 1
-                    elif value < -16000 and self.stick_x != -1:
+                    elif val_dir == -1 and self.stick_x != -1:
                         acts.append('left')
                         self.stick_x = -1
-                    elif -8000 < value < 8000:
+                    elif val_dir == 0:
                         self.stick_x = 0
-                elif code == ABS_Y:
-                    if value > 16000 and self.stick_y != 1:
+                elif code in (ABS_Y, 0x11):  # ABS_Y, ABS_HAT0Y
+                    if code == 0x11:
+                        val_dir = 1 if value > 0 else (-1 if value < 0 else 0)
+                    else:
+                        val_dir = 1 if value > 16000 else (-1 if value < -16000 else 0)
+                    if val_dir == 1 and self.stick_y != 1:
                         acts.append('down')
                         self.stick_y = 1
-                    elif value < -16000 and self.stick_y != -1:
+                    elif val_dir == -1 and self.stick_y != -1:
                         acts.append('up')
                         self.stick_y = -1
-                    elif -8000 < value < 8000:
+                    elif val_dir == 0:
                         self.stick_y = 0
         return acts
 
@@ -898,30 +1001,40 @@ def is_hotkey(kind, code, value, held_keys):
     """Determine if a physical gamepad event triggers the on-screen keyboard.
 
     Single Fn/Menu is deliberately excluded so in-game Automap mapping is never blocked.
-    Uses safe combinations: Select+X, Fn+X, L3+R3, or Select+D-Pad Down.
+    Uses safe combinations: Select+X, Fn+X, Mode+X, L3+R3, or Select+D-Pad Down.
     """
     if kind != EV_KEY:
         return False
     if value == 1:
-        # Select + X combo (PortMaster standard text shortcut)
-        if code == PAD_X and PAD_SELECT in held_keys:
+        # Select + X combo (PortMaster standard text shortcut: 0x2c0 or 0x13a)
+        is_select = bool(held_keys & {PAD_SELECT, 0x13a})
+        is_menu = bool(held_keys & {PAD_MENU, 0x13c})
+        is_l3 = bool(held_keys & {PAD_L3, 0x13d})
+        is_r3 = bool(held_keys & {PAD_R3, 0x13e})
+
+        if code == PAD_X and (is_select or is_menu):
             return True
-        if code == PAD_SELECT and PAD_X in held_keys:
-            return True
-        # FN + X combo
-        if code == PAD_X and PAD_MENU in held_keys:
-            return True
-        if code == PAD_MENU and PAD_X in held_keys:
+        if code in (PAD_SELECT, 0x13a, PAD_MENU, 0x13c) and PAD_X in held_keys:
             return True
         # L3 + R3 combo (both sticks pressed)
-        if code == PAD_R3 and PAD_L3 in held_keys:
-            return True
-        if code == PAD_L3 and PAD_R3 in held_keys:
+        if (code in (PAD_R3, 0x13e) and is_l3) or (code in (PAD_L3, 0x13d) and is_r3):
             return True
         # Select + D-Pad Down combo
-        if code == PAD_DOWN and PAD_SELECT in held_keys:
+        if code in (PAD_DOWN, 108) and is_select:
             return True
-        if code == PAD_SELECT and PAD_DOWN in held_keys:
+        if code in (PAD_SELECT, 0x13a) and (PAD_DOWN in held_keys or 108 in held_keys):
+            return True
+    return False
+
+
+def is_game_kill_hotkey(kind, code, value, held_keys):
+    """Recognize FN+SELECT, Guide+SELECT, or SELECT+START as game exit request."""
+    is_guide_down = bool(held_keys & {PAD_MENU, 0x13c})
+    is_select_down = bool(held_keys & {PAD_SELECT, 0x13a})
+    if kind == EV_KEY and value == 1:
+        if code in (PAD_SELECT, 0x13a) and is_guide_down:
+            return True
+        if code in (PAD_START, 0x13b) and is_select_down:
             return True
     return False
 
@@ -962,8 +1075,7 @@ def show_osk(pfd=None, ufd_keyboard=None, initial_text='', max_len=15):
     """
     close_pfd = False
     if pfd is None:
-        import xbox_mapper
-        pad = xbox_mapper.choose_pad(xbox_mapper.physical_devices())
+        pad = choose_pad(physical_devices())
         if pad is None:
             return None
         pfd = os.open(pad[0], os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
@@ -1050,8 +1162,7 @@ def main():
         return 0
     elif mode == 'daemon':
         # Standalone background daemon for mapper input mode
-        import xbox_mapper
-        pad = xbox_mapper.choose_pad(xbox_mapper.physical_devices())
+        pad = choose_pad(physical_devices())
         if pad is None:
             return 1
         pfd = os.open(pad[0], os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))

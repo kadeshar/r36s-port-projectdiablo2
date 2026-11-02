@@ -18,6 +18,7 @@ export BOX86_DYNAREC=1 BOX86_DYNAREC_BIGBLOCK=2
 export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET=0
 export SDL_GAMECONTROLLERCONFIG="$PD2_CONTROLLER_CONFIG" SDL_VIDEODRIVER=x11
 export FONTCONFIG_FILE="$PD2_WESTON/fonts/fonts.conf"
+export PORT_VERSION="${PD2_PORT_VERSION:-1.4-test.1}"
 mapper_pid=; mapper_metrics_pid=; navigator_pid=; osk_pid=; game_pid=; metrics_pid=; fps_pid=; audio_probe_pid=; audio_capture_pid=; wine_ready=0
 dsound_restore_attempted=0
 dsound_restore_file="$PD2_PREFIX/drive_c/pd2-dsound-restore.reg"
@@ -620,7 +621,7 @@ else
 fi
 printf '%s\n' "$game_pid" > "$PD2_RUN/game.pid"
 if [[ "$fps_enabled" =~ ^[1-4]$ ]]; then
- setsid python3 -B "$PD2_PORT/scripts/overlay/performance_overlay.py" --level "$fps_enabled" --pid "$game_pid" --work "$PD2_WORK" & fps_pid=$!
+ setsid python3 -B "$PD2_PORT/scripts/overlay/performance_overlay.py" --level "$fps_enabled" --pid "$game_pid" --work "$PD2_WORK" --version "$PORT_VERSION" & fps_pid=$!
  printf '%s\n' "$fps_pid" > "$PD2_RUN/fps.pid"
 fi
 if [[ ${PD2_METRICS:-0} == 1 ]];then

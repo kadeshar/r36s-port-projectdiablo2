@@ -213,6 +213,34 @@ class KeyDecoder:
         return actions
 
 
+# Handheld Vendor:Product IDs and names recognized across PortMaster ecosystem
+PORTMASTER_PAD_IDS = {
+    (0x484b, 0x1100),  # R36S / OGS / Powkiddy RGB10 MAX
+    (0x484b, 0x1101),  # RG353V / RG353P / RG353M / RK3566
+    (0x484b, 0x1000),  # Odroid Go Advance / RK2020
+    (0x484b, 0x1111),  # Anbernic RG552
+    (0x0912, 0x0031),  # Anbernic RG351P / RG351M / RG351V / RG351MP
+    (0x0003, 0x0003),  # Gameforce Chi
+    (0x8d96, 0x0221),  # GameKiddy Pixel
+    (0x045e, 0x028e),  # Xbox 360 / XInput Controller
+}
+
+PORTMASTER_PAD_NAMES = (
+    'go-super', 'gamepad', 'retrogame_joypad', 'joystick', 'joypad',
+    'anbernic', 'odroidgo', 'gameforce', 'rk2020', 'trimui',
+    'rg351', 'rg353', 'rg552', 'gkd', 'xbox', '8bitdo', 'playstation'
+)
+
+PORTMASTER_BY_PATH = (
+    '/dev/input/by-path/platform-odroidgo3-joypad-event-joystick',
+    '/dev/input/by-path/platform-odroidgo2-joypad-event-joystick',
+    '/dev/input/by-path/platform-ff300000.usb-usb-0:1.2:1.0-event-joystick',
+    '/dev/input/by-path/platform-gameforce-gamepad-event-joystick',
+    '/dev/input/by-path/platform-singleadc-joypad-event-joystick',
+    '/dev/input/by-path/platform-gamekiddy-joypad-event-joystick',
+)
+
+
 class Pad:
     def __init__(self):
         self.fds = []
@@ -229,6 +257,39 @@ class Pad:
                 device_paths = [dev[0]]
         except Exception:
             pass
+
+        if not device_paths:
+            # 1. Check PortMaster known by-path device symlinks
+            for bp in PORTMASTER_BY_PATH:
+                if os.path.exists(bp):
+                    try:
+                        resolved = os.path.realpath(bp)
+                        if resolved not in device_paths:
+                            device_paths.append(resolved)
+                    except OSError:
+                        pass
+
+        if not device_paths:
+            # 2. Check PortMaster recognized vendor/product IDs and device names
+            from pathlib import Path
+            devices = []
+            for p in sorted(Path('/sys/class/input').glob('event[0-9]*')):
+                base = p / 'device'
+                try:
+                    name = (base / 'name').read_text().strip()
+                    id_dir = base / 'id'
+                    vid = int((id_dir / 'vendor').read_text(), 16)
+                    pid = int((id_dir / 'product').read_text(), 16)
+                    devices.append(('/dev/input/' + p.name, name, vid, pid))
+                except Exception:
+                    continue
+
+            for dev in devices:
+                if dev[0] in device_paths:
+                    continue
+                name_lower = dev[1].lower()
+                if (dev[2], dev[3]) in PORTMASTER_PAD_IDS or any(k in name_lower for k in PORTMASTER_PAD_NAMES):
+                    device_paths.append(dev[0])
 
         if not device_paths:
             # Fallback: scan /dev/input/event*

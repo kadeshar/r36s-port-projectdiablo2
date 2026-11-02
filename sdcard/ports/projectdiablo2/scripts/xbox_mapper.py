@@ -91,23 +91,67 @@ def physical_devices(root='/sys/class/input'):
     return found
 
 
+PORTMASTER_PAD_IDS = {
+    (0x484b, 0x1100),  # R36S / OGS / Powkiddy RGB10 MAX
+    (0x484b, 0x1101),  # RG353V / RG353P / RG353M / RK3566
+    (0x484b, 0x1000),  # Odroid Go Advance / RK2020
+    (0x484b, 0x1111),  # Anbernic RG552
+    (0x0912, 0x0031),  # Anbernic RG351P / RG351M / RG351V / RG351MP
+    (0x0003, 0x0003),  # Gameforce Chi
+    (0x8d96, 0x0221),  # GameKiddy Pixel
+    (0x045e, 0x028e),  # Xbox 360 / XInput Controller
+}
+
+PORTMASTER_PAD_NAMES = (
+    'retrogame_joypad',
+    'anbernic', 'odroidgo', 'gameforce', 'rk2020', 'trimui',
+    'rg351', 'rg353', 'rg552', 'gkd', '8bitdo', 'playstation'
+)
+
+PORTMASTER_BY_PATH = (
+    '/dev/input/by-path/platform-odroidgo3-joypad-event-joystick',
+    '/dev/input/by-path/platform-odroidgo2-joypad-event-joystick',
+    '/dev/input/by-path/platform-ff300000.usb-usb-0:1.2:1.0-event-joystick',
+    '/dev/input/by-path/platform-gameforce-gamepad-event-joystick',
+    '/dev/input/by-path/platform-singleadc-joypad-event-joystick',
+    '/dev/input/by-path/platform-gamekiddy-joypad-event-joystick',
+)
+
+
 def choose_pad(devices):
-    # Primary match: R36S / GO-Super Gamepad (0x484b, 0x1100).
+    # 1. PortMaster by-path matches
+    for bp in PORTMASTER_BY_PATH:
+        if os.path.exists(bp):
+            try:
+                resolved = os.path.realpath(bp)
+                for dev in devices:
+                    if dev[0] == resolved and bits_set(dev[4], 0x130, 0x131, 0x133, 0x134) and bits_set(dev[5], ABS_X, ABS_Y, ABS_RX, ABS_RY):
+                        return dev
+            except OSError:
+                pass
+
+    # 2. Primary match: R36S / GO-Super Gamepad (0x484b, 0x1100).
     r36s = next((d for d in devices if (d[2], d[3]) == (0x484b, 0x1100)
                  and bits_set(d[4], 0x130, 0x131, 0x133, 0x134)
                  and bits_set(d[5], ABS_X, ABS_Y, ABS_RX, ABS_RY)), None)
     if r36s is not None:
         return r36s
-    # RG353V / retrogame_joypad (0x484b, 0x1101):
+    # 3. RG353V / retrogame_joypad (0x484b, 0x1101):
     rg353 = next((d for d in devices if (d[2], d[3]) == (0x484b, 0x1101)
                   and bits_set(d[4], 0x130, 0x131, 0x133, 0x134)
                   and bits_set(d[5], ABS_X, ABS_Y, ABS_RX, ABS_RY)), None)
     if rg353 is not None:
         return rg353
-    # Named built-in handheld controller match (retrogame_joypad):
-    return next((d for d in devices if d[1] == 'retrogame_joypad'
-                 and bits_set(d[4], 0x130, 0x131, 0x133, 0x134)
-                 and bits_set(d[5], ABS_X, ABS_Y, ABS_RX, ABS_RY)), None)
+    # 4. Recognized PortMaster pad IDs with dual sticks
+    for dev in devices:
+        if (dev[2], dev[3]) in PORTMASTER_PAD_IDS and bits_set(dev[4], 0x130, 0x131, 0x133, 0x134) and bits_set(dev[5], ABS_X, ABS_Y, ABS_RX, ABS_RY):
+            return dev
+    # 5. Named built-in handheld controller match (retrogame_joypad / PortMaster names):
+    for dev in devices:
+        name_lower = dev[1].lower()
+        if (dev[1] == 'retrogame_joypad' or any(k in name_lower for k in PORTMASTER_PAD_NAMES)) and bits_set(dev[4], 0x130, 0x131, 0x133, 0x134) and bits_set(dev[5], ABS_X, ABS_Y, ABS_RX, ABS_RY):
+            return dev
+    return None
 
 
 def build_keymap(keybits, absbits):

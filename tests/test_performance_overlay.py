@@ -188,7 +188,7 @@ class TestX11HUD(unittest.TestCase):
         self.assertEqual(hud3.y, 0)  # Glued to top edge
 
         hud4 = x11_hud.X11HUD(level=4)
-        self.assertEqual((hud4.width, hud4.height), (205, 266))
+        self.assertEqual((hud4.width, hud4.height), (215, 266))
         self.assertEqual(hud4.y, 0)  # Glued to top edge
 
     def test_set_level_resizes_hud(self):
@@ -362,6 +362,47 @@ class TestPerformanceOverlayCLI(unittest.TestCase):
         rc = performance_overlay.run_overlay(level=2, target_pid=99999999, cli_mode=True)
         self.assertEqual(rc, 0)
 
+
+
+
+class TestX11HUDVersion(unittest.TestCase):
+    def test_version_resolution_and_level4_header(self):
+        orig_pd2_ver = os.environ.pop('PD2_PORT_VERSION', None)
+        orig_port_ver = os.environ.pop('PORT_VERSION', None)
+        try:
+            # 1. Default should resolve to port manifest version
+            ver = x11_hud.resolve_port_version()
+            self.assertTrue(len(ver) > 0)
+
+            # 2. Environment variable overrides
+            os.environ['PORT_VERSION'] = '1.3'
+            self.assertEqual(x11_hud.resolve_port_version(), '1.3')
+
+            os.environ['PD2_PORT_VERSION'] = '2.0-rc1'
+            self.assertEqual(x11_hud.resolve_port_version(), '2.0-rc1')
+
+            # 3. Explicit argument overrides environment
+            self.assertEqual(x11_hud.resolve_port_version('1.5'), '1.5')
+
+            # 4. X11HUD initialization
+            hud = x11_hud.X11HUD(level=4, version='1.4-test.1')
+            self.assertEqual(hud.version, '1.4-test.1')
+            self.assertEqual(hud.width, x11_hud.LEVEL4_WIDTH)
+            self.assertEqual(hud.width, 215)
+
+            # 5. Header glyphs in FONT_6X9
+            header = f'PD2 {hud.version}'
+            for ch in header:
+                self.assertIn(ch, x11_hud.FONT_6X9, f"Character '{ch}' must be present in FONT_6X9")
+        finally:
+            if orig_pd2_ver is not None:
+                os.environ['PD2_PORT_VERSION'] = orig_pd2_ver
+            else:
+                os.environ.pop('PD2_PORT_VERSION', None)
+            if orig_port_ver is not None:
+                os.environ['PORT_VERSION'] = orig_port_ver
+            else:
+                os.environ.pop('PORT_VERSION', None)
 
 if __name__ == '__main__':
     unittest.main()

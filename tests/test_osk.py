@@ -382,6 +382,64 @@ class OSKPadReaderTests(unittest.TestCase):
             actions = reader.actions()
         self.assertEqual(actions, ['right', 'left'])
 
+    def test_hat_and_stick_events(self):
+        events = [
+            (osk.EV_ABS, 0x10, -1),  # ABS_HAT0X left
+            (osk.EV_ABS, 0x10, 0),   # center
+            (osk.EV_ABS, 0x10, 1),   # right
+            (osk.EV_ABS, 0x10, 0),   # center
+            (osk.EV_ABS, 0x11, -1),  # ABS_HAT0Y up
+            (osk.EV_ABS, 0x11, 0),   # center
+            (osk.EV_ABS, 0x11, 1),   # down
+            (osk.EV_ABS, 0x11, 0),   # center
+        ]
+        raw = b''.join(osk.EVENT.pack(0, 0, *e) for e in events)
+        reader = osk.PadReader(fd=5)
+        with mock.patch.object(osk.select, 'select', return_value=([5], [], [])), \
+             mock.patch.object(osk.os, 'read', return_value=raw):
+            actions = reader.actions()
+        self.assertEqual(actions, ['left', 'right', 'up', 'down'])
+
+
+class OSKUniversalControllerTests(unittest.TestCase):
+    def test_choose_pad_universal(self):
+        devices = [
+            ('/dev/input/event0', 'RG353V Gamepad', 0x484b, 0x1101, (1 << osk.PAD_A) | (1 << osk.PAD_B) | (1 << osk.PAD_X) | (1 << osk.PAD_Y), (1 << osk.ABS_X) | (1 << osk.ABS_Y)),
+        ]
+        chosen = osk.choose_pad(devices)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen[1], 'RG353V Gamepad')
+
+        # PortMaster RG351 device
+        rg351 = [('/dev/input/event1', 'OpenSimHardware Gamepad', 0x0912, 0x0031, (1 << osk.PAD_A) | (1 << osk.PAD_B), 0)]
+        self.assertEqual(osk.choose_pad(rg351)[1], 'OpenSimHardware Gamepad')
+
+        # PortMaster Gameforce Chi device
+        chi = [('/dev/input/event2', 'gameforce-gamepad', 0x0003, 0x0003, (1 << osk.PAD_A) | (1 << osk.PAD_B), 0)]
+        self.assertEqual(osk.choose_pad(chi)[1], 'gameforce-gamepad')
+
+        # TrimUI device by name
+        trimui = [('/dev/input/event3', 'TrimUI Smart Pro Joypad', 0x1234, 0x5678, (1 << osk.PAD_A) | (1 << osk.PAD_B), 0)]
+        self.assertEqual(osk.choose_pad(trimui)[1], 'TrimUI Smart Pro Joypad')
+
+    def test_universal_hotkeys(self):
+        # FN + X opens OSK
+        self.assertTrue(osk.is_hotkey(osk.EV_KEY, osk.PAD_X, 1, {osk.PAD_MENU}))
+        # Mode + X opens OSK
+        self.assertTrue(osk.is_hotkey(osk.EV_KEY, osk.PAD_X, 1, {0x13c}))
+        # Select + X opens OSK on pads with 0x13a
+        self.assertTrue(osk.is_hotkey(osk.EV_KEY, osk.PAD_X, 1, {0x13a}))
+        self.assertTrue(osk.is_hotkey(osk.EV_KEY, osk.PAD_X, 1, {osk.PAD_SELECT}))
+        # Standard L3 + R3 (0x13d + 0x13e)
+        self.assertTrue(osk.is_hotkey(osk.EV_KEY, 0x13e, 1, {0x13d}))
+        self.assertTrue(osk.is_hotkey(osk.EV_KEY, 0x13d, 1, {0x13e}))
+        # Select + Start triggers game kill
+        self.assertTrue(osk.is_game_kill_hotkey(osk.EV_KEY, 0x13b, 1, {0x13a}))
+        self.assertTrue(osk.is_game_kill_hotkey(osk.EV_KEY, osk.PAD_START, 1, {osk.PAD_SELECT}))
+        # FN/Mode + Select triggers game kill
+        self.assertTrue(osk.is_game_kill_hotkey(osk.EV_KEY, 0x13a, 1, {0x13c}))
+        self.assertTrue(osk.is_game_kill_hotkey(osk.EV_KEY, osk.PAD_SELECT, 1, {osk.PAD_MENU}))
+
 
 if __name__ == '__main__':
     unittest.main()

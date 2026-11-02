@@ -4,6 +4,82 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## 1.4-test.1 Multi-Controller Support + Performance Overlay Port Versioning + Console Deployment (User-Directed, 2026-11-02)
+
+- **User request:**
+  - Migrate MM6 controller enhancements (universal discovery of PortMaster consoles, Hats, sticks, standard buttons).
+  - Migrate MM6 performance overlay versioning (`PD2 {Version}` in Level 4 header, version resolution).
+  - Bump version to `1.4-test.1` across all six pins.
+  - Deploy to R36S console (`192.168.50.135`).
+- **Architectural & implementation details:**
+  1. **Multi-Controller Support Across PortMaster Consoles:**
+     - In `sdcard/ports/projectdiablo2/scripts/osk.py`:
+       - Added `PORTMASTER_PAD_IDS` (R36S, RG353V/P/M, OGA/RK2020, RG552, RG351 series, Gameforce Chi, GKD Pixel, Xbox 360).
+       - Added `PORTMASTER_PAD_NAMES` and `PORTMASTER_BY_PATH` device symlinks.
+       - Implemented `choose_pad(devices)`, `physical_devices(root='/sys/class/input')`, `bits_set(mask, *codes)`, and `bitmap(text, word_bits=64)`.
+       - Expanded `PAD_BUTTON_ACTIONS` with standard gamepad buttons (`0x13b` Start -> confirm, `0x13a` Select -> cancel, `0x13c` Mode -> cancel), arrow keys (103, 108, 105, 106), Enter (28), Esc (1), Space (57), Backspace (14).
+       - Added EV_ABS Hat (`ABS_HAT0X` 0x10, `ABS_HAT0Y` 0x11) axis support to `PadReader.actions()`.
+       - Enhanced `is_hotkey()` to accept FN/Menu (`PAD_MENU`, `0x13c`), Select (`PAD_SELECT`, `0x13a`), Mode, and standard L3/R3 (`0x13d`, `0x13e`).
+       - Added `is_game_kill_hotkey(kind, code, value, held_keys)` for FN+Select, Mode+Select, and Select+Start.
+     - In `sdcard/ports/projectdiablo2/scripts/start_menu.py`:
+       - Added `PORTMASTER_PAD_IDS`, `PORTMASTER_PAD_NAMES`, `PORTMASTER_BY_PATH`.
+       - Enhanced `Pad.__init__` to discover PortMaster devices via by-path symlinks, vendor/product IDs, device names, and fallback to `/dev/input/event*`.
+     - In `sdcard/ports/projectdiablo2/scripts/xbox_mapper.py`:
+       - Added `PORTMASTER_PAD_IDS`, `PORTMASTER_PAD_NAMES`, `PORTMASTER_BY_PATH`.
+       - Updated `choose_pad(devices)` to recognize PortMaster consoles and dual-stick controllers.
+  2. **Performance Overlay Header Versioning:**
+     - In `sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py`:
+       - Increased `LEVEL4_WIDTH` from 205 to 215.
+       - Implemented `resolve_port_version(version=None)` checking explicit argument, `PD2_PORT_VERSION`, `PORT_VERSION`, `runtime-manifest.json`, `layout.VERSION`, fallback `1.4-test.1`.
+       - Initialized `self.version = resolve_port_version(version)` in `X11HUD.__init__`.
+       - Updated `_render_level_4` to render right-aligned `PD2 {self.version}` in `C_MUTED` (all characters verified present in `FONT_6X9`).
+     - In `sdcard/ports/projectdiablo2/scripts/overlay/performance_overlay.py`:
+       - Added `version=None` argument to `run_overlay` and passed `version=port_version` to `X11HUD`.
+       - Added `--version` CLI flag to `main()`.
+     - In `sdcard/ports/projectdiablo2/scripts/run-game.sh`:
+       - Exported `PORT_VERSION="${PD2_PORT_VERSION:-1.4-test.1}"`.
+       - Passed `--version "$PORT_VERSION"` to `performance_overlay.py`.
+  3. **Six-Pin Version Update to `1.4-test.1` (Rule 7):**
+     - `runtime-manifest.json` (`port_version` -> `1.4-test.1`)
+     - `sdcard/ports/projectdiablo2/runtime-manifest.json` (`port_version` -> `1.4-test.1`)
+     - `sdcard/ports/projectdiablo2/scripts/layout.py` (`VERSION = '1.4-test.1'`)
+     - `tools/check_update.py` (`VERSION='1.4-test.1'`)
+     - `sdcard/ports/Project Diablo 2.sh` (`port_version="1.4-test.1"`)
+     - `sdcard/ports/projectdiablo2/private-launcher.sh` (`port_version="1.4-test.1"` event + header comment)
+  4. **Validation Performed:**
+     - Unit tests:
+       - `tests/test_osk.py`: 29 tests passed (added universal controller detection, hotkeys, hat & stick events).
+       - `tests/test_performance_overlay.py`: 21 tests passed (added version resolution and Level 4 header tests, updated Level 4 width to 215).
+       - `tests/test_xbox_mapper_logic.py`: 19 tests passed.
+       - `tests/test_start_menu.py`: 39 tests passed (1 skipped).
+       - `tests/test_layout.py`: 54 tests passed.
+       - `tests/test_safe_log.py`: 48 tests passed (5 skipped).
+       - `tests/test_shell.py`: 80 tests passed (79 skipped).
+     - Syntax verification:
+       - `bash -n` on all shell scripts passed.
+       - `python3 -m py_compile` on all modified Python scripts passed.
+  5. **Console Deployment & Integrity Audit (`192.168.50.135`):**
+     - User saves preserved: 25 save files verified before and after deployment (100% intact).
+     - Timestamped pre-deployment backup created on console: `/roms2/ports/projectdiablo2/pre-1.4-test.1-backup-20261102_082459/`.
+     - Deployed 10 files directly to `/roms2/ports/`:
+       - `Project Diablo 2.sh`
+       - `projectdiablo2/private-launcher.sh`
+       - `projectdiablo2/runtime-manifest.json`
+       - `projectdiablo2/scripts/layout.py`
+       - `projectdiablo2/scripts/run-game.sh`
+       - `projectdiablo2/scripts/start_menu.py`
+       - `projectdiablo2/scripts/osk.py`
+       - `projectdiablo2/scripts/xbox_mapper.py`
+       - `projectdiablo2/scripts/overlay/x11_hud.py`
+       - `projectdiablo2/scripts/overlay/performance_overlay.py`
+     - Remote SHA256 hashes verified byte-for-byte matching local files.
+     - Shell scripts passed remote `bash -n`; Python scripts passed remote `python3 -m py_compile`.
+     - Non-executing verification on console verified: `REMOTE HUD VERSION: 1.4-test.1`, `REMOTE HUD WIDTH: 215`, `OSK/MENU/MAPPER PAD IDS COUNT: 8`.
+- **User acceptance test required:**
+  - Launch Project Diablo 2 from EmulationStation on R36S console and test gameplay, controller response, and performance overlay Level 4 header displaying `PD2 1.4-test.1`.
+
+---
+
 ## 1.3 Fresh-Install Sim + Console Deployment, Full-File Verified (User-Directed, 2026-10-30)
 
 - **User request:** simulate fresh install; deploy 1.3 on console; check all files.

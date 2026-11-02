@@ -123,7 +123,7 @@ LEVEL3_X = 8
 LEVEL3_Y = OVERLAY_TOP_Y
 
 # Level 4 (full detailed HUD with live frametime graph & Y scale)
-LEVEL4_WIDTH = 205
+LEVEL4_WIDTH = 215
 LEVEL4_HEIGHT = 266
 LEVEL4_X = 8
 LEVEL4_Y = OVERLAY_TOP_Y
@@ -196,10 +196,36 @@ def _pad(b):
     return b + b'\0' * (-len(b) % 4)
 
 
+def resolve_port_version(version=None):
+    if version:
+        return str(version).strip()
+    ver = os.environ.get('PD2_PORT_VERSION') or os.environ.get('PORT_VERSION')
+    if ver:
+        return ver.strip()
+    try:
+        from pathlib import Path
+        manifest = Path(__file__).resolve().parents[2] / 'runtime-manifest.json'
+        if manifest.is_file():
+            import json
+            data = json.loads(manifest.read_text(encoding='utf-8'))
+            if 'port_version' in data and data['port_version']:
+                return str(data['port_version']).strip()
+    except Exception:
+        pass
+    try:
+        import layout
+        if hasattr(layout, 'VERSION') and layout.VERSION:
+            return str(layout.VERSION).strip()
+    except Exception:
+        pass
+    return '1.4-test.1'
+
+
 class X11HUD:
-    def __init__(self, level=1, display=':0', x=None, y=None):
+    def __init__(self, level=1, display=':0', x=None, y=None, version=None):
         self.level = level
         self.display = display
+        self.version = resolve_port_version(version)
         self.sock = None
         self.window = 1
         self.gc = 2
@@ -939,10 +965,13 @@ class X11HUD:
         plugged = metrics.get('plugged', False)
 
         y = 5
-        # Header: Time HH:MM:SS   R36S 1.0
+        # Header: Time HH:MM:SS   PD2 {Version}
         time_str = time.strftime('%H:%M:%S')
         self.draw_text(8, y, f'Time {time_str}', C_VAL_BAT)
-        self.draw_text(138, y, 'R36S 1.0', C_MUTED)
+        ver_text = f'PD2 {self.version}'
+        ver_w = len(ver_text) * 7
+        ver_x = max(8, self.width - 8 - ver_w)
+        self.draw_text(ver_x, y, ver_text, C_MUTED)
 
         # GPU block
         y += 12

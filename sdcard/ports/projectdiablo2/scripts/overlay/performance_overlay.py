@@ -24,12 +24,12 @@ import time
 try:
     from .overlay_metrics import SystemMetrics
     from .fps_tracker import FPSTracker
-    from .x11_hud import X11HUD
+    from .x11_hud import X11HUD, resolve_port_version
     from .hotkey_listener import HotkeyListener
 except ImportError:
     from overlay_metrics import SystemMetrics
     from fps_tracker import FPSTracker
-    from x11_hud import X11HUD
+    from x11_hud import X11HUD, resolve_port_version
     from hotkey_listener import HotkeyListener
 
 
@@ -64,8 +64,9 @@ def _pid_alive(pid):
         return False
 
 
-def run_overlay(level=1, target_pid=None, work_dir=None, display=':0', interval=0.35, cli_mode=False):
-    _log(f'Starting performance overlay initial_level={level} pid={target_pid} work={work_dir} display={display}')
+def run_overlay(level=1, target_pid=None, work_dir=None, display=':0', interval=0.35, cli_mode=False, version=None):
+    port_version = resolve_port_version(version)
+    _log(f'Starting performance overlay version={port_version} initial_level={level} pid={target_pid} work={work_dir} display={display}')
 
     current_level = max(0, min(4, level))
     metrics = SystemMetrics()
@@ -87,8 +88,8 @@ def run_overlay(level=1, target_pid=None, work_dir=None, display=':0', interval=
 
     if not cli_mode:
         try:
-            _log(f'Connecting X11HUD to {display} (initial_level={current_level})...')
-            hud = X11HUD(level=current_level, display=display)
+            _log(f'Connecting X11HUD to {display} (initial_level={current_level}, version={port_version})...')
+            hud = X11HUD(level=current_level, display=display, version=port_version)
             hud.connect()
             _log(f'X11HUD connected successfully! Window={hud.window}')
         except Exception as e:
@@ -197,6 +198,8 @@ def main(argv=None):
                         help='Refresh update interval in seconds')
     parser.add_argument('--cli', action='store_true',
                         help='Output metrics directly to terminal instead of X11 window')
+    parser.add_argument('--version', type=str, default=None,
+                        help='Port version to display on HUD header')
 
     args = parser.parse_args(argv)
     return run_overlay(
@@ -206,6 +209,7 @@ def main(argv=None):
         display=args.display,
         interval=args.interval,
         cli_mode=args.cli,
+        version=args.version,
     )
 
 
