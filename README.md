@@ -21,30 +21,52 @@ The project combines **PortMaster**, the **Westonpack Wayland/X11** compositor, 
 
 ## 🛠️ Installation on R36S Console
 
-### Required Game Files:
-This port requires original game files from **Diablo II: Lord of Destruction** (version 1.13c or 1.14) with the **Project Diablo 2** mod installed.
+### Required Game Files & Season Requirements:
+This port requires original base files from **Diablo II: Lord of Destruction** (version 1.13c or 1.14d) plus **Project Diablo 2 (Season 13)**.
 
-Buy the original game and expansion, then download the mod:
-- **[Diablo II](https://us.shop.battle.net/en-us/product/diablo-ii#optLogin=true)** — original game on Battle.net (not Diablo II: Resurrected).
-- **[Diablo II: Lord of Destruction](https://us.shop.battle.net/en-us/product/diablo-ii-lord-of-destruction)** — required expansion on Battle.net.
-- **[Project Diablo 2 download](https://www.projectdiablo2.com/download)** — mod installer from the official website.
+> [!WARNING]
+> **Important Season Notice (Do NOT use Season 14):**
+> **Season 14 is problematic on R36S** ([Issue #9](https://github.com/kadeshar/r36s-port-projectdiablo2/issues/9)). Under Season 14, characters suffer from broken melee hit detection, skill activation stalls (character stands still when pressing attack), skills/spells in slots failing to trigger, and monster targeting/nameplate issues.
+> 
+> **Use Project Diablo 2 Season 13 (S13P2M2)** — this is the verified, fully working version for R36S. Do not use the official website live launcher, as it installs Season 14.
 
-### Step by Step:
-> **Supported Project Diablo 2 seasons:** only **Season 13** and **Season 14**. Install game files from one of these seasons. Other season DLLs may start without the optional controller binary patch, but are not officially supported or tested on R36S. Older season clients can be found in the [Unofficial PD2 Client Mirror](https://github.com/Khazra89/Unofficial-PD2-Client-Mirror).
+### 📥 Downloads:
+1. **Diablo II & Lord of Destruction Base Game:**
+   - **[Diablo II](https://us.shop.battle.net/en-us/product/diablo-ii#optLogin=true)** — classic game on Battle.net (v1.13c or 1.14d; not Diablo II: Resurrected).
+   - **[Diablo II: Lord of Destruction](https://us.shop.battle.net/en-us/product/diablo-ii-lord-of-destruction)** — required expansion on Battle.net.
+2. **Project Diablo 2 Mod (Season 13):**
+   - Download the standalone Season 13 update archive directly:  
+     **[ProjectD2-S13P2M2-FullPD2Update.zip](https://github.com/Khazra89/Unofficial-PD2-Client-Mirror/releases/download/s13p2m2/ProjectD2-S13P2M2-FullPD2Update.zip)**  
+     *(Mirror repository: [Unofficial PD2 Client Mirror](https://github.com/Khazra89/Unofficial-PD2-Client-Mirror))*.
 
-1. Copy the contents of the `sdcard/ports/` directory to the `ports/` directory on your console SD card (`EASYROMS` partition or secondary SD card):
-   ```
-   roms/ports/
-   ├── Project Diablo 2.sh
-   └── projectdiablo2/
-   ```
-2. Place your Diablo II game files and the `ProjectD2` folder into:
-   ```
-   ports/projectdiablo2/gamedata/Diablo II/
-   ```
-   *(ensure that `Game.exe`, `.mpq` files, and the `ProjectD2` subfolder are present).*
-3. Insert the SD card into your R36S, power on the console, and navigate to the **Ports** section in EmulationStation.
-4. Launch **Project Diablo 2**.
+---
+
+### 📋 Simple Installation Steps:
+
+#### 1. Setup & Test on PC:
+1. Install **Diablo II** + **Lord of Destruction** on your PC.
+2. Download **`ProjectD2-S13P2M2-FullPD2Update.zip`**.
+3. Create a folder named `ProjectD2` inside your PC's `Diablo II` directory.
+4. Extract the contents of the ZIP archive directly into `Diablo II\ProjectD2\`.
+5. **Run `ProjectD2\Game.exe` on PC to verify that the mod launches and reaches the title screen.**
+
+#### 2. Copy Port to Console SD Card:
+Copy the contents of the repository's `sdcard/ports/` directory to your SD card's `ports/` directory:
+```
+ports/
+├── Project Diablo 2.sh
+└── projectdiablo2/
+```
+
+#### 3. Copy Game Folder to SD Card:
+Copy your entire tested **`Diablo II`** folder from PC into:
+```
+ports/projectdiablo2/gamedata/
+```
+*(Resulting path on SD card: `ports/projectdiablo2/gamedata/Diablo II/`)*
+
+#### 4. Launch on R36S:
+Insert SD card into console, power on, open **Ports** in EmulationStation, and start **Project Diablo 2**!
 
 ---
 

@@ -4,6 +4,27 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## PD2 Season 13 Recommendation & Installation Guide Update (Issue #9, 2026-11-04)
+
+- **Context & Issue Analysis:**
+  - GitHub Issue #9 ([kadeshar/r36s-port-projectdiablo2#9](https://github.com/kadeshar/r36s-port-projectdiablo2/issues/9)) reported character combat and targeting anomalies under PD2 Season 14 on R36S:
+    - Melee attacks suffer broken hit detection/stalls; character freezes or stands still upon pressing attack.
+    - Assigned skills/spells in slots fail to trigger (e.g. throwing weapons or spells on attack button hide monster nameplates instead of striking).
+    - Reverting from Season 14 to Season 13 was tested and verified to completely resolve all combat and skill issues on R36S.
+  - While Season 14 PE disassembly and native-cast dispatch hooks exist in `native_cast.py`, upstream PD2 S14 internal engine logic changes break handheld combat behavior.
+- **Documentation & Installation Fix:**
+  - Updated `README.md` to mandate **Project Diablo 2 Season 13 (S13P2M2)** as the verified, working release for R36S.
+  - Added warning banner highlighting Season 14 combat bugs and advising against using the live website installer.
+  - Linked official recommended mirror: `https://github.com/Khazra89/Unofficial-PD2-Client-Mirror/releases/download/s13p2m2/ProjectD2-S13P2M2-FullPD2Update.zip`.
+  - Streamlined installation into 4 concise steps: assemble and verify on PC first (run `ProjectD2\Game.exe` to catch errors early), copy port to SD card, copy tested `Diablo II` folder directly into `gamedata/`, and launch on console (dropped redundant ASCII directory tree).
+- **Rules compliance:**
+  - No git operations (commit/push/pull) performed.
+  - No version pins changed.
+  - No dist/ ZIP archives generated.
+  - Original game files untouched.
+
+---
+
 ## 1.4-test.1 Multi-Controller Support + Performance Overlay Port Versioning + Console Deployment (User-Directed, 2026-11-02)
 
 - **User request:**
