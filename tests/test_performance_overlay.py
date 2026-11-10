@@ -385,8 +385,8 @@ class TestX11HUDVersion(unittest.TestCase):
             self.assertEqual(x11_hud.resolve_port_version('1.5'), '1.5')
 
             # 4. X11HUD initialization
-            hud = x11_hud.X11HUD(level=4, version='1.4-test.1')
-            self.assertEqual(hud.version, '1.4-test.1')
+            hud = x11_hud.X11HUD(level=4, version='1.4')
+            self.assertEqual(hud.version, '1.4')
             self.assertEqual(hud.width, x11_hud.LEVEL4_WIDTH)
             self.assertEqual(hud.width, 215)
 

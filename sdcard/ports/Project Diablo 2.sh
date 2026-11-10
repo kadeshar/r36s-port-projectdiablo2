@@ -6,6 +6,80 @@ ulimit -c 0
 BASE=$(cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
 export PD2_PORT="$BASE/projectdiablo2"
 
+XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+if [ -d "/opt/system/Tools/PortMaster/" ]; then
+  controlfolder="/opt/system/Tools/PortMaster"
+elif [ -d "/opt/tools/PortMaster/" ]; then
+  controlfolder="/opt/tools/PortMaster"
+elif [ -d "$XDG_DATA_HOME/PortMaster/" ]; then
+  controlfolder="$XDG_DATA_HOME/PortMaster"
+elif [ -d "/roms2/ports/PortMaster/" ]; then
+  controlfolder="/roms2/ports/PortMaster"
+else
+  controlfolder="/roms/ports/PortMaster"
+fi
+
+if [[ -f "$controlfolder/control.txt" ]]; then
+  source "$controlfolder/control.txt"
+  export PORT_32BIT=Y
+  [ -f "${controlfolder}/device_info.txt" ] && source "${controlfolder}/device_info.txt"
+  [ -f "${controlfolder}/mod_${CFW_NAME}.txt" ] && source "${controlfolder}/mod_${CFW_NAME}.txt"
+  get_controls
+fi
+
+# Check for game assets in gamedata before starting
+has_game=0
+for exe in \
+  "$PD2_PORT/gamedata/Diablo II/ProjectD2/Game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/ProjectD2/game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/Game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/game.exe" \
+  "$PD2_PORT/gamedata/ProjectD2/Game.exe" \
+  "$PD2_PORT/gamedata/ProjectD2/game.exe"; do
+  if [[ -f "$exe" ]]; then
+    has_game=1
+    break
+  fi
+done
+
+if [[ "$has_game" -ne 1 ]]; then
+  # Also check case-insensitive match
+  detected=$(find "$PD2_PORT/gamedata" -maxdepth 3 \( -iname "game.exe" \) 2>/dev/null | head -n 1)
+  if [[ -n "$detected" ]]; then
+    has_game=1
+  elif [[ -d "$BASE/projectdiablo2/gamedata" ]]; then
+    detected=$(find "$BASE/projectdiablo2/gamedata" -maxdepth 3 \( -iname "game.exe" \) 2>/dev/null | head -n 1)
+    if [[ -n "$detected" ]]; then
+      has_game=1
+    fi
+  fi
+fi
+
+if [[ "$has_game" -ne 1 ]]; then
+  mkdir -p "$PD2_PORT/logs" 2>/dev/null
+  echo "$(date -u +'%Y-%m-%d %H:%M:%S UTC') [ERROR] missing_game_files in $PD2_PORT/gamedata" >> "$PD2_PORT/logs/storage-session.log" 2>/dev/null
+  target_tty="${CUR_TTY:-${CURR_TTY:-/dev/tty0}}"
+  if [[ -w "$target_tty" ]]; then
+    printf "\033c" > "$target_tty"
+    printf "======================================================\n" > "$target_tty"
+    printf " Project Diablo 2 (R36S Port)\n" > "$target_tty"
+    printf "======================================================\n\n" > "$target_tty"
+    printf " ERROR: Game files missing from gamedata!\n\n" > "$target_tty"
+    printf " Please copy your Diablo II files to:\n" > "$target_tty"
+    printf "   %s/gamedata/Diablo II/\n\n" "$PD2_PORT" > "$target_tty"
+    printf " Required files include:\n" > "$target_tty"
+    printf "   - ProjectD2/Game.exe\n" > "$target_tty"
+    printf "   - ProjectD2/ProjectDiablo.dll\n" > "$target_tty"
+    printf "   - ProjectD2/pd2data.mpq, pd2monchars.mpq\n" > "$target_tty"
+    printf "   - d2data.mpq, d2exp.mpq, d2char.mpq\n\n" > "$target_tty"
+    printf " Returning to menu in 7 seconds...\n" > "$target_tty"
+    printf "======================================================\n" > "$target_tty"
+  fi
+  [[ -z "${PD2_TESTING:-}" ]] && sleep 7
+  if command -v pm_finish >/dev/null 2>&1; then pm_finish; fi
+  exit 1
+fi
+
 if [[ ${PD2_EXPERIMENT_ACTIVE:-} != sd-storage-v1 ]]; then
   mkdir -p "$PD2_PORT/logs" 2>/dev/null
   fixed_message() {
@@ -109,7 +183,7 @@ pd2_port_cleanup() {
 trap pd2_port_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-printf 'PD2_EVENT {"event":"phase","phase":"preflight","port_version":"1.4-test.1","runtime_version":"8.0"}\n'
+printf 'PD2_EVENT {"event":"phase","phase":"preflight","port_version":"1.4","runtime_version":"8.0"}\n'
 error() { printf 'PD2_EVENT {"event":"runtime_error","phase":"preflight","reason":"%s"}\n' "$1"; exit 1; }
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [[ -d /opt/system/Tools/PortMaster ]]; then controlfolder=/opt/system/Tools/PortMaster
@@ -156,6 +230,26 @@ except Exception:
  sys.exit(1)
 PY
 [[ $? == 0 ]] || exit 1
+has_inner_game=0
+for exe in \
+  "$PD2_PORT/gamedata/Diablo II/ProjectD2/Game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/ProjectD2/game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/Game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/game.exe" \
+  "$PD2_PORT/gamedata/ProjectD2/Game.exe" \
+  "$PD2_PORT/gamedata/ProjectD2/game.exe"; do
+  if [[ -f "$exe" ]]; then
+    has_inner_game=1
+    break
+  fi
+done
+if [[ "$has_inner_game" -ne 1 ]]; then
+  detected=$(find "$PD2_PORT/gamedata" -maxdepth 3 \( -iname "game.exe" \) 2>/dev/null | head -n 1)
+  if [[ -n "$detected" ]]; then
+    has_inner_game=1
+  fi
+fi
+[[ "$has_inner_game" == 1 ]] || error invalid_layout
 "${SUDO[@]}" mount --bind "$PD2_PORT/gamedata" "$PD2_RUN/gamedata" || error invalid_layout
 mounted_data=1
 "${SUDO[@]}" mount -o remount,bind,ro "$PD2_RUN/gamedata" || error invalid_layout

@@ -4,6 +4,194 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## 1.4 Console Deployment & 121/121 File Integrity Audit (`192.168.50.136`, 2026-11-10)
+
+- **User request:**
+  - *"deploy on console via SSH 192.168.50.136 L: ark P: ark"*
+- **Save Protection:**
+  - Scanned and verified all saves before deployment: 42 files across `saves/`, `saves_s14/`, and `gamedata/` intact.
+  - Verified post-deployment save count: 42 files (100% preserved).
+- **Console Backup:**
+  - Timestamped pre-deployment backup created: `/roms2/ports/projectdiablo2/pre-1.4-backup-20261110_165407`.
+  - Preserved pre-deployment versions of the 6 updated files.
+- **Payload Deployment (`sdcard/ports/` -> `/roms2/ports/`):**
+  - Transferred 6 files via direct stream upload to preserve permissions and line endings:
+    - `/roms2/ports/Project Diablo 2.sh` (0755, SHA256 `b9e40742...`)
+    - `/roms2/ports/projectdiablo2/private-launcher.sh` (0755, SHA256 `1856623e...`)
+    - `/roms2/ports/projectdiablo2/runtime-manifest.json` (0644, SHA256 `76412e4e...`)
+    - `/roms2/ports/projectdiablo2/scripts/layout.py` (0755, SHA256 `5f4581bc...`)
+    - `/roms2/ports/projectdiablo2/scripts/overlay/x11_hud.py` (0644, SHA256 `a501e6ef...`)
+    - `/roms2/ports/projectdiablo2/scripts/run-game.sh` (0755, SHA256 `21ece3c2...`)
+- **Remote Verification:**
+  - `bash -n` on all remote shell scripts: PASS.
+  - `python3 -m py_compile` on modified Python scripts: PASS.
+  - Remote pin inspection: `layout.VERSION: 1.4`, `runtime-manifest: 1.4`, `Project Diablo 2.sh: 1.4`, `private-launcher.sh: 1.4`, `run-game.sh: 1.4`, `x11_hud: 1.4`.
+  - Full-payload audit: **121/121 candidate files byte-for-byte identical to local release (0 mismatched, 0 missing)**.
+- **Rule Compliance:**
+  - Console game testing exclusively reserved for user (Rule 8). No game session launched.
+
+---
+
+## Version Bump to 1.4 + Release Artifacts in `.temp/release/` (User-Directed, 2026-11-10)
+
+- **User request:**
+  - *"Change version on 1.4 and release to folder .temp/release"*
+- **Six-Pin Version Update to `1.4` (Rule 7):**
+  - [`sdcard/ports/projectdiablo2/scripts/layout.py`](sdcard/ports/projectdiablo2/scripts/layout.py) L16: `VERSION = '1.4'`
+  - [`runtime-manifest.json`](runtime-manifest.json) L2: `"port_version": "1.4"`
+  - [`sdcard/ports/projectdiablo2/runtime-manifest.json`](sdcard/ports/projectdiablo2/runtime-manifest.json) L2: `"port_version": "1.4"`
+  - [`sdcard/ports/Project Diablo 2.sh`](sdcard/ports/Project%20Diablo%202.sh) L186: `"port_version":"1.4"`
+  - [`sdcard/ports/projectdiablo2/private-launcher.sh`](sdcard/ports/projectdiablo2/private-launcher.sh) L3 (header comment `v1.4.`) and L112 (`\"port_version\":\"1.4\"`)
+  - [`tools/check_update.py`](tools/check_update.py) L5: `VERSION='1.4'`
+- **Supporting version references synchronized:**
+  - [`sdcard/ports/projectdiablo2/scripts/run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh) L21: `export PORT_VERSION="${PD2_PORT_VERSION:-1.4}"`
+  - [`sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py`](sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py) L221: fallback `return '1.4'`
+  - [`tests/test_performance_overlay.py`](tests/test_performance_overlay.py) L388-389: `version='1.4'`
+- **Release Artifacts Created in `.temp/release/`:**
+  - Archive: [`.temp/release/projectdiablo2-port-1.4.zip`](.temp/release/projectdiablo2-port-1.4.zip)
+    - Size: 188,876,267 bytes (180.13 MB)
+    - SHA256: `b178231cd635b0ae9600acf6be9d90f998354801e117c5096d078f00e06bdc79`
+    - Total entries: 122 (121 payload files + 1 empty dir `projectdiablo2/compat/audio-stream-probe/`), matching previous releases.
+    - Excludes: `__pycache__/` and `*.pyc`.
+    - In-ZIP pin verification: all 1.4 pins and hashes byte-for-byte verified against local disk payload.
+  - Extracted Payload Folder: [`.temp/release/projectdiablo2-port-1.4/`](.temp/release/projectdiablo2-port-1.4/)
+    - Contains clean unpacked `Project Diablo 2.sh` and `projectdiablo2/` tree.
+- **Validation:**
+  - All test suites passing (`test_performance_overlay.py`, `test_start_menu.py`, `test_osk.py`, `test_xbox_mapper_logic.py`, `test_safe_log.py`, `test_storage_launcher.py`, `test_layout.py`, `test_shell.py`).
+  - `.temp/check_pins_1_4.py`: All 6 pins verified consistent at `1.4`.
+
+---
+
+## Restoration of Game Assets to Console (`gamedata/Diablo II`, 2026-11-10)
+
+- **User request:**
+  - *"ok, now deploy game files"*
+- **Restoration Execution (`192.168.50.136`):**
+  - Moved game directories from `/roms2/ports/projectdiablo2-gamedata-backup-20261110_153409/` back into `/roms2/ports/projectdiablo2/gamedata/`:
+    - `Diablo II` (2.9 GB)
+    - `Diablo II_s14` (3.0 GB)
+  - Verified executable presence:
+    - `/roms2/ports/projectdiablo2/gamedata/Diablo II/ProjectD2/Game.exe` (61,440 B) verified intact.
+  - Save integrity verified:
+    - `saves/`: 13 save files intact.
+    - `saves_s14/`: 16 save files intact.
+    - `gamedata/Diablo II/Save`: 5 save files intact.
+    - Full safety backup preserved in `/roms2/ports/projectdiablo2-saves-backup-20261110_153409/`.
+- **Status:**
+  - Game assets restored. PortMaster launcher verified.
+  - Console ready for normal user gameplay test (Rule 8).
+
+---
+
+## Alignment with MM8 Architecture: PortMaster Initialization Before Game Asset Check (2026-11-10)
+
+- **User report:**
+  - *"Still black screen. In MM8 port i think that worked correctly."*
+- **Comparison with MM8 Port (`C:\src\r36s-port-mm8\sdcard\ports\Might and Magic VIII.sh`):**
+  - In MM8, PortMaster environment initialization occurs at the very top of the script:
+    1. Locates `controlfolder` (`/opt/system/Tools/PortMaster`, `/opt/tools/PortMaster`, `$XDG_DATA_HOME/PortMaster`, `/roms2/ports/PortMaster`, `/roms/ports/PortMaster`).
+    2. Sources `control.txt` (which executes `$ESUDO chmod 666 /dev/tty0 /dev/tty1`, exports `ESUDO`, sets `CUR_TTY=/dev/tty0`, sources `funcs.txt` defining `pm_finish`).
+    3. Sources `device_info.txt` and `mod_${CFW_NAME}.txt`.
+    4. Calls `get_controls`.
+    5. Only *then* checks `has_game`.
+    6. If missing, writes banner cleanly to `target_tty="${CUR_TTY:-${CURR_TTY:-/dev/tty0}}"`, sleeps 7 seconds, and runs `pm_finish`.
+  - In PD2 previously, the check was placed before `controlfolder` or `control.txt` were resolved, so `CUR_TTY` was unset, permissions were not applied, and `pm_finish` was undefined.
+- **Refactoring Applied:**
+  - Updated `sdcard/ports/Project Diablo 2.sh` to mirror the MM8 PortMaster sequence:
+    - Sourced `controlfolder/control.txt`, `device_info.txt`, `mod_${CFW_NAME}.txt`, `get_controls` before the asset check.
+    - Simplified banner display to directly output to `$target_tty` and invoke `pm_finish`, matching MM8 line-for-line.
+  - Reverted experimental complex `ioctl` / `setfont` hacks in both `Project Diablo 2.sh` and `storage-tools/storage_launcher.py`.
+- **Testing:**
+  - `python tests/test_storage_launcher.py`: All 5 tests pass in 4.19s, confirming missing game files trigger the banner and exit code 1 as expected.
+- **Console Deployment Status:**
+  - Deployed to console (`192.168.50.136`):
+    - `/roms2/ports/Project Diablo 2.sh` (chmod 0755, LF line endings verified).
+    - `/roms2/ports/projectdiablo2/storage-tools/storage_launcher.py` (compiled & verified).
+  - Remote syntax verified: `bash -n` and `python3 -m py_compile` -> `DEPLOY_VERIFIED`.
+  - Console remains in fresh-install test state with game files isolated in backup and saves intact.
+  - Ready for user console test.
+
+---
+
+## Console Deployment & Fresh Install Simulation with Game File Isolation (2026-11-10)
+
+- **User request:**
+  - *"Deploy on console and simulate fresh installation (even delete gamefile except saves)"*
+- **Console Discovery & Deployment (`192.168.50.136`):**
+  - Console discovered at IP `192.168.50.136` (port 22, `Linux dArkOSen-r36 4.4.189 aarch64`).
+  - Deployed modified files via `pscp`:
+    - `/roms2/ports/Project Diablo 2.sh` (0755)
+    - `/roms2/ports/projectdiablo2/private-launcher.sh` (0755)
+    - `/roms2/ports/projectdiablo2/storage-tools/storage_launcher.py`
+  - Verified remote bash syntax (`bash -n`) and python compilation (`py_compile`).
+- **Fresh Install Simulation (`tools/simulate_fresh_install.py --delete-game-files`):**
+  - Save protection:
+    - Scanned 36 total saves (12 in `saves/`, 14 in `saves_s14/`, 10 in `gamedata/`).
+    - Created timestamped backup in `/roms2/ports/projectdiablo2-saves-backup-20261110_153409/`.
+    - Active saves in `/roms2/ports/projectdiablo2/saves/` (12 saves) and `/roms2/ports/projectdiablo2/saves_s14/` (14 saves) left 100% intact.
+  - Game data isolation:
+    - Moved `/roms2/ports/projectdiablo2/gamedata/Diablo II` (2.9 GB) and `Diablo II_s14` (3.0 GB) to `/roms2/ports/projectdiablo2-gamedata-backup-20261110_153409/`.
+    - `/roms2/ports/projectdiablo2/gamedata/` now contains only `HERE PUT Diablo II folder` (0 game files/executables).
+  - State clean:
+    - Removed `storage/state.ext4` and `storage/session.lock`.
+    - Removed all runtime logs in `logs/*.log`.
+    - Cleaned `~/.local/share/pd2-r36s` temporary prefix / locks.
+  - Verification:
+    - Confirmed `state.ext4` removed (first-boot state ready).
+    - Confirmed game executable missing from `gamedata/` (ready to test on-screen preflight warning).
+    - Confirmed launcher permissions set (0755).
+- **Rule compliance:**
+  - Console game testing reserved for user (Rule 8). No game session launched.
+  - No git operations (commit/push/pull) performed.
+  - User saves 100% backed up and intact.
+
+---
+
+## Preflight Game Asset Detection Check (Mirrored from MM8 Port, 2026-11-10)
+
+- **Context & Goal:**
+  - In MM8 port (`r36s-port-mm8`), an early preflight check for game files was implemented so users who launch the port before copying game data receive a clear, informative on-screen banner instead of an immediate silent exit/crash back to EmulationStation.
+  - Task: Implement identical check in Project Diablo 2 port.
+- **Implementation Details:**
+  1. **Launcher Preflight Check (`sdcard/ports/Project Diablo 2.sh`):**
+     - Added early asset scan before `storage_launcher.py` / storage namespace creation.
+     - Checks standard executable paths:
+       - `$PD2_PORT/gamedata/Diablo II/ProjectD2/Game.exe`
+       - `$PD2_PORT/gamedata/Diablo II/game.exe`
+       - `$PD2_PORT/gamedata/ProjectD2/Game.exe`
+       - Case-insensitive search via `find "$PD2_PORT/gamedata" -maxdepth 3 -iname "game.exe"`
+       - Fallback search in adjacent `gamedata` for experimental clones.
+     - When game files are missing:
+       - Logs timestamped `[ERROR] missing_game_files in $PD2_PORT/gamedata` to `logs/storage-session.log`.
+       - Sources PortMaster `control.txt` if available to discover virtual terminal (`$CUR_TTY` / `$CURR_TTY` / `/dev/tty0`).
+       - Clears screen (`\033c`) and prints formatted diagnostic banner detailing:
+         - Missing files error
+         - Target directory: `projectdiablo2/gamedata/Diablo II/`
+         - Required core files (`ProjectD2/Game.exe`, `ProjectD2/ProjectDiablo.dll`, `pd2data.mpq`, `d2data.mpq`, etc.)
+         - Countdown notice: `Returning to menu in 7 seconds...`
+       - Pauses 7 seconds (`sleep 7`, skippable in test via `PD2_TESTING=1`) ensuring user can read instructions on handheld LCD.
+       - Invokes `pm_finish` and exits cleanly with return code 1.
+     - Added matching validation in inner namespace mount path.
+  2. **Storage Launcher Integration (`sdcard/ports/projectdiablo2/storage-tools/storage_launcher.py`):**
+     - Added `show_missing_game_files(port)` helper function.
+     - When `source_data(port)` fails in `launch` mode, displays the identical cleared-screen formatted banner and pauses 7 seconds before raising `StorageError`.
+     - Suppressed redundant one-line `fixed_message` in `main()` when banner already displayed.
+  3. **Private Launcher Verification (`sdcard/ports/projectdiablo2/private-launcher.sh`):**
+     - Added preflight game executable check before bind-mounting and running `layout.py`.
+  4. **Regression Testing (`tests/test_storage_launcher.py`):**
+     - Added `test_launch_missing_game_files_triggers_screen_message`.
+     - Added `test_show_missing_game_files_formats_screen_message`.
+     - Added `test_project_diablo_2_launcher_detects_missing_game_files`.
+     - Added `test_project_diablo_2_launcher_proceeds_when_game_files_present`.
+     - Verified all tests pass cleanly.
+- **Rule compliance:**
+  - Original game files in `C:\Program Files (x86)\Diablo II` untouched.
+  - No git operations (commit, push, pull) performed.
+  - No version pins changed.
+  - No dist/ ZIP packages generated.
+
+---
+
 ## PD2 Season 13 Recommendation & Installation Guide Update (Issue #9, 2026-11-04)
 
 - **Context & Issue Analysis:**

@@ -18,7 +18,7 @@ export BOX86_DYNAREC=1 BOX86_DYNAREC_BIGBLOCK=2
 export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET=0
 export SDL_GAMECONTROLLERCONFIG="$PD2_CONTROLLER_CONFIG" SDL_VIDEODRIVER=x11
 export FONTCONFIG_FILE="$PD2_WESTON/fonts/fonts.conf"
-export PORT_VERSION="${PD2_PORT_VERSION:-1.4-test.1}"
+export PORT_VERSION="${PD2_PORT_VERSION:-1.4}"
 mapper_pid=; mapper_metrics_pid=; navigator_pid=; osk_pid=; game_pid=; metrics_pid=; fps_pid=; audio_probe_pid=; audio_capture_pid=; wine_ready=0
 dsound_restore_attempted=0
 dsound_restore_file="$PD2_PREFIX/drive_c/pd2-dsound-restore.reg"

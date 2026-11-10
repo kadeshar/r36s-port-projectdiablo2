@@ -23,6 +23,39 @@ def fixed_message(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+def show_missing_game_files(port):
+    target = port / 'gamedata/Diablo II'
+    msg = (
+        "\033c"
+        "======================================================\n"
+        " Project Diablo 2 (R36S Port)\n"
+        "======================================================\n\n"
+        " ERROR: Game files missing from gamedata!\n\n"
+        " Please copy your Diablo II files to:\n"
+        f"   {target}/\n\n"
+        " Required files include:\n"
+        "   - ProjectD2/Game.exe\n"
+        "   - ProjectD2/ProjectDiablo.dll\n"
+        "   - ProjectD2/pd2data.mpq, pd2monchars.mpq\n"
+        "   - d2data.mpq, d2exp.mpq, d2char.mpq\n\n"
+        " Returning to menu in 7 seconds...\n"
+        "======================================================\n"
+    )
+    for dev in (os.environ.get('CUR_TTY'), os.environ.get('CURR_TTY'), '/dev/tty0', '/dev/tty1'):
+        if not dev:
+            continue
+        try:
+            with open(dev, 'w') as f:
+                f.write(msg)
+                f.flush()
+                break
+        except OSError:
+            pass
+    print(msg, file=sys.stderr, flush=True)
+    if not os.environ.get('PD2_TESTING'):
+        time.sleep(7)
+
+
 @contextlib.contextmanager
 def lock(path, create=True):
     import fcntl
@@ -126,7 +159,7 @@ def launch(port, mode):
                 log(f"Game data source: {'local projectdiablo2-sd/gamedata' if game_loc is None else str(game_loc)}")
             except Exception as exc:
                 log(f"Game data resolution failed: {exc}", level='ERROR')
-                fixed_message("PD2 SD: Diablo II game files not found")
+                show_missing_game_files(port)
                 raise
 
         parent_ns = os.readlink('/proc/self/ns/mnt')
@@ -161,7 +194,8 @@ def main():
         return launch(port, mode)
     except (OSError, ValueError, StorageError) as exc:
         print('PD2 SD experiment: ' + str(exc), file=sys.stderr)
-        fixed_message('PD2 SD: ' + str(exc))
+        if "Diablo II game files not found" not in str(exc):
+            fixed_message('PD2 SD: ' + str(exc))
         try:
             log_path = port / 'logs/storage-session.log'
             if log_path.parent.is_dir():

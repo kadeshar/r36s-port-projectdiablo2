@@ -1,5 +1,5 @@
 {
-  "port_version": "1.4-test.1",
+  "port_version": "1.4",
   "runtime_version": "8.0",
   "experimental": true,
   "artifacts": [

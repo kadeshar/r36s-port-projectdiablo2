@@ -27,6 +27,7 @@ def log(msg):
     print(f"[FRESH-INSTALL] {msg}", flush=True)
 
 dry_run = "--dry-run" in sys.argv
+delete_game_files = "--delete-game-files" in sys.argv
 
 # 1. Locate ports dir
 candidates = ["/roms2/ports/projectdiablo2", "/roms/ports/projectdiablo2"]
@@ -110,6 +111,21 @@ try:
 except Exception as e:
     log(f"Notice: losetup check returned: {e}")
 
+# 4b. Isolate/remove game files from gamedata if requested (saves were already backed up in Step 3)
+if delete_game_files:
+    gamedata_dir = os.path.join(port_dir, "gamedata")
+    gamedata_backup_dir = os.path.join(roms_ports, f"projectdiablo2-gamedata-backup-{ts}")
+    log(f"Isolating game data to backup: {gamedata_backup_dir}")
+    if not dry_run:
+        os.makedirs(gamedata_backup_dir, exist_ok=True)
+        if os.path.isdir(gamedata_dir):
+            for entry in os.listdir(gamedata_dir):
+                if entry in ("Diablo II", "Diablo II_s14"):
+                    src_path = os.path.join(gamedata_dir, entry)
+                    dst_path = os.path.join(gamedata_backup_dir, entry)
+                    shutil.move(src_path, dst_path)
+                    log(f"Moved {src_path} -> {dst_path}")
+
 # 5. Clean runtime and first-boot artifacts (DO NOT touch saves or gamedata)
 paths_to_remove = [
     ("state image", os.path.join(port_dir, "storage", "state.ext4")),
@@ -184,14 +200,25 @@ for loc_name, loc_path in save_locations:
     saves = scan_saves(loc_path)
     post_saves_count += len(saves)
 
-log(f"Original saves count: {total_saves_count}, Post-reset saves count: {post_saves_count}")
-if post_saves_count < total_saves_count:
-    log("ERROR: Saves count decreased! Check backup immediately!")
-    sys.exit(1)
+if delete_game_files:
+    # Game data saves were moved to backup_dir alongside game data
+    isolated_gamedata_saves = scan_saves(os.path.join(backup_dir, "gamedata"))
+    total_preserved = post_saves_count + len(isolated_gamedata_saves)
+    log(f"Active port saves: {post_saves_count}, Isolated gamedata saves in backup: {len(isolated_gamedata_saves)}, Total: {total_preserved} (Original: {total_saves_count})")
+    if total_preserved < total_saves_count:
+        log("ERROR: Saves count decreased! Check backup immediately!")
+        sys.exit(1)
+    else:
+        log("PASS: All game saves intact and verified.")
 else:
-    log("PASS: All game saves intact and verified.")
+    log(f"Original saves count: {total_saves_count}, Post-reset saves count: {post_saves_count}")
+    if post_saves_count < total_saves_count:
+        log("ERROR: Saves count decreased! Check backup immediately!")
+        sys.exit(1)
+    else:
+        log("PASS: All game saves intact and verified.")
 
-# C. Verify game files still exist
+# C. Verify game files status
 game_exe_found = False
 for check_path in [
     os.path.join(port_dir, "gamedata", "Diablo II", "ProjectD2", "Game.exe"),
@@ -201,19 +228,29 @@ for check_path in [
 ]:
     if os.path.isfile(check_path):
         game_exe_found = True
-        log(f"PASS: Game executable verified at {check_path}")
         break
 
 if not game_exe_found:
-    log("NOTICE: Game executable not found in standard subdirectories, checking gamedata...")
     for root, dirs, files in os.walk(os.path.join(port_dir, "gamedata")):
         for f in files:
             if f.lower() == "game.exe":
                 game_exe_found = True
-                log(f"PASS: Game executable found at {os.path.join(root, f)}")
                 break
         if game_exe_found:
             break
+
+if delete_game_files:
+    if dry_run:
+        log("DRY-RUN: Game data isolation simulated (backup directory planned).")
+    elif not game_exe_found:
+        log("PASS: Game executable successfully removed from gamedata (clean test state for missing-game-files check).")
+    else:
+        log("WARNING: Game executable still found in gamedata!")
+else:
+    if game_exe_found:
+        log("PASS: Game executable verified intact.")
+    else:
+        log("NOTICE: Game executable not found in standard subdirectories.")
 
 # D. Launcher permissions
 launcher = os.path.join(roms_ports, "Project Diablo 2.sh")
@@ -226,7 +263,7 @@ log("Target console is now in clean first-boot state. User can launch game to te
 '''
 
 
-def run_remote(host, user, password, dry_run=False):
+def run_remote(host, user, password, dry_run=False, delete_game_files=False):
     print(f"Connecting to {host} as {user}...")
 
     cmd_prefix = []
@@ -240,17 +277,24 @@ def run_remote(host, user, password, dry_run=False):
         print("Error: neither plink nor ssh found in PATH.")
         sys.exit(1)
 
-    args = ["--dry-run"] if dry_run else []
+    args = []
+    if dry_run:
+        args.append("--dry-run")
+    if delete_game_files:
+        args.append("--delete-game-files")
+
     # Feed the python script via stdin: python3 - <args>
     full_cmd = cmd_prefix + ["python3", "-"] + args
     result = subprocess.run(full_cmd, input=REMOTE_SCRIPT, text=True, capture_output=False)
     return result.returncode
 
 
-def run_local(dry_run=False):
+def run_local(dry_run=False, delete_game_files=False):
     exec_globals = {"__name__": "__main__"}
     if dry_run:
         sys.argv.append("--dry-run")
+    if delete_game_files:
+        sys.argv.append("--delete-game-files")
     exec(REMOTE_SCRIPT, exec_globals)
     return 0
 
@@ -262,13 +306,14 @@ def main():
     parser.add_argument("--password", default="ark", help="Console password (default: ark)")
     parser.add_argument("--local", action="store_true", help="Run locally directly on console")
     parser.add_argument("--dry-run", action="store_true", help="Simulate without removing any files")
+    parser.add_argument("--delete-game-files", action="store_true", help="Isolate/remove game files from gamedata to test missing-game-files check")
 
     args = parser.parse_args()
 
     if args.local:
-        return run_local(dry_run=args.dry_run)
+        return run_local(dry_run=args.dry_run, delete_game_files=args.delete_game_files)
     else:
-        return run_remote(args.host, args.user, args.password, dry_run=args.dry_run)
+        return run_remote(args.host, args.user, args.password, dry_run=args.dry_run, delete_game_files=args.delete_game_files)
 
 
 if __name__ == "__main__":

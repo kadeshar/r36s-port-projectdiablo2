@@ -1,6 +1,6 @@
 #!/bin/bash
 # PORTMASTER: projectdiablo2.zip, Project Diablo 2.sh
-# Experimental private offline PD2 launcher, v1.4-test.1.
+# Experimental private offline PD2 launcher, v1.4.
 umask 077
 ulimit -c 0
 BASE=$(cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
@@ -109,7 +109,7 @@ emit() {
  last_event_ms=$t
  printf 'PD2_EVENT {%s%s}\n' "$1" "$e"
 }
-emit "\"event\":\"phase\",\"phase\":\"preflight\",\"port_version\":\"1.4-test.1\",\"runtime_version\":\"8.0\""
+emit "\"event\":\"phase\",\"phase\":\"preflight\",\"port_version\":\"1.4\",\"runtime_version\":\"8.0\""
 error() { printf 'PD2_EVENT {"event":"runtime_error","phase":"preflight","reason":"%s"}\n' "$1"; exit 1; }
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [[ -d /opt/system/Tools/PortMaster ]]; then controlfolder=/opt/system/Tools/PortMaster
@@ -151,6 +151,26 @@ except Exception:
  sys.exit(1)
 PY
 [[ $? == 0 ]] || exit 1
+has_inner_game=0
+for exe in \
+  "$PD2_PORT/gamedata/Diablo II/ProjectD2/Game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/ProjectD2/game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/Game.exe" \
+  "$PD2_PORT/gamedata/Diablo II/game.exe" \
+  "$PD2_PORT/gamedata/ProjectD2/Game.exe" \
+  "$PD2_PORT/gamedata/ProjectD2/game.exe"; do
+  if [[ -f "$exe" ]]; then
+    has_inner_game=1
+    break
+  fi
+done
+if [[ "$has_inner_game" -ne 1 ]]; then
+  detected=$(find "$PD2_PORT/gamedata" -maxdepth 3 \( -iname "game.exe" \) 2>/dev/null | head -n 1)
+  if [[ -n "$detected" ]]; then
+    has_inner_game=1
+  fi
+fi
+[[ "$has_inner_game" == 1 ]] || error invalid_layout
 "${SUDO[@]}" mount --bind "$PD2_PORT/gamedata" "$PD2_RUN/gamedata" || error invalid_layout
 mounted_data=1
 "${SUDO[@]}" mount -o remount,bind,ro "$PD2_RUN/gamedata" || error invalid_layout

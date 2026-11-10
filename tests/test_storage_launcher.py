@@ -3,6 +3,7 @@ import contextlib
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -51,6 +52,114 @@ class StorageLauncherTests(unittest.TestCase):
         self.assertEqual(events[0], ('lock-enter', 'session.lock'))
         self.assertEqual(events[1], ('validated', {'write_stamp': True}))
         self.assertEqual(events[-1], ('lock-exit', 'session.lock'))
+
+    def test_launch_missing_game_files_triggers_screen_message(self):
+        temp = os.path.join(tempfile.gettempdir(), 'pd2-launcher-' + uuid.uuid4().hex)
+        os.makedirs(temp)
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        port = Path(temp) / 'projectdiablo2'
+        (port / 'logs').mkdir(parents=True)
+        (port / 'runtime').mkdir()
+        (port / 'runtime' / 'box86').write_bytes(b'box')
+
+        @contextlib.contextmanager
+        def fake_lock(path):
+            yield
+
+        def fake_source_data(p):
+            raise storage_launcher.StorageError('Diablo II game files not found. Place Diablo II into gamedata')
+
+        with mock.patch.object(storage_launcher.sys, 'platform', 'linux'), \
+             mock.patch.object(storage_launcher.os, 'getuid', return_value=1000, create=True), \
+             mock.patch.object(storage_launcher.shutil, 'which', return_value='/bin/tool'), \
+             mock.patch.object(storage_launcher, 'lock', side_effect=fake_lock), \
+             mock.patch.object(storage_launcher, 'validated', return_value=(port, {}, {})), \
+             mock.patch.object(storage_launcher, 'source_data', side_effect=fake_source_data), \
+             mock.patch.object(storage_launcher, 'show_missing_game_files') as mock_show:
+            with self.assertRaises(storage_launcher.StorageError):
+                storage_launcher.launch(port, 'launch')
+            mock_show.assert_called_once_with(port)
+
+    def test_show_missing_game_files_formats_screen_message(self):
+        temp = os.path.join(tempfile.gettempdir(), 'pd2-launcher-' + uuid.uuid4().hex)
+        os.makedirs(temp)
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        port = Path(temp) / 'projectdiablo2'
+        written = []
+
+        class FakeFile:
+            def write(self, s):
+                written.append(s)
+            def flush(self):
+                pass
+
+        @contextlib.contextmanager
+        def fake_open(path, mode='r'):
+            yield FakeFile()
+
+        with mock.patch.dict(os.environ, {'PD2_TESTING': '1', 'CUR_TTY': '/dev/fake_tty'}), \
+             mock.patch('builtins.open', side_effect=fake_open):
+            storage_launcher.show_missing_game_files(port)
+
+        full_output = ''.join(written)
+        self.assertIn('\033c', full_output)
+        self.assertIn('ERROR: Game files missing from gamedata!', full_output)
+        self.assertIn('ProjectD2/Game.exe', full_output)
+        self.assertIn('Returning to menu in 7 seconds...', full_output)
+
+    def test_project_diablo_2_launcher_detects_missing_game_files(self):
+        if not shutil.which('bash'):
+            self.skipTest('bash not found in PATH')
+        temp = os.path.join(tempfile.gettempdir(), 'pd2-sh-' + uuid.uuid4().hex)
+        os.makedirs(temp)
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        ports_dir = Path(temp) / 'ports'
+        ports_dir.mkdir()
+        root = Path(__file__).resolve().parents[1]
+        sh_script = ports_dir / 'Project Diablo 2.sh'
+        shutil.copy2(root / 'sdcard/ports/Project Diablo 2.sh', sh_script)
+        pd2_dir = ports_dir / 'projectdiablo2'
+        pd2_dir.mkdir()
+        (pd2_dir / 'gamedata').mkdir()
+
+        res = subprocess.run(['bash', 'Project Diablo 2.sh'],
+                             cwd=str(ports_dir),
+                             env=dict(os.environ, WSLENV='PD2_TESTING/u', PD2_TESTING='1'),
+                             capture_output=True, errors='replace')
+        self.assertEqual(res.returncode, 1)
+        log_file = pd2_dir / 'logs/storage-session.log'
+        self.assertTrue(log_file.exists())
+        self.assertIn('missing_game_files', log_file.read_text(encoding='utf-8'))
+
+    def test_project_diablo_2_launcher_proceeds_when_game_files_present(self):
+        if not shutil.which('bash'):
+            self.skipTest('bash not found in PATH')
+        temp = os.path.join(tempfile.gettempdir(), 'pd2-sh-' + uuid.uuid4().hex)
+        os.makedirs(temp)
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        ports_dir = Path(temp) / 'ports'
+        ports_dir.mkdir()
+        root = Path(__file__).resolve().parents[1]
+        sh_script = ports_dir / 'Project Diablo 2.sh'
+        shutil.copy2(root / 'sdcard/ports/Project Diablo 2.sh', sh_script)
+        pd2_dir = ports_dir / 'projectdiablo2'
+        pd2_dir.mkdir()
+        (pd2_dir / 'gamedata/Diablo II/ProjectD2').mkdir(parents=True)
+        (pd2_dir / 'gamedata/Diablo II/ProjectD2/Game.exe').write_bytes(b'exe')
+        (pd2_dir / 'storage-tools').mkdir(parents=True)
+        (pd2_dir / 'storage-tools/storage_launcher.py').write_text(
+            'import sys\nprint("STORAGE_LAUNCHER_REACHED")\nsys.exit(0)\n', encoding='utf-8'
+        )
+
+        res = subprocess.run(['bash', 'Project Diablo 2.sh'],
+                             cwd=str(ports_dir),
+                             env=dict(os.environ, WSLENV='PD2_TESTING/u', PD2_TESTING='1'),
+                             capture_output=True, text=True, errors='replace', timeout=10)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("STORAGE_LAUNCHER_REACHED", res.stdout)
+        log_file = pd2_dir / 'logs/storage-session.log'
+        if log_file.exists():
+            self.assertNotIn('missing_game_files', log_file.read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__':
