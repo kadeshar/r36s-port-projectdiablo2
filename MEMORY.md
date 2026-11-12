@@ -4,6 +4,145 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## Version Bump to `1.5-test.1` + Release ZIP in `.temp/release/` (User-Directed, 2026-11-12)
+
+- **User request:**
+  - *"Change version on 1.5-test.1 and create zip in .temp\release"*
+- **Six-Pin Version Update to `1.5-test.1` (Rule 7):**
+  - [`sdcard/ports/projectdiablo2/scripts/layout.py`](sdcard/ports/projectdiablo2/scripts/layout.py) L16: `VERSION = '1.5-test.1'`
+  - [`runtime-manifest.json`](runtime-manifest.json) L2: `"port_version": "1.5-test.1"`
+  - [`sdcard/ports/projectdiablo2/runtime-manifest.json`](sdcard/ports/projectdiablo2/runtime-manifest.json) L2: `"port_version": "1.5-test.1"`
+  - [`sdcard/ports/Project Diablo 2.sh`](sdcard/ports/Project%20Diablo%202.sh) L186: `"port_version":"1.5-test.1"`
+  - [`sdcard/ports/projectdiablo2/private-launcher.sh`](sdcard/ports/projectdiablo2/private-launcher.sh) L3 (`v1.5-test.1.`) and L120 (`\"port_version\":\"1.5-test.1\"`)
+  - [`tools/check_update.py`](tools/check_update.py) L5: `VERSION='1.5-test.1'`
+- **Supporting Version References Synchronized:**
+  - [`sdcard/ports/projectdiablo2/scripts/run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh) L21: `export PORT_VERSION="${PD2_PORT_VERSION:-1.5-test.1}"`
+  - [`sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py`](sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py) L221: `return '1.5-test.1'`
+  - [`tests/test_performance_overlay.py`](tests/test_performance_overlay.py) L388–389: `version='1.5-test.1'`
+- **Verification & Artifact:**
+  - `unittest`: `test_layout.py` (55/55 OK), `test_performance_overlay.py` (21/21 OK), `test_start_menu.py` (39 ran OK, 1 skipped), `test_payload_cleanup.py` (4/4 OK).
+  - Archive: [`.temp/release/projectdiablo2-port-1.5-test.1.zip`](.temp/release/projectdiablo2-port-1.5-test.1.zip) (122 entries, 188,910,869 bytes, SHA256 `761f84a89a6ae38188a2b809326cc1f7350b374c7f04e8eeaa3955851304fa42`, `testzip()` OK, all in-ZIP version pins verified).
+
+- **Console Deployment & Fresh-Install Simulation (`192.168.50.136`, 2026-11-12):**
+  - Pre-deploy process check clean; backed up previous 6 files to `/roms2/ports/projectdiablo2/pre-1.5-test.1-backup-20261112_092315`.
+  - Deployed `1.5-test.1` payload files (`Project Diablo 2.sh`, `private-launcher.sh`, `runtime-manifest.json`, `scripts/layout.py`, `scripts/run-game.sh`, `scripts/overlay/x11_hud.py`) and ran full 121-file audit against [`.temp/release/projectdiablo2-port-1.5-test.1.zip`](.temp/release/projectdiablo2-port-1.5-test.1.zip): `OK=121 MISMATCH=0 MISSING=0`.
+  - Remote `bash -n`, `python3 -m py_compile`, and `storage-tools/storage_launcher.py --check` (`PASS: ext4 image and read-only Wine mounted in private namespace`) exited 0.
+  - Updated [`tools/simulate_fresh_install.py`](tools/simulate_fresh_install.py) to also back up `config/settings.json` + `config/default.filter` into the backup folder, atomically reset `config/settings.json` to `{"schema_version": 1, "profile": "gdi", "swap_ab": false, "game_resolution": "640x480", "perf_overlay": 0, "loot_filter": "default"}`, restore `config/default.filter` from `defaults/default.filter`, and verify those defaults post-reset.
+  - Executed `python tools/simulate_fresh_install.py --host 192.168.50.136` (dry-run + live): 36/36 save files + `config/settings.json` + `config/default.filter` backed up to `/roms2/ports/projectdiablo2-saves-backup-20261112_092628`, `state.ext4` + `session.lock` + `logs/*.log` + `~/.local/share/pd2-r36s/session.lock` removed, launcher config verified at defaults (`640x480`, `perf_overlay=0`, `loot_filter=default`), 36/36 active saves and `Game.exe` verified intact, `Project Diablo 2.sh` `0755`. Console ready for user first-boot test (Rule 8).
+
+---
+
+## Fix `mod_ArkOS.txt` / `mangohud_portmaster.env` Overriding `PD2_FPS=4` (`192.168.50.136`, 2026-11-12)
+
+- **User report:**
+  - *"Still perf overlay is overrideen on Level 4."*
+- **Root Cause Identified on Console (`192.168.50.136`):**
+  - While `/roms2/ports/projectdiablo2/config/settings.json` stored `"perf_overlay": 2` and `/proc/288560/environ` (`private-launcher.sh`) had no `PD2_FPS`, `private-launcher.sh` L128 sourced `/opt/system/Tools/PortMaster/mod_ArkOS.txt`, which sourced `/home/ark/.config/mangohud_portmaster.env`.
+  - `/home/ark/.config/mangohud_portmaster.env` exported `PD2_FPS=4`, `PERFOVERLAY_ENABLED=1`, `PERFOVERLAY_LEVEL=4`, `MANGOHUD=1`, `MANGOHUD_CONFIGFILE=...`, and `LD_PRELOAD=/roms2/ports/performance-overlay/libperfoverlay.so`.
+  - Because `private-launcher.sh` validated/unset `PD2_FPS` at L12–16 **before** sourcing `mod_ArkOS.txt`, `layout.py` at L181 saw `PD2_FPS=4` in the environment and overrode `settings.json`'s `perf_overlay` with `4` in `session-layout.json`.
+- **Fix Implemented:**
+  - [`sdcard/ports/projectdiablo2/private-launcher.sh`](sdcard/ports/projectdiablo2/private-launcher.sh):
+    - Saved explicit caller `PD2_FPS`, `PD2_GAME_RESOLUTION`, `PD2_LOOT_FILTER`, and `LD_PRELOAD` before sourcing PortMaster scripts.
+    - Immediately after `get_controls`, restored those caller values (or `unset` if empty) and unset `MANGOHUD`, `MANGOHUD_CONFIGFILE`, `PERFOVERLAY_ENABLED`, `PERFOVERLAY_LEVEL` so PortMaster/MangoHud hooks cannot clobber persisted PD2 settings or inject external preloads.
+  - Added regression contract check in [`tests/test_start_menu.py`](tests/test_start_menu.py) L552–563.
+- **Verification & Console Deployment (`192.168.50.136`):**
+  - Local Windows `test_start_menu.py`: 39 ran OK, 1 skipped.
+  - Console Linux `/tmp/pd2-tests`: `bash -n private-launcher.sh` OK, `test_start_menu.py` 40/40 OK.
+  - Deployed [`sdcard/ports/projectdiablo2/private-launcher.sh`](sdcard/ports/projectdiablo2/private-launcher.sh) to `/roms2/ports/projectdiablo2/private-launcher.sh` (SHA256 `bcf80a4529f20b9117fca34846f593904ae075d40cb013aab08007fe737ca1b7`, `bash -n` OK, pre-deploy backup in `/roms2/ports/projectdiablo2/pre-mangohud-fix-backup-*`).
+  - Observed user's subsequent launch (`20261112T081205Z-293761`) pass `PD2_FPS=1` (matching user's persisted `settings.json`, no longer overridden to `4`).
+
+---
+
+## Default `640x480` Restore + `perf_overlay` Diagnostics & Persistence Verification (`192.168.50.136`, 2026-11-12)
+
+- **User request:**
+  - *"Mostly options in launcher are saved. Only Perf overlay not. Fix that. Also made 640x480 as default because 800x600 is too much for R36S"*
+- **Investigation Findings (`192.168.50.136`):**
+  - Inspected `/roms2/ports/projectdiablo2/config/settings.json`, `logs/overlay.log`, and `logs/pd2-session-20261112T*.jsonl`:
+    - `config/settings.json` on console already persisted `"perf_overlay": 2` (`mtime` `08:09` after session `070835Z`), alongside `"game_resolution": "1024x768"` and `"loot_filter": "Hiim_Crafting_Sorceress_Focused.filter"`.
+    - `logs/overlay.log` confirmed `initial_level=2` carried across sessions `07:52:39` and `08:00:21` without menu changes, `initial_level=4` at `08:04:02` after menu selection, in-game `FN+R1` hotkey switches (`4 -> 0 -> 1 -> 2` at `08:07:00` — session-only), and `initial_level=2` at `08:09:46`.
+    - Verified on console Python 3.13 + local `DummyScreen` that `start_menu.Menu()` + `menu_x11.Screen.draw()` renders `PERF OVERLAY: LEVEL 2` when `PD2_FPS=2`.
+  - Identified two non-SD-storage/observability gaps:
+    - [`sdcard/ports/Project Diablo 2.sh`](sdcard/ports/Project%20Diablo%202.sh) L100/L258-260 still sets `export PD2_FPS="${PD2_FPS:-0}"` without `layout_get perf_overlay` (unlike `game_resolution` and `loot_filter`), though normal console launches exit via `storage_launcher.py` -> [`sdcard/ports/projectdiablo2/private-launcher.sh`](sdcard/ports/projectdiablo2/private-launcher.sh) at L93. Left [`sdcard/ports/Project Diablo 2.sh`](sdcard/ports/Project%20Diablo%202.sh) untouched per `AGENTS.md` Rule 3.
+    - Session JSONL logs recorded `render_resolution` and `loot_filter` checks, while `fps_counter` only logged `"overlay"`/`"disabled"` without the numeric `perf_overlay` level (`0..4`).
+- **Changes Implemented:**
+  - Restored `640x480` as default resolution across [`sdcard/ports/projectdiablo2/scripts/layout.py`](sdcard/ports/projectdiablo2/scripts/layout.py), [`sdcard/ports/projectdiablo2/scripts/start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py), [`sdcard/ports/projectdiablo2/scripts/menu_x11.py`](sdcard/ports/projectdiablo2/scripts/menu_x11.py), and [`sdcard/ports/projectdiablo2/scripts/run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh).
+  - Added `'perf_overlay': ('0', '1', '2', '3', '4')` `session_probe` schema support in [`sdcard/ports/projectdiablo2/scripts/safe_log.py`](sdcard/ports/projectdiablo2/scripts/safe_log.py) and emitted `perf_overlay` probe events on menu confirmation in [`sdcard/ports/projectdiablo2/scripts/weston-session.sh`](sdcard/ports/projectdiablo2/scripts/weston-session.sh) and launch in [`sdcard/ports/projectdiablo2/scripts/run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh).
+  - Updated tests in [`tests/test_layout.py`](tests/test_layout.py), [`tests/test_resolution_patch.py`](tests/test_resolution_patch.py), [`tests/test_start_menu.py`](tests/test_start_menu.py), [`tests/test_menu_x11.py`](tests/test_menu_x11.py), and [`tests/test_shell.py`](tests/test_shell.py).
+- **Validation:**
+  - Local Windows `unittest`: `test_layout.py` (55/55 OK), `test_resolution_patch.py` (35 ran OK, 1 skipped), `test_start_menu.py` (39 ran OK, 1 skipped), `test_menu_x11.py` (25 ran OK, 2 skipped), `test_safe_log.py` (43 ran OK, 5 skipped), `test_payload_cleanup.py` (4/4 OK).
+  - Console Linux `/tmp/pd2-tests`: `test_layout.py` (55/55 OK), `test_resolution_patch.py` (36/36 OK), `test_start_menu.py` (40/40 OK incl. Bash harness), `test_menu_x11.py` (25 ran OK, 2 Xvfb skipped), `test_safe_log.py` (48/48 OK), `test_shell.py` (80/80 OK).
+- **Console Deployment (`ark@192.168.50.136:/roms2/ports/projectdiablo2/`):**
+  - Pre-deploy process check clean; backup created at `/roms2/ports/projectdiablo2/pre-640-default-backup-20261112_084700`.
+  - Deployed 6 updated scripts (`layout.py`, `start_menu.py`, `menu_x11.py`, `run-game.sh`, `safe_log.py`, `weston-session.sh`); all 6 verified byte-for-byte by SHA-256.
+  - Pre/post saves & assets unchanged (`saves=13`, `saves_s14=16`, `gamedata=306`, `config/settings.json` SHA-256 `2e80211db1031b9c0e7a1d5822b18b619d672189057b635b9487c69d45408c43`).
+  - Remote `bash -n`, `python3 -m py_compile`, and `storage-tools/storage_launcher.py --check` (`PASS: ext4 image and read-only Wine mounted in private namespace`) exited 0. No game launched (Rule 8).
+
+---
+
+## Default `800x600` + Menu Settings Persistence (`game_resolution`, `perf_overlay`, `loot_filter`) (`192.168.50.136`, 2026-11-11)
+
+- **User request:**
+  - *"Wow, that works great. In launcher set 800x600, Perf overlay: off, loot filter: default and make it saved when someone changing that."*
+- **Changes Implemented:**
+  - Switched default display resolution from `640x480` to `800x600` across [`sdcard/ports/projectdiablo2/scripts/layout.py`](sdcard/ports/projectdiablo2/scripts/layout.py), [`sdcard/ports/projectdiablo2/scripts/start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py), [`sdcard/ports/projectdiablo2/scripts/menu_x11.py`](sdcard/ports/projectdiablo2/scripts/menu_x11.py), and [`sdcard/ports/projectdiablo2/scripts/run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh) (while `Perf overlay` defaults `0`/OFF and `Loot filter` defaults `'default'`).
+  - Added `perf_overlay` (`0..4`, type-strict integer validation rejecting bools/strings/out-of-range) and `--save-settings` flag in [`sdcard/ports/projectdiablo2/scripts/layout.py`](sdcard/ports/projectdiablo2/scripts/layout.py):
+    - `--get perf_overlay` and `--dump` (`perf_overlay\t<level>` when present in `session-layout.json`) expose stored overlay level cleanly without breaking 9-key dump fixtures.
+    - When `--save-settings` is passed by the launcher menu after confirmation (`menu_valid == 1`), `game_resolution`, `perf_overlay`, and `loot_filter` are atomically saved in `config/settings.json` only when changed; plain CLI/session overrides without `--save-settings` remain session-only.
+  - Updated [`sdcard/ports/projectdiablo2/private-launcher.sh`](sdcard/ports/projectdiablo2/private-launcher.sh) so unset `PD2_FPS` loads `perf_overlay` from `layout.py --dump` (while explicit caller `PD2_FPS` `0..4` stays a session-only override).
+  - Updated [`sdcard/ports/projectdiablo2/scripts/weston-session.sh`](sdcard/ports/projectdiablo2/scripts/weston-session.sh) to pass `--save-settings` to `layout.py --volatile-work` only on confirmed menu launch (`save_menu_settings=1`; cancel/disable skips persistence).
+  - Fixed Row 0 resolution cycling in [`sdcard/ports/projectdiablo2/scripts/start_menu.py`](sdcard/ports/projectdiablo2/scripts/start_menu.py) (`resolution_changed` starting from `inherited_resolution`) so D-pad Left/Right cycles cleanly `[640x480, 800x600, 1024x768, 1068x600]` without repeating `'default'`.
+  - Updated and added unit/shell tests in [`tests/test_layout.py`](tests/test_layout.py), [`tests/test_resolution_patch.py`](tests/test_resolution_patch.py), [`tests/test_start_menu.py`](tests/test_start_menu.py), [`tests/test_menu_x11.py`](tests/test_menu_x11.py), and [`tests/test_shell.py`](tests/test_shell.py).
+- **Validation:**
+  - Console Linux `/tmp/pd2-tests` run: `bash -n` OK, `py_compile` OK, `test_start_menu.py` (40/40 OK incl. Bash harness), `test_menu_x11.py` (27 ran OK, 2 Xvfb skipped), `test_resolution_patch.py` (36/36 OK), `test_layout.py` (55/55 OK), `test_native_cast_layout.py` (15/15 OK), `test_controller_mode.py` (18/18 OK), `test_payload_cleanup.py` (4/4 OK), `test_shell.py` (80/80 OK).
+- **Console Deployment (`ark@192.168.50.136:/roms2/ports/projectdiablo2/`):**
+  - Pre-deploy process check clean; backup saved at `/roms2/ports/projectdiablo2/pre-menu-save-backup-20261111_210854` (incl. previous `config/settings.json`).
+  - Deployed 6 updated scripts + set `/roms2/ports/projectdiablo2/config/settings.json` (`147` B, SHA256 `6eb66d177b64761708be6155ff282da73e09a507cfc1fc01fd8d7851c3915e33`) to `game_resolution: "800x600"`, `perf_overlay: 0`, `loot_filter: "default"`.
+  - All 7 remote files verified by size and SHA-256; pre/post saves unchanged (`saves=13`, `saves_s14=16`, `gamedata=306`); remote `bash -n` (6 `.sh`), `py_compile` (30 `.py`), and `storage-tools/storage_launcher.py --check` (`PASS: ext4 image and read-only Wine mounted in private namespace`) exited 0. No game launched.
+- **Pending User Validation on R36S:**
+  - Open launcher menu on R36S (`800x600`, `PERF OVERLAY: OFF`, `LOOT FILTER: DEFAULT`), change settings (e.g. `PERF OVERLAY` / `RESOLUTION` / `LOOT FILTER`), launch and quit cleanly, then relaunch to confirm choices persisted.
+
+---
+
+## GDI 5:4 SWAR + Bilinear Downscaler (`800x600 -> 640x480`) in Both `ddraw.dll` Builds & Console Deploy (`192.168.50.136`, 2026-11-11)
+
+- **User request:**
+  - Compare `C:\src\r36s-port-croc2` scaling (`320x240 -> 640x480`) and GitHub branch `kadeshar/r36s-port-projectdiablo2:800x600-support` `MEMORY.md`, then implement and deploy recommended fix for slow/corrupted `800x600 -> 640x480` GDI downscaling on `192.168.50.136`.
+- **Root-Cause Diagnosis:**
+  - `r36s-port-croc2` uses Weston `scale=2` integer divider (`320x240 -> 640x480`); Weston `scale=` only supports integer divisors >= 1 and cannot downscale `800x600 -> 640x480` (`0.8x`).
+  - Upstream `cnc-ddraw` GDI mode uses Wine `StretchDIBits`, which decimates via nearest-neighbor (`black dots`, dropped 1px UI/font strokes).
+  - Earlier `800x600-support` attempt missed `8bpp` palettized Diablo II mode and only patched `compat/cnc-ddraw/ddraw.dll`, leaving `compat/present-renderer/ddraw.dll` unpatched (active whenever Performance Overlay Levels 1–4 or presentation diagnostics are enabled).
+- **Files Created / Updated:**
+  - [`tools/pd2_gdi_scaler.h`](tools/pd2_gdi_scaler.h) (SHA256 `578bc3b776ba9082fb05e2d0a50629ba834985d640fece2545d2e7de319e61f8`):
+    - Division-free 5:4 SWAR area-weighted downscaler (`[13,3]>>4`, `[5,3]>>3`) for `800x600 -> 640x480` (`path=1` 16bpp RGB555/RGB565, `path=2` 32bpp, `path=3` 8bpp palettized -> 32bpp).
+    - Cached 2-row fixed-point `>>4` bilinear fallback (`path=4/5/6` for `1024x768 -> 640x480`, `1068x600 -> 640x360`, etc.), `SetDIBitsToDevice` presentation, and fallback to `real_StretchDIBits` when `path=0` or copy fails.
+    - Bounded numeric telemetry in volatile `pd2-scale.jsonl` (`CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT`, max 64 lines / 16384 bytes) plus flushed `[pd2_scale]` lines to `stderr` (`logs/wine-game.log`).
+  - [`tools/test_gdi_scaler.c`](tools/test_gdi_scaler.c), [`tools/cnc_ddraw_build.py`](tools/cnc_ddraw_build.py), [`tools/build_cnc_ddraw_scaler.py`](tools/build_cnc_ddraw_scaler.py), [`tools/build_present_renderer.py`](tools/build_present_renderer.py).
+  - Built deterministically from pinned `.state/ddraw/upstream.zip` (`a4f638383364e3bc1e4682b1d549a1f5400fa0cc312ee216d1b42555b1c814eb`):
+    - [`sdcard/ports/projectdiablo2/compat/cnc-ddraw/ddraw.dll`](sdcard/ports/projectdiablo2/compat/cnc-ddraw/ddraw.dll): `439296` bytes, SHA256 `cbbdba23aa5ad52e25de42504715ded7fe86d5af04803cbb73fdce9ddfa0be76` (`manifest.json`, `source.patch` SHA256 `ed92ae09cd7d4958228f089592ab202f7be3058a6a23915d5a3aa9c185caf8d8`).
+    - [`sdcard/ports/projectdiablo2/compat/present-renderer/ddraw.dll`](sdcard/ports/projectdiablo2/compat/present-renderer/ddraw.dll): `441856` bytes, SHA256 `b299b5c89dd7d71c11a6574fc7b163e9efca0f4147c514084fba6f2fc13697ea` (`manifest.json`, `source.patch` SHA256 `434f903a0c5b76aae8bc8a87ed1d8c60d9052e04f8e3580225e3d5b62e055778`).
+  - Pinned updated sizes/hashes in [`sdcard/ports/projectdiablo2/scripts/layout.py`](sdcard/ports/projectdiablo2/scripts/layout.py) and [`sdcard/ports/projectdiablo2/scripts/present_renderer.py`](sdcard/ports/projectdiablo2/scripts/present_renderer.py).
+  - Added `rm -f "$PD2_WORK/ProjectD2/pd2-scale.jsonl"` before launch in [`sdcard/ports/projectdiablo2/scripts/run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh).
+  - Synchronized test pins and added shared scaler header check across [`tests/test_layout.py`](tests/test_layout.py), [`tests/test_display.py`](tests/test_display.py), [`tests/test_fps_renderer.py`](tests/test_fps_renderer.py), [`tests/test_present_renderer.py`](tests/test_present_renderer.py).
+- **Static & Test Verification:**
+  - Native C tests (`test_gdi_scaler.c`, `test_present_metrics.c`) passed in both builders (host MSVC `/O2`: ~334–414 us/frame for 8/16/32bpp `800x600->640x480`).
+  - Windows unittests: `test_layout.py` (54 OK), `test_present_renderer.py` (14 ran OK, 6 skipped), `test_safe_log.py` (48 ran OK, 5 skipped), `test_payload_cleanup.py` (4 OK); pre-existing 1.4 drift only in `test_display.py` L44 (`'/v Default /t REG_SZ'`, 4/5 passed) and `test_fps_renderer.py` L170 (`fps_renderer.py`, 12/13 passed incl. 5 skipped).
+  - Console Linux `/tmp/pd2-tests` run: `bash -n` OK, `py_compile` OK, `test_present_renderer.py` (14/14 OK, 0 skipped), `test_layout.py` (54/54 OK), `test_safe_log.py` (48/48 OK), `test_shell.py` (80/80 OK), plus same pre-existing 1.4 drift in `test_display.py` (4/5) and `test_fps_renderer.py` (12/13).
+- **Console Deployment (`ark@192.168.50.136:/roms2/ports/projectdiablo2/`):**
+  - Pre-deploy process check clean; backup created at `/roms2/ports/projectdiablo2/pre-scaler-backup-20261111_202532`.
+  - Pre/post save & asset check unchanged (`saves`: 13 files SHA256-verified, `saves_s14`: 16 files SHA256-verified, `gamedata`: 306 files size-verified).
+  - Deployed 12 files (`compat/cnc-ddraw/*`, `compat/present-renderer/*`, `scripts/layout.py`, `scripts/present_renderer.py`, `scripts/run-game.sh`) with byte-for-byte SHA256 verification.
+  - Remote checks passed: `bash -n` (6 `.sh`), `py_compile` (30 `.py`), `layout.companion_file` & `present_renderer._renderer` pin authentication, and `storage-tools/storage_launcher.py --port /roms2/ports/projectdiablo2 --check` (`PASS: ext4 image and read-only Wine mounted in private namespace`).
+  - No game session launched (Rule 8).
+- **Pending User Validation on R36S:**
+  - Launch Project Diablo 2 manually at `800x600` (both normal and with FPS Overlay active), verify image sharpness, 1px font readability, speed, and check `logs/wine-game.log` for `[pd2_scale]` telemetry.
+- **Failed / Avoided Approaches (Do Not Repeat):**
+  - Weston `scale=` downscaling (integer-only `>=1`, cannot downscale `0.8x`).
+  - Patching only `compat/cnc-ddraw/ddraw.dll` without `compat/present-renderer/ddraw.dll` (overlay mode selects `present-renderer`).
+  - Relying on Wine `StretchDIBits` nearest-neighbor (drops 1px glyph lines / leaves black dots).
+
+---
+
 ## 1.4 Console Deployment & 121/121 File Integrity Audit (`192.168.50.136`, 2026-11-10)
 
 - **User request:**

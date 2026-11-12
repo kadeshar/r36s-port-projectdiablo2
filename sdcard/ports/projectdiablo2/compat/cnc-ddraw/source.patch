@@ -1,6 +1,11 @@
 --- a/src/render_gdi.c
 +++ b/src/render_gdi.c
-@@ -13,27 +13,6 @@
+@@ -9,31 +9,11 @@
+ #include "hook.h"
+ #include "debug.h"
+ #include "config.h"
++#include "pd2_gdi_scaler.h"
+ 
  
  DWORD WINAPI gdi_render_main(void)
  {
@@ -28,7 +33,7 @@
      Sleep(500);
  
      fpsl_init();
-@@ -60,22 +39,6 @@
+@@ -60,22 +40,6 @@
          {
              if (g_config.lock_surfaces)
                  EnterCriticalSection(&g_ddraw.primary->cs);
@@ -51,6 +56,46 @@
  
              BOOL upscale_hack = g_config.vhack && util_detect_low_res_screen();
  
+@@ -127,20 +91,25 @@
+             else if (!g_ddraw.child_window_exists &&
+                 (g_ddraw.render.width != g_ddraw.width || g_ddraw.render.height != g_ddraw.height))
+             {
+-                lines_copied = real_StretchDIBits(
+-                    g_ddraw.render.hdc,
+-                    g_ddraw.render.viewport.x,
+-                    g_ddraw.render.viewport.y,
+-                    g_ddraw.render.viewport.width,
+-                    g_ddraw.render.viewport.height,
+-                    0,
+-                    0,
+-                    g_ddraw.width,
+-                    g_ddraw.height,
+-                    g_ddraw.primary->surface,
+-                    g_ddraw.primary->bmi,
+-                    DIB_RGB_COLORS,
+-                    SRCCOPY);
++                lines_copied = pd2_gdi_scale_present();
++
++                if (lines_copied == 0)
++                {
++                    lines_copied = real_StretchDIBits(
++                        g_ddraw.render.hdc,
++                        g_ddraw.render.viewport.x,
++                        g_ddraw.render.viewport.y,
++                        g_ddraw.render.viewport.width,
++                        g_ddraw.render.viewport.height,
++                        0,
++                        0,
++                        g_ddraw.width,
++                        g_ddraw.height,
++                        g_ddraw.primary->surface,
++                        g_ddraw.primary->bmi,
++                        DIB_RGB_COLORS,
++                        SRCCOPY);
++                }
+             }
+ 
+             if (lines_copied == 0 || lines_copied == GDI_ERROR)
 --- a/src/render_ogl.c
 +++ b/src/render_ogl.c
 @@ -131,7 +131,8 @@
@@ -90,6 +135,750 @@
      BOOL result = TRUE;
  
      if (g_ddraw.bpp != 8 || g_ogl.surface_tex_width > 4096 || g_ogl.surface_tex_height > 4096)
+--- a/inc/pd2_gdi_scaler.h
++++ b/inc/pd2_gdi_scaler.h
+@@ -0,0 +1,741 @@
++/* SPDX-License-Identifier: MIT
++ * Fast division-free GDI downscaler for cnc-ddraw on R36S (Cortex-A35 / Box86).
++ *
++ * Specialized 5:4 SWAR area-weighted path for 800x600 -> 640x480 (8/16/32bpp),
++ * plus cached fixed-point bilinear downscale fallback for 1024x768 -> 640x480
++ * and 1068x600 -> 640x360 so 1px bitmap fonts and dithered UI never lose lines
++ * to Wine GDI's nearest-neighbor StretchDIBits.
++ *
++ * Includes bounded numeric telemetry (max 64 lines in pd2-scale.jsonl + stderr).
++ */
++#ifndef PD2_GDI_SCALER_H
++#define PD2_GDI_SCALER_H
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#ifndef PD2_SCALER_CORE_ONLY
++#include <windows.h>
++#endif
++
++#define PD2_SCALE_MAX_W 640
++#define PD2_SCALE_MAX_H 480
++#define PD2_SCALE_MAX_LINES 64
++#define PD2_SCALE_FRAMES 120
++#define PD2_SCALE_FILE_LIMIT 16384u
++
++static uint16_t s_pd2_scaled16[PD2_SCALE_MAX_W * PD2_SCALE_MAX_H];
++static uint32_t s_pd2_scaled32[PD2_SCALE_MAX_W * PD2_SCALE_MAX_H];
++static uint32_t s_pd2_pal_rb[256];
++static uint32_t s_pd2_pal_g[256];
++
++static uint32_t s_pd2_hrow_a[PD2_SCALE_MAX_W];
++static uint32_t s_pd2_hrow_b[PD2_SCALE_MAX_W];
++static uint16_t s_pd2_hx[PD2_SCALE_MAX_W];
++static uint8_t  s_pd2_hw[PD2_SCALE_MAX_W];
++static uint16_t s_pd2_vy[PD2_SCALE_MAX_H];
++static uint8_t  s_pd2_vw[PD2_SCALE_MAX_H];
++static int s_pd2_tbl_sw = 0, s_pd2_tbl_sh = 0, s_pd2_tbl_dw = 0, s_pd2_tbl_dh = 0;
++
++static __inline uint32_t pd2_mix32_13_3(uint32_t a, uint32_t b)
++{
++    uint32_t rb = ((((a & 0x00FF00FFu) * 13u) + ((b & 0x00FF00FFu) * 3u)) >> 4) & 0x00FF00FFu;
++    uint32_t g  = ((((a & 0x0000FF00u) * 13u) + ((b & 0x0000FF00u) * 3u)) >> 4) & 0x0000FF00u;
++    return rb | g;
++}
++
++static __inline uint32_t pd2_mix32_5_3(uint32_t a, uint32_t b)
++{
++    uint32_t rb = ((((a & 0x00FF00FFu) * 5u) + ((b & 0x00FF00FFu) * 3u)) >> 3) & 0x00FF00FFu;
++    uint32_t g  = ((((a & 0x0000FF00u) * 5u) + ((b & 0x0000FF00u) * 3u)) >> 3) & 0x0000FF00u;
++    return rb | g;
++}
++
++static __inline uint32_t pd2_mix32_w16(uint32_t a, uint32_t b, uint32_t w1)
++{
++    uint32_t w0 = 16u - w1;
++    uint32_t rb = ((((a & 0x00FF00FFu) * w0) + ((b & 0x00FF00FFu) * w1)) >> 4) & 0x00FF00FFu;
++    uint32_t g  = ((((a & 0x0000FF00u) * w0) + ((b & 0x0000FF00u) * w1)) >> 4) & 0x0000FF00u;
++    return rb | g;
++}
++
++static __inline uint32_t pd2_expand16(uint16_t p, uint32_t gmask, uint32_t rbmask)
++{
++    return (((uint32_t)p & gmask) << 16) | ((uint32_t)p & rbmask);
++}
++
++static __inline uint16_t pd2_pack16(uint32_t x)
++{
++    return (uint16_t)((x >> 16) | x);
++}
++
++static __inline uint32_t pd2_mix16x_13_3(uint32_t a, uint32_t b, uint32_t mask32)
++{
++    return ((a * 13u + b * 3u) >> 4) & mask32;
++}
++
++static __inline uint32_t pd2_mix16x_5_3(uint32_t a, uint32_t b, uint32_t mask32)
++{
++    return ((a * 5u + b * 3u) >> 3) & mask32;
++}
++
++static __inline uint32_t pd2_mix16x_w16(uint32_t a, uint32_t b, uint32_t w1, uint32_t mask32)
++{
++    return ((a * (16u - w1) + b * w1) >> 4) & mask32;
++}
++
++static void pd2_scale_palette_rgb(const uint8_t* data_rgb_quads)
++{
++    int i;
++    for (i = 0; i < 256; i++)
++    {
++        uint32_t b = data_rgb_quads[i * 4 + 0];
++        uint32_t g = data_rgb_quads[i * 4 + 1];
++        uint32_t r = data_rgb_quads[i * 4 + 2];
++        s_pd2_pal_rb[i] = (r << 16) | b;
++        s_pd2_pal_g[i]  = (g << 8);
++    }
++}
++
++static void pd2_hrow_5_4_8(const uint8_t* src, uint32_t* dst)
++{
++    int i;
++    for (i = 0; i < 160; i++)
++    {
++        uint32_t rb0 = s_pd2_pal_rb[src[0]], g0 = s_pd2_pal_g[src[0]];
++        uint32_t rb1 = s_pd2_pal_rb[src[1]], g1 = s_pd2_pal_g[src[1]];
++        uint32_t rb2 = s_pd2_pal_rb[src[2]], g2 = s_pd2_pal_g[src[2]];
++        uint32_t rb3 = s_pd2_pal_rb[src[3]], g3 = s_pd2_pal_g[src[3]];
++        uint32_t rb4 = s_pd2_pal_rb[src[4]], g4 = s_pd2_pal_g[src[4]];
++        dst[0] = (((rb0 * 13u + rb1 * 3u) >> 4) & 0x00FF00FFu) | (((g0 * 13u + g1 * 3u) >> 4) & 0x0000FF00u);
++        dst[1] = (((rb1 * 5u  + rb2 * 3u) >> 3) & 0x00FF00FFu) | (((g1 * 5u  + g2 * 3u) >> 3) & 0x0000FF00u);
++        dst[2] = (((rb2 * 3u  + rb3 * 5u) >> 3) & 0x00FF00FFu) | (((g2 * 3u  + g3 * 5u) >> 3) & 0x0000FF00u);
++        dst[3] = (((rb3 * 3u  + rb4 * 13u) >> 4) & 0x00FF00FFu) | (((g3 * 3u  + g4 * 13u) >> 4) & 0x0000FF00u);
++        src += 5;
++        dst += 4;
++    }
++}
++
++static void pd2_hrow_5_4_32(const uint32_t* src, uint32_t* dst)
++{
++    int i;
++    for (i = 0; i < 160; i++)
++    {
++        uint32_t s0 = src[0], s1 = src[1], s2 = src[2], s3 = src[3], s4 = src[4];
++        dst[0] = pd2_mix32_13_3(s0, s1);
++        dst[1] = pd2_mix32_5_3(s1, s2);
++        dst[2] = pd2_mix32_5_3(s3, s2);
++        dst[3] = pd2_mix32_13_3(s4, s3);
++        src += 5;
++        dst += 4;
++    }
++}
++
++static void pd2_hrow_5_4_16(const uint16_t* src, uint32_t* dst, uint32_t gmask, uint32_t rbmask)
++{
++    uint32_t mask32 = (gmask << 16) | rbmask;
++    int i;
++    for (i = 0; i < 160; i++)
++    {
++        uint32_t s0 = pd2_expand16(src[0], gmask, rbmask);
++        uint32_t s1 = pd2_expand16(src[1], gmask, rbmask);
++        uint32_t s2 = pd2_expand16(src[2], gmask, rbmask);
++        uint32_t s3 = pd2_expand16(src[3], gmask, rbmask);
++        uint32_t s4 = pd2_expand16(src[4], gmask, rbmask);
++        dst[0] = pd2_mix16x_13_3(s0, s1, mask32);
++        dst[1] = pd2_mix16x_5_3(s1, s2, mask32);
++        dst[2] = pd2_mix16x_5_3(s3, s2, mask32);
++        dst[3] = pd2_mix16x_13_3(s4, s3, mask32);
++        src += 5;
++        dst += 4;
++    }
++}
++
++static void pd2_vrow_32_13_3(const uint32_t* r0, const uint32_t* r1, uint32_t* dst)
++{
++    int i;
++    for (i = 0; i < 640; i++)
++        dst[i] = pd2_mix32_13_3(r0[i], r1[i]);
++}
++
++static void pd2_vrow_32_5_3(const uint32_t* r0, const uint32_t* r1, uint32_t* dst)
++{
++    int i;
++    for (i = 0; i < 640; i++)
++        dst[i] = pd2_mix32_5_3(r0[i], r1[i]);
++}
++
++static void pd2_vrow_16_13_3(const uint32_t* r0, const uint32_t* r1, uint16_t* dst, uint32_t mask32)
++{
++    int i;
++    for (i = 0; i < 640; i++)
++        dst[i] = pd2_pack16(pd2_mix16x_13_3(r0[i], r1[i], mask32));
++}
++
++static void pd2_vrow_16_5_3(const uint32_t* r0, const uint32_t* r1, uint16_t* dst, uint32_t mask32)
++{
++    int i;
++    for (i = 0; i < 640; i++)
++        dst[i] = pd2_pack16(pd2_mix16x_5_3(r0[i], r1[i], mask32));
++}
++
++static void pd2_down_800x600_8(const uint8_t* src, size_t pitch, uint32_t* dst)
++{
++    int block;
++    for (block = 0; block < 120; block++)
++    {
++        const uint8_t* s = src + (size_t)(block * 5) * pitch;
++        uint32_t* d = dst + (size_t)(block * 4) * 640u;
++        pd2_hrow_5_4_8(s, s_pd2_hrow_a);
++        pd2_hrow_5_4_8(s + pitch, s_pd2_hrow_b);
++        pd2_vrow_32_13_3(s_pd2_hrow_a, s_pd2_hrow_b, d);
++        pd2_hrow_5_4_8(s + pitch * 2u, s_pd2_hrow_a);
++        pd2_vrow_32_5_3(s_pd2_hrow_b, s_pd2_hrow_a, d + 640);
++        pd2_hrow_5_4_8(s + pitch * 3u, s_pd2_hrow_b);
++        pd2_vrow_32_5_3(s_pd2_hrow_b, s_pd2_hrow_a, d + 1280);
++        pd2_hrow_5_4_8(s + pitch * 4u, s_pd2_hrow_a);
++        pd2_vrow_32_13_3(s_pd2_hrow_a, s_pd2_hrow_b, d + 1920);
++    }
++}
++
++static void pd2_down_800x600_32(const uint8_t* src, size_t pitch, uint32_t* dst)
++{
++    int block;
++    for (block = 0; block < 120; block++)
++    {
++        const uint8_t* s = src + (size_t)(block * 5) * pitch;
++        uint32_t* d = dst + (size_t)(block * 4) * 640u;
++        pd2_hrow_5_4_32((const uint32_t*)s, s_pd2_hrow_a);
++        pd2_hrow_5_4_32((const uint32_t*)(s + pitch), s_pd2_hrow_b);
++        pd2_vrow_32_13_3(s_pd2_hrow_a, s_pd2_hrow_b, d);
++        pd2_hrow_5_4_32((const uint32_t*)(s + pitch * 2u), s_pd2_hrow_a);
++        pd2_vrow_32_5_3(s_pd2_hrow_b, s_pd2_hrow_a, d + 640);
++        pd2_hrow_5_4_32((const uint32_t*)(s + pitch * 3u), s_pd2_hrow_b);
++        pd2_vrow_32_5_3(s_pd2_hrow_b, s_pd2_hrow_a, d + 1280);
++        pd2_hrow_5_4_32((const uint32_t*)(s + pitch * 4u), s_pd2_hrow_a);
++        pd2_vrow_32_13_3(s_pd2_hrow_a, s_pd2_hrow_b, d + 1920);
++    }
++}
++
++static void pd2_down_800x600_16(const uint8_t* src, size_t pitch, uint16_t* dst, int is_rgb555)
++{
++    uint32_t gmask = is_rgb555 ? 0x03E0u : 0x07E0u;
++    uint32_t rbmask = is_rgb555 ? 0x7C1Fu : 0xF81Fu;
++    uint32_t mask32 = (gmask << 16) | rbmask;
++    int block;
++    for (block = 0; block < 120; block++)
++    {
++        const uint8_t* s = src + (size_t)(block * 5) * pitch;
++        uint16_t* d = dst + (size_t)(block * 4) * 640u;
++        pd2_hrow_5_4_16((const uint16_t*)s, s_pd2_hrow_a, gmask, rbmask);
++        pd2_hrow_5_4_16((const uint16_t*)(s + pitch), s_pd2_hrow_b, gmask, rbmask);
++        pd2_vrow_16_13_3(s_pd2_hrow_a, s_pd2_hrow_b, d, mask32);
++        pd2_hrow_5_4_16((const uint16_t*)(s + pitch * 2u), s_pd2_hrow_a, gmask, rbmask);
++        pd2_vrow_16_5_3(s_pd2_hrow_b, s_pd2_hrow_a, d + 640, mask32);
++        pd2_hrow_5_4_16((const uint16_t*)(s + pitch * 3u), s_pd2_hrow_b, gmask, rbmask);
++        pd2_vrow_16_5_3(s_pd2_hrow_b, s_pd2_hrow_a, d + 1280, mask32);
++        pd2_hrow_5_4_16((const uint16_t*)(s + pitch * 4u), s_pd2_hrow_a, gmask, rbmask);
++        pd2_vrow_16_13_3(s_pd2_hrow_a, s_pd2_hrow_b, d + 1920, mask32);
++    }
++}
++
++static void pd2_build_axis_table(int src_len, int dst_len, uint16_t* idx_out, uint8_t* w_out)
++{
++    int d;
++    if (src_len <= 1 || dst_len <= 1)
++    {
++        for (d = 0; d < dst_len; d++)
++        {
++            idx_out[d] = 0;
++            w_out[d] = 0;
++        }
++        return;
++    }
++    for (d = 0; d < dst_len; d++)
++    {
++        int64_t pos = (((int64_t)d * 2 + 1) * (int64_t)src_len * 8) / (int64_t)dst_len - 8;
++        int64_t max_pos = (int64_t)(src_len - 1) * 16;
++        if (pos < 0)
++            pos = 0;
++        if (pos >= max_pos)
++        {
++            idx_out[d] = (uint16_t)(src_len - 2);
++            w_out[d] = 16;
++        }
++        else
++        {
++            idx_out[d] = (uint16_t)(pos >> 4);
++            w_out[d] = (uint8_t)(pos & 15);
++        }
++    }
++}
++
++static void pd2_ensure_tables(int sw, int sh, int dw, int dh)
++{
++    if (s_pd2_tbl_sw == sw && s_pd2_tbl_sh == sh && s_pd2_tbl_dw == dw && s_pd2_tbl_dh == dh)
++        return;
++    pd2_build_axis_table(sw, dw, s_pd2_hx, s_pd2_hw);
++    pd2_build_axis_table(sh, dh, s_pd2_vy, s_pd2_vw);
++    s_pd2_tbl_sw = sw;
++    s_pd2_tbl_sh = sh;
++    s_pd2_tbl_dw = dw;
++    s_pd2_tbl_dh = dh;
++}
++
++static void pd2_hrow_gen_8(const uint8_t* src, uint32_t* dst, int dw)
++{
++    int dx;
++    for (dx = 0; dx < dw; dx++)
++    {
++        uint32_t sx = s_pd2_hx[dx];
++        uint32_t w1 = s_pd2_hw[dx];
++        uint32_t w0 = 16u - w1;
++        uint8_t i0 = src[sx];
++        uint8_t i1 = w1 ? src[sx + 1u] : i0;
++        uint32_t rb = (((s_pd2_pal_rb[i0] * w0) + (s_pd2_pal_rb[i1] * w1)) >> 4) & 0x00FF00FFu;
++        uint32_t g  = (((s_pd2_pal_g[i0]  * w0) + (s_pd2_pal_g[i1]  * w1)) >> 4) & 0x0000FF00u;
++        dst[dx] = rb | g;
++    }
++}
++
++static void pd2_hrow_gen_32(const uint32_t* src, uint32_t* dst, int dw)
++{
++    int dx;
++    for (dx = 0; dx < dw; dx++)
++    {
++        uint32_t sx = s_pd2_hx[dx];
++        uint32_t w1 = s_pd2_hw[dx];
++        uint32_t p0 = src[sx];
++        uint32_t p1 = w1 ? src[sx + 1u] : p0;
++        dst[dx] = pd2_mix32_w16(p0, p1, w1);
++    }
++}
++
++static void pd2_hrow_gen_16(const uint16_t* src, uint32_t* dst, int dw, uint32_t gmask, uint32_t rbmask)
++{
++    uint32_t mask32 = (gmask << 16) | rbmask;
++    int dx;
++    for (dx = 0; dx < dw; dx++)
++    {
++        uint32_t sx = s_pd2_hx[dx];
++        uint32_t w1 = s_pd2_hw[dx];
++        uint32_t p0 = pd2_expand16(src[sx], gmask, rbmask);
++        uint32_t p1 = w1 ? pd2_expand16(src[sx + 1u], gmask, rbmask) : p0;
++        dst[dx] = pd2_mix16x_w16(p0, p1, w1, mask32);
++    }
++}
++
++static void pd2_down_bilinear_32(const uint8_t* src, size_t pitch, int sw, int sh,
++                                 uint32_t* dst, int dw, int dh, int is_8bpp)
++{
++    int dy, dx;
++    int cached_y0 = -1, cached_y1 = -1;
++    uint32_t* cur0 = s_pd2_hrow_a;
++    uint32_t* cur1 = s_pd2_hrow_b;
++
++    pd2_ensure_tables(sw, sh, dw, dh);
++    for (dy = 0; dy < dh; dy++)
++    {
++        int sy0 = s_pd2_vy[dy];
++        uint32_t wy = s_pd2_vw[dy];
++        int sy1 = wy ? (sy0 + 1) : sy0;
++        uint32_t* out = dst + (size_t)dy * (size_t)dw;
++
++        if (sy0 == cached_y0 && sy1 == cached_y1)
++        {
++            /* Both rows cached. */
++        }
++        else if (sy0 == cached_y1)
++        {
++            uint32_t* tmp = cur0;
++            cur0 = cur1;
++            cur1 = tmp;
++            cached_y0 = sy0;
++            if (sy1 == sy0)
++            {
++                cur1 = cur0;
++                cached_y1 = sy0;
++            }
++            else
++            {
++                const uint8_t* row = src + (size_t)sy1 * pitch;
++                if (is_8bpp) pd2_hrow_gen_8(row, cur1, dw);
++                else pd2_hrow_gen_32((const uint32_t*)row, cur1, dw);
++                cached_y1 = sy1;
++            }
++        }
++        else
++        {
++            const uint8_t* row0 = src + (size_t)sy0 * pitch;
++            if (is_8bpp) pd2_hrow_gen_8(row0, cur0, dw);
++            else pd2_hrow_gen_32((const uint32_t*)row0, cur0, dw);
++            cached_y0 = sy0;
++            if (sy1 == sy0)
++            {
++                cur1 = cur0;
++                cached_y1 = sy0;
++            }
++            else
++            {
++                const uint8_t* row1 = src + (size_t)sy1 * pitch;
++                if (is_8bpp) pd2_hrow_gen_8(row1, cur1, dw);
++                else pd2_hrow_gen_32((const uint32_t*)row1, cur1, dw);
++                cached_y1 = sy1;
++            }
++        }
++
++        if (wy == 0)
++        {
++            for (dx = 0; dx < dw; dx++)
++                out[dx] = cur0[dx];
++        }
++        else
++        {
++            for (dx = 0; dx < dw; dx++)
++                out[dx] = pd2_mix32_w16(cur0[dx], cur1[dx], wy);
++        }
++    }
++}
++
++static void pd2_down_bilinear_16(const uint8_t* src, size_t pitch, int sw, int sh,
++                                 uint16_t* dst, int dw, int dh, int is_rgb555)
++{
++    uint32_t gmask = is_rgb555 ? 0x03E0u : 0x07E0u;
++    uint32_t rbmask = is_rgb555 ? 0x7C1Fu : 0xF81Fu;
++    uint32_t mask32 = (gmask << 16) | rbmask;
++    int dy, dx;
++    int cached_y0 = -1, cached_y1 = -1;
++    uint32_t* cur0 = s_pd2_hrow_a;
++    uint32_t* cur1 = s_pd2_hrow_b;
++
++    pd2_ensure_tables(sw, sh, dw, dh);
++    for (dy = 0; dy < dh; dy++)
++    {
++        int sy0 = s_pd2_vy[dy];
++        uint32_t wy = s_pd2_vw[dy];
++        int sy1 = wy ? (sy0 + 1) : sy0;
++        uint16_t* out = dst + (size_t)dy * (size_t)dw;
++
++        if (sy0 == cached_y0 && sy1 == cached_y1)
++        {
++            /* Both rows cached. */
++        }
++        else if (sy0 == cached_y1)
++        {
++            uint32_t* tmp = cur0;
++            cur0 = cur1;
++            cur1 = tmp;
++            cached_y0 = sy0;
++            if (sy1 == sy0)
++            {
++                cur1 = cur0;
++                cached_y1 = sy0;
++            }
++            else
++            {
++                pd2_hrow_gen_16((const uint16_t*)(src + (size_t)sy1 * pitch), cur1, dw, gmask, rbmask);
++                cached_y1 = sy1;
++            }
++        }
++        else
++        {
++            pd2_hrow_gen_16((const uint16_t*)(src + (size_t)sy0 * pitch), cur0, dw, gmask, rbmask);
++            cached_y0 = sy0;
++            if (sy1 == sy0)
++            {
++                cur1 = cur0;
++                cached_y1 = sy0;
++            }
++            else
++            {
++                pd2_hrow_gen_16((const uint16_t*)(src + (size_t)sy1 * pitch), cur1, dw, gmask, rbmask);
++                cached_y1 = sy1;
++            }
++        }
++
++        if (wy == 0)
++        {
++            for (dx = 0; dx < dw; dx++)
++                out[dx] = pd2_pack16(cur0[dx]);
++        }
++        else
++        {
++            for (dx = 0; dx < dw; dx++)
++                out[dx] = pd2_pack16(pd2_mix16x_w16(cur0[dx], cur1[dx], wy, mask32));
++        }
++    }
++}
++
++/* Returns scaler path id (1..6), or 0 when caller must fall back to StretchDIBits. */
++static int pd2_scale_select(int sw, int sh, int bpp, int dw, int dh,
++                            size_t pitch, const void* surface, const void* palette)
++{
++    size_t min_pitch;
++    if (!surface || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0)
++        return 0;
++    if (dw > PD2_SCALE_MAX_W || dh > PD2_SCALE_MAX_H || sw < dw || sh < dh)
++        return 0;
++    if (bpp != 8 && bpp != 16 && bpp != 32)
++        return 0;
++    if (bpp == 16 && (dw & 1))
++        return 0;
++    if (bpp == 8 && !palette)
++        return 0;
++    min_pitch = (size_t)sw * (size_t)(bpp >> 3);
++    if (pitch < min_pitch)
++        return 0;
++
++    if (sw == 800 && sh == 600 && dw == 640 && dh == 480)
++        return bpp == 16 ? 1 : (bpp == 32 ? 2 : 3);
++
++    return bpp == 16 ? 4 : (bpp == 32 ? 5 : 6);
++}
++
++#ifndef PD2_SCALER_CORE_ONLY
++
++static int s_pd2_scale_lines = 0;
++static unsigned s_pd2_scale_bytes = 0;
++static int s_pd2_scale_disabled = 0;
++static HANDLE s_pd2_scale_file = INVALID_HANDLE_VALUE;
++static int s_pd2_scale_key = -1;
++static int s_pd2_scale_frames = 0;
++static LONGLONG s_pd2_scale_ticks = 0;
++static LONGLONG s_pd2_blit_ticks = 0;
++
++static void pd2_scale_emit(const char* text)
++{
++    DWORD len;
++    DWORD written = 0;
++    if (s_pd2_scale_disabled || s_pd2_scale_lines >= PD2_SCALE_MAX_LINES)
++        return;
++    if (s_pd2_scale_file == INVALID_HANDLE_VALUE)
++    {
++        s_pd2_scale_file = CreateFileW(
++            L"pd2-scale.jsonl",
++            GENERIC_WRITE,
++            FILE_SHARE_READ,
++            NULL,
++            CREATE_NEW,
++            FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT,
++            NULL);
++        if (s_pd2_scale_file == INVALID_HANDLE_VALUE)
++        {
++            s_pd2_scale_disabled = 1;
++            return;
++        }
++    }
++    len = (DWORD)strlen(text);
++    if (len == 0 || len > PD2_SCALE_FILE_LIMIT - s_pd2_scale_bytes)
++    {
++        CloseHandle(s_pd2_scale_file);
++        s_pd2_scale_file = INVALID_HANDLE_VALUE;
++        s_pd2_scale_disabled = 1;
++        return;
++    }
++    if (!WriteFile(s_pd2_scale_file, text, len, &written, NULL) || written != len)
++    {
++        CloseHandle(s_pd2_scale_file);
++        s_pd2_scale_file = INVALID_HANDLE_VALUE;
++        s_pd2_scale_disabled = 1;
++        return;
++    }
++    s_pd2_scale_bytes += written;
++    s_pd2_scale_lines++;
++    if (s_pd2_scale_lines >= PD2_SCALE_MAX_LINES)
++    {
++        CloseHandle(s_pd2_scale_file);
++        s_pd2_scale_file = INVALID_HANDLE_VALUE;
++    }
++}
++
++static void pd2_scale_log_mode(int path, int sw, int sh, int bpp, int dw, int dh)
++{
++    char line[192];
++    int key = ((path * 31 + bpp) * 131 + sw) * 17 + sh * 7 + dw * 13 + dh * 19;
++    if (key == s_pd2_scale_key)
++        return;
++    s_pd2_scale_key = key;
++    _snprintf(line, sizeof(line),
++        "{\"event\":1,\"path\":%d,\"w\":%d,\"h\":%d,\"bpp\":%d,\"vw\":%d,\"vh\":%d}\n",
++        path, sw, sh, bpp, dw, dh);
++    line[sizeof(line) - 1] = '\0';
++    pd2_scale_emit(line);
++    fprintf(stderr, "[pd2_scale] mode path=%d src=%dx%d bpp=%d dst=%dx%d\n", path, sw, sh, bpp, dw, dh);
++    fflush(stderr);
++}
++
++static void pd2_scale_tick(int path, LONGLONG scale_delta, LONGLONG blit_delta)
++{
++    LARGE_INTEGER freq;
++    char line[192];
++    long long scale_us, blit_us;
++
++    if (s_pd2_scale_lines >= PD2_SCALE_MAX_LINES)
++        return;
++
++    s_pd2_scale_ticks += scale_delta;
++    s_pd2_blit_ticks += blit_delta;
++    if (++s_pd2_scale_frames < PD2_SCALE_FRAMES)
++        return;
++
++    QueryPerformanceFrequency(&freq);
++    if (freq.QuadPart <= 0)
++    {
++        s_pd2_scale_frames = 0;
++        return;
++    }
++
++    scale_us = (long long)(s_pd2_scale_ticks * 1000000 / freq.QuadPart / s_pd2_scale_frames);
++    blit_us = (long long)(s_pd2_blit_ticks * 1000000 / freq.QuadPart / s_pd2_scale_frames);
++    _snprintf(line, sizeof(line),
++        "{\"event\":2,\"path\":%d,\"frames\":%d,\"scale_us\":%lld,\"blit_us\":%lld}\n",
++        path, s_pd2_scale_frames, scale_us, blit_us);
++    line[sizeof(line) - 1] = '\0';
++    pd2_scale_emit(line);
++    fprintf(stderr, "[pd2_scale] perf path=%d frames=%d scale_us=%lld blit_us=%lld\n",
++        path, s_pd2_scale_frames, scale_us, blit_us);
++    fflush(stderr);
++    s_pd2_scale_frames = 0;
++    s_pd2_scale_ticks = 0;
++    s_pd2_blit_ticks = 0;
++}
++
++/* Downscales g_ddraw.primary->surface into g_ddraw.render.viewport via SetDIBitsToDevice.
++ * Returns lines copied (>0) on success, or 0 to fall back to StretchDIBits.
++ */
++static int pd2_gdi_scale_present(void)
++{
++    int sw = (int)g_ddraw.width;
++    int sh = (int)g_ddraw.height;
++    int bpp = (int)g_ddraw.bpp;
++    int dw = g_ddraw.render.viewport.width;
++    int dh = g_ddraw.render.viewport.height;
++    int path;
++    int lines_copied = 0;
++    LARGE_INTEGER q0, q1, q2;
++
++    static struct { BITMAPINFOHEADER bmiHeader; RGBQUAD bmiColors[3]; } s_bmi16;
++    static BITMAPINFOHEADER s_bmi32;
++    static int s_bmi_init = 0;
++    static int s_last_rgb555 = -1;
++
++    if (!g_ddraw.primary)
++        return 0;
++
++    path = pd2_scale_select(
++        sw, sh, bpp, dw, dh,
++        (size_t)g_ddraw.primary->pitch,
++        g_ddraw.primary->surface,
++        g_ddraw.primary->palette);
++
++    pd2_scale_log_mode(path, sw, sh, bpp, dw, dh);
++    if (!path)
++        return 0;
++
++    if (!s_bmi_init)
++    {
++        memset(&s_bmi16, 0, sizeof(s_bmi16));
++        s_bmi16.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
++        s_bmi16.bmiHeader.biPlanes = 1;
++        s_bmi16.bmiHeader.biBitCount = 16;
++        s_bmi16.bmiHeader.biCompression = BI_BITFIELDS;
++
++        memset(&s_bmi32, 0, sizeof(s_bmi32));
++        s_bmi32.biSize = sizeof(BITMAPINFOHEADER);
++        s_bmi32.biPlanes = 1;
++        s_bmi32.biBitCount = 32;
++        s_bmi32.biCompression = BI_RGB;
++        s_bmi_init = 1;
++    }
++
++    if (g_config.rgb555 != s_last_rgb555)
++    {
++        s_last_rgb555 = g_config.rgb555 ? 1 : 0;
++        *(DWORD*)&s_bmi16.bmiColors[0] = g_config.rgb555 ? 0x7C00u : 0xF800u;
++        *(DWORD*)&s_bmi16.bmiColors[1] = g_config.rgb555 ? 0x03E0u : 0x07E0u;
++        *(DWORD*)&s_bmi16.bmiColors[2] = 0x001Fu;
++    }
++
++    QueryPerformanceCounter(&q0);
++
++    if (path == 1)
++    {
++        pd2_down_800x600_16((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
++                            s_pd2_scaled16, g_config.rgb555 ? 1 : 0);
++    }
++    else if (path == 2)
++    {
++        pd2_down_800x600_32((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
++                            s_pd2_scaled32);
++    }
++    else if (path == 3)
++    {
++        pd2_scale_palette_rgb((const uint8_t*)g_ddraw.primary->palette->data_rgb);
++        pd2_down_800x600_8((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
++                           s_pd2_scaled32);
++    }
++    else if (path == 4)
++    {
++        pd2_down_bilinear_16((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
++                             sw, sh, s_pd2_scaled16, dw, dh, g_config.rgb555 ? 1 : 0);
++    }
++    else if (path == 5)
++    {
++        pd2_down_bilinear_32((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
++                             sw, sh, s_pd2_scaled32, dw, dh, 0);
++    }
++    else
++    {
++        pd2_scale_palette_rgb((const uint8_t*)g_ddraw.primary->palette->data_rgb);
++        pd2_down_bilinear_32((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
++                             sw, sh, s_pd2_scaled32, dw, dh, 1);
++    }
++
++    QueryPerformanceCounter(&q1);
++
++    if (path == 1 || path == 4)
++    {
++        s_bmi16.bmiHeader.biWidth = dw;
++        s_bmi16.bmiHeader.biHeight = -dh;
++        lines_copied = real_SetDIBitsToDevice(
++            g_ddraw.render.hdc,
++            g_ddraw.render.viewport.x,
++            g_ddraw.render.viewport.y,
++            (DWORD)dw,
++            (DWORD)dh,
++            0,
++            0,
++            0,
++            (UINT)dh,
++            s_pd2_scaled16,
++            (BITMAPINFO*)&s_bmi16,
++            DIB_RGB_COLORS);
++    }
++    else
++    {
++        s_bmi32.biWidth = dw;
++        s_bmi32.biHeight = -dh;
++        lines_copied = real_SetDIBitsToDevice(
++            g_ddraw.render.hdc,
++            g_ddraw.render.viewport.x,
++            g_ddraw.render.viewport.y,
++            (DWORD)dw,
++            (DWORD)dh,
++            0,
++            0,
++            0,
++            (UINT)dh,
++            s_pd2_scaled32,
++            (BITMAPINFO*)&s_bmi32,
++            DIB_RGB_COLORS);
++    }
++
++    QueryPerformanceCounter(&q2);
++    pd2_scale_tick(path, q1.QuadPart - q0.QuadPart, q2.QuadPart - q1.QuadPart);
++
++    return (lines_copied == 0 || lines_copied == GDI_ERROR) ? 0 : lines_copied;
++}
++
++#endif /* PD2_SCALER_CORE_ONLY */
++#endif /* PD2_GDI_SCALER_H */
 --- a/cnc-ddraw.vcxproj
 +++ b/cnc-ddraw.vcxproj
 @@ -213,7 +213,7 @@
@@ -317,5 +1106,5 @@
 --- a/inc/git.h
 +++ b/inc/git.h
 @@ -0,0 +1,2 @@
-+#define GIT_COMMIT "v7.1.0.0-pd2-ver2-ogl"
-+#define GIT_BRANCH "release-ver2"
++#define GIT_COMMIT "v7.1.0.0-pd2-scaler2"
++#define GIT_BRANCH "release-scaler"

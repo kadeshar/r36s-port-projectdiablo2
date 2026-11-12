@@ -233,6 +233,7 @@ fi
 stage x11_ready
 # Test is only a request to show the menu in this working game session.
 # No separate pre-PortMaster KMSDRM initialization, settings writes or audio.
+save_menu_settings=0
 if [[ ${PD2_START_MENU:-0} == 1 ]]; then
  menu_selection=$(runuser -u "$PD2_USER" --preserve-environment -- python3 -B "$PD2_PORT/scripts/start_menu.py")
  menu_rc=$?
@@ -267,8 +268,10 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
   [[ "$menu_resolution" == default ]] || export PD2_GAME_RESOLUTION="$menu_resolution"
   [[ "$menu_fps" == default ]] || export PD2_FPS="$menu_fps"
   export PD2_LOOT_FILTER="$menu_filter"
+  save_menu_settings=1
   if [[ "$menu_filter" == default ]]; then menu_filter_status=default; else menu_filter_status=selected; fi
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"loot_filter","status":"%s"}\n' "$menu_filter_status"
+  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"perf_overlay","status":"%s"}\n' "${PD2_FPS:-0}"
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"start_menu","status":"selected"}\n'
   stage menu_selected
  else
@@ -283,7 +286,9 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
 fi
 stage volatile_work_prepare
 mount -t tmpfs -o "size=16M,nosuid,nodev,mode=0700,uid=$uid,gid=$gid" tmpfs "$PD2_WORK" || { error volatile_work_failed; exit 2; };work_mounted=1
-runuser -u "$PD2_USER" --preserve-environment -- python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --data "$R/gamedata/Diablo II" --volatile-work || { error volatile_work_failed;exit 2; }
+save_flag=
+[[ "${save_menu_settings:-0}" == 1 ]] && save_flag=--save-settings
+runuser -u "$PD2_USER" --preserve-environment -- python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --data "$R/gamedata/Diablo II" --volatile-work ${save_flag:+"$save_flag"} || { error volatile_work_failed;exit 2; }
 stage volatile_work_ready
 cd "$PD2_PORT" || exit 2
 export PD2_AUDIO_PROBE="${PD2_AUDIO_PROBE:-0}"

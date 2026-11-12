@@ -218,7 +218,7 @@ def resolve_port_version(version=None):
             return str(layout.VERSION).strip()
     except Exception:
         pass
-    return '1.4'
+    return '1.5-test.1'
 
 
 class X11HUD:

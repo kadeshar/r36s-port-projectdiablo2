@@ -18,7 +18,7 @@ export BOX86_DYNAREC=1 BOX86_DYNAREC_BIGBLOCK=2
 export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET=0
 export SDL_GAMECONTROLLERCONFIG="$PD2_CONTROLLER_CONFIG" SDL_VIDEODRIVER=x11
 export FONTCONFIG_FILE="$PD2_WESTON/fonts/fonts.conf"
-export PORT_VERSION="${PD2_PORT_VERSION:-1.4}"
+export PORT_VERSION="${PD2_PORT_VERSION:-1.5-test.1}"
 mapper_pid=; mapper_metrics_pid=; navigator_pid=; osk_pid=; game_pid=; metrics_pid=; fps_pid=; audio_probe_pid=; audio_capture_pid=; wine_ready=0
 dsound_restore_attempted=0
 dsound_restore_file="$PD2_PREFIX/drive_c/pd2-dsound-restore.reg"
@@ -353,6 +353,7 @@ resolution="${PD2_GAME_RESOLUTION:-640x480}"
 case "$fps_enabled" in 0|1|2|3|4) ;; *) error invalid_profile 1; exit 1;; esac
 case "$resolution" in 640x480|800x600|1024x768|native) ;; *) error invalid_profile 1; exit 1;; esac
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"render_resolution","status":"%s"}\n' "$resolution"
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"perf_overlay","status":"%s"}\n' "$fps_enabled"
 [[ "$input_mode" == mapper || "$input_mode" == native ]] || { error invalid_profile 1; exit 1; }
 [[ "$controller_test" == 0 || ( "$controller_test" == 1 && "$input_mode" == native ) ]] || { error invalid_profile 1; exit 1; }
 profile="$PD2_PORT/defaults/controls.gptk"
@@ -557,6 +558,7 @@ if [[ "$controller_test" == 0 && "$audio_test" == 1 && "$audio_probe" == 1 ]]; t
  run_audio_probe
 fi
 if [[ "$controller_test" == 0 ]]; then
+ rm -f "$PD2_WORK/ProjectD2/pd2-scale.jsonl"
  if [[ ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
   if python3 -B "$PD2_PORT/scripts/present_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" >/dev/null; then
    printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"presentation_capture","status":"ready"}\n'

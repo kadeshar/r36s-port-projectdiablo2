@@ -46,18 +46,27 @@ class DisplayTests(unittest.TestCase):
         self.assertNotIn('|| true', desktop)
 
     def test_bundled_companion_is_pinned_x86_and_not_imported_asset(self):
-        spec = importlib.util.spec_from_file_location('ddraw_fetch', ROOT / 'tools/fetch_ddraw.py')
-        tool = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(tool)
+        layout_spec = importlib.util.spec_from_file_location('pd2_layout', PORT / 'scripts/layout.py')
+        layout = importlib.util.module_from_spec(layout_spec)
+        layout_spec.loader.exec_module(layout)
+        build_spec = importlib.util.spec_from_file_location('cnc_ddraw_build', ROOT / 'tools/cnc_ddraw_build.py')
+        cnc_build = importlib.util.module_from_spec(build_spec)
+        build_spec.loader.exec_module(cnc_build)
         companion = PORT / 'compat/cnc-ddraw'
         metadata = json.loads((companion / 'manifest.json').read_text())
         dll = (companion / 'ddraw.dll').read_bytes()
-        self.assertEqual(metadata['version'], tool.VERSION)
-        self.assertEqual(metadata['archive_sha256'], tool.ARCHIVE_SHA256)
-        self.assertEqual(len(dll), tool.DLL_SIZE)
-        self.assertEqual(metadata['size'], tool.DLL_SIZE)
-        self.assertEqual(hashlib.sha256(dll).hexdigest(), tool.DLL_SHA256)
-        self.assertEqual(metadata['sha256'], tool.DLL_SHA256)
+        self.assertEqual(metadata['version'], layout.CNC_DDRAW_VERSION)
+        self.assertEqual(metadata['upstream']['source_sha256'], cnc_build.SOURCE_SHA)
+        self.assertEqual(len(dll), layout.CNC_DDRAW_SIZE)
+        self.assertEqual(metadata['size'], layout.CNC_DDRAW_SIZE)
+        self.assertEqual(hashlib.sha256(dll).hexdigest(), layout.CNC_DDRAW_SHA256)
+        self.assertEqual(metadata['sha256'], layout.CNC_DDRAW_SHA256)
+        for name, digest in metadata['build']['inputs_sha256'].items():
+            self.assertEqual(hashlib.sha256((ROOT / 'tools' / name).read_bytes()).hexdigest(), digest)
+        self.assertEqual(
+            hashlib.sha256((companion / 'source.patch').read_bytes()).hexdigest(),
+            metadata['build']['source_patch_sha256'],
+        )
         pe = struct.unpack_from('<I', dll, 60)[0]
         self.assertEqual(dll[:2], b'MZ')
         self.assertEqual(dll[pe:pe+4], b'PE\0\0')
@@ -65,7 +74,14 @@ class DisplayTests(unittest.TestCase):
         # The approved companion is a separate distributable, not replacement data.
         original = PORT / 'gamedata/Diablo II/ProjectD2/ddraw.dll'
         if original.exists():
-            self.assertNotEqual(hashlib.sha256(original.read_bytes()).hexdigest(), tool.DLL_SHA256)
+            self.assertNotEqual(hashlib.sha256(original.read_bytes()).hexdigest(), layout.CNC_DDRAW_SHA256)
+
+    def test_cnc_ddraw_and_present_renderer_share_scaler_header(self):
+        cnc_manifest = json.loads((PORT / 'compat/cnc-ddraw/manifest.json').read_text())
+        pres_manifest = json.loads((PORT / 'compat/present-renderer/manifest.json').read_text())
+        hdr_sha = hashlib.sha256((ROOT / 'tools/pd2_gdi_scaler.h').read_bytes()).hexdigest()
+        self.assertEqual(cnc_manifest['build']['inputs_sha256']['pd2_gdi_scaler.h'], hdr_sha)
+        self.assertEqual(pres_manifest['build']['inputs_sha256']['pd2_gdi_scaler.h'], hdr_sha)
 
 
 if __name__ == '__main__':

@@ -18,6 +18,7 @@ import sys
 REMOTE_SCRIPT = r'''
 import os
 import sys
+import json
 import shutil
 import glob
 import subprocess
@@ -91,6 +92,14 @@ if not dry_run:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copy2(full, dest)
     log(f"Backup completed successfully ({len(found_saves)} files saved)")
+    config_dir = os.path.join(port_dir, "config")
+    for cfg_name in ("settings.json", "default.filter"):
+        cfg_src = os.path.join(config_dir, cfg_name)
+        if os.path.isfile(cfg_src) and not os.path.islink(cfg_src):
+            cfg_dst = os.path.join(backup_dir, "config", cfg_name)
+            os.makedirs(os.path.dirname(cfg_dst), exist_ok=True)
+            shutil.copy2(cfg_src, cfg_dst)
+            log(f"Backed up config/{cfg_name} to {cfg_dst}")
 
 # 4. Check for active mounts or loop devices
 env_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -161,6 +170,34 @@ for mp in ["mounted-state", "mounted-wine-check"]:
     else:
         if not dry_run:
             os.makedirs(mp_path, exist_ok=True)
+
+# 5b. Reset launcher config (settings.json + default.filter) to defaults
+config_dir = os.path.join(port_dir, "config")
+settings_path = os.path.join(config_dir, "settings.json")
+default_settings = {
+    "schema_version": 1,
+    "profile": "gdi",
+    "swap_ab": False,
+    "game_resolution": "640x480",
+    "perf_overlay": 0,
+    "loot_filter": "default",
+}
+log(f"Resetting launcher config to defaults: {settings_path}")
+if not dry_run:
+    os.makedirs(config_dir, exist_ok=True)
+    tmp_settings = settings_path + ".new"
+    with open(tmp_settings, "w", encoding="utf-8") as f:
+        json.dump(default_settings, f, indent=2)
+        f.write("\n")
+    os.replace(tmp_settings, settings_path)
+default_filter_src = os.path.join(port_dir, "defaults", "default.filter")
+default_filter_dst = os.path.join(config_dir, "default.filter")
+if os.path.isfile(default_filter_src):
+    log(f"Restoring default loot filter: {default_filter_dst}")
+    if not dry_run:
+        tmp_filter = default_filter_dst + ".new"
+        shutil.copyfile(default_filter_src, tmp_filter)
+        os.replace(tmp_filter, default_filter_dst)
 
 # 6. Reset $HOME/.local/share/pd2-r36s runtime artifacts (protecting saves)
 if os.path.isdir(home_state):
@@ -252,7 +289,21 @@ else:
     else:
         log("NOTICE: Game executable not found in standard subdirectories.")
 
-# D. Launcher permissions
+# D. Launcher config defaults & permissions
+if not dry_run:
+    try:
+        with open(settings_path, "r", encoding="utf-8") as f:
+            cur_settings = json.load(f)
+        if (cur_settings.get("game_resolution") == "640x480"
+                and cur_settings.get("perf_overlay") == 0
+                and cur_settings.get("loot_filter") == "default"):
+            log("PASS: Launcher config reset to defaults (640x480, perf_overlay=0, loot_filter=default).")
+        else:
+            log(f"ERROR: Launcher config mismatch after reset: {cur_settings}")
+            sys.exit(1)
+    except Exception as e:
+        log(f"ERROR: Failed to verify launcher config: {e}")
+        sys.exit(1)
 launcher = os.path.join(roms_ports, "Project Diablo 2.sh")
 if os.path.isfile(launcher) and not dry_run:
     os.chmod(launcher, 0o755)

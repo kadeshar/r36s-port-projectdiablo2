@@ -1,9 +1,34 @@
 {
+  "schema": 1,
   "version": "7.1.0.0",
   "file": "ddraw.dll",
-  "size": 411648,
-  "sha256": "85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9",
-  "archive_sha256": "0b13ab89a64c9918189b1dadd449ef6ed3cb3b7b19cabd96d8adbd95505bb908",
-  "source_url": "https://github.com/FunkyFr3sh/cnc-ddraw/releases/download/v7.1.0.0/cnc-ddraw.zip",
-  "license": "MIT"
+  "size": 439296,
+  "sha256": "cbbdba23aa5ad52e25de42504715ded7fe86d5af04803cbb73fdce9ddfa0be76",
+  "upstream": {
+    "project": "FunkyFr3sh/cnc-ddraw",
+    "tag": "v7.1.0.0",
+    "source_url": "https://codeload.github.com/FunkyFr3sh/cnc-ddraw/zip/refs/tags/v7.1.0.0",
+    "source_sha256": "a4f638383364e3bc1e4682b1d549a1f5400fa0cc312ee216d1b42555b1c814eb",
+    "license": "MIT; bundled notices in LICENSE.txt"
+  },
+  "build": {
+    "configuration": "Release Win32",
+    "compiler": "MSVC 14.44.35207",
+    "sdk": "10.0.22621.0",
+    "crt": "static /MT",
+    "deterministic": "/Brepro /PDBALTPATH:ddraw.pdb",
+    "command": "python tools/build_cnc_ddraw_scaler.py --test",
+    "inputs_sha256": {
+      "build_cnc_ddraw_scaler.py": "1079c34da8d2e8be2b0da147b1863de90ce8f950103bc43eca4f838bb75c84bd",
+      "cnc_ddraw_build.py": "3841e0e135b76e3cdd6ae71aae98585764458fc5a19ccf219b94fbf0e558c154",
+      "pd2_gdi_scaler.h": "578bc3b776ba9082fb05e2d0a50629ba834985d640fece2545d2e7de319e61f8",
+      "test_gdi_scaler.c": "37ea8c8bd84757514b94ae3fbeefc4aa302a7cfe17dc71d72614588ab0d09c9a"
+    },
+    "source_patch_sha256": "ed92ae09cd7d4958228f089592ab202f7be3058a6a23915d5a3aa9c185caf8d8"
+  },
+  "tests": {
+    "native_core": "passed",
+    "physical_r36s": "pending user validation"
+  },
+  "scope": "GDI 5:4 SWAR downscaler (800x600->640x480) + cached bilinear fallback (8/16/32bpp) with bounded pd2-scale.jsonl telemetry."
 }

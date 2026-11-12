@@ -848,8 +848,8 @@ class LayoutTests(unittest.TestCase):
         production = importlib.util.module_from_spec(SPEC)
         SPEC.loader.exec_module(production)
         self.assertEqual(production.CNC_DDRAW_VERSION, '7.1.0.0')
-        self.assertEqual(production.CNC_DDRAW_SIZE, 411648)
-        self.assertEqual(production.CNC_DDRAW_SHA256, '85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9')
+        self.assertEqual(production.CNC_DDRAW_SIZE, 439296)
+        self.assertEqual(production.CNC_DDRAW_SHA256, 'cbbdba23aa5ad52e25de42504715ded7fe86d5af04803cbb73fdce9ddfa0be76')
         # A self-consistent local manifest is not enough to bypass release pins.
         with self.assertRaisesRegex(production.LayoutError, 'unsupported_runtime'):
             production.companion_file(self.port)
@@ -1015,6 +1015,77 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state),
                                           '--get', 'loot_filter']), 0)
         self.assertEqual(stdout.getvalue(), 'Good.filter\n')
+
+    def test_save_settings_persists_menu_resolution_overlay_and_filter(self):
+        write(self.port / 'filters', 'Good.filter', b'custom filter\n')
+        real_prepare = layout.prepare
+
+        def prepare_menu(resolution=None, overlay=None, loot=None, save=False):
+            def injected(*args, **kwargs):
+                return real_prepare(*args, **kwargs, input_mode='mapper', game_resolution=resolution,
+                                    perf_overlay=overlay, loot_filter=loot, save_settings=save)
+            with mock.patch.object(layout, 'prepare', side_effect=injected):
+                return self.prepare()
+
+        # Without save_settings, resolution and perf_overlay overrides stay session-only.
+        prepare_menu(resolution='800x600', overlay='3', loot=None, save=False)
+        settings = json.loads((self.port / 'config/settings.json').read_bytes())
+        self.assertEqual(settings['game_resolution'], '640x480')
+        self.assertNotIn('perf_overlay', settings)
+
+        # With save_settings=True (confirmed menu selection), all three settings persist.
+        prepare_menu(resolution='800x600', overlay='2', loot='Good.filter', save=True)
+        settings = json.loads((self.port / 'config/settings.json').read_bytes())
+        self.assertEqual(settings['game_resolution'], '800x600')
+        self.assertEqual(settings['perf_overlay'], 2)
+        self.assertEqual(settings['loot_filter'], 'Good.filter')
+
+        # Subsequent plain prepare loads persisted choices without rewriting settings.json.
+        raw_before = (self.port / 'config/settings.json').read_bytes()
+        result = self.prepare()
+        self.assertEqual((result['game_resolution'], result['perf_overlay'], result['loot_filter']),
+                         ('800x600', 2, 'Good.filter'))
+        self.assertEqual((self.port / 'config/settings.json').read_bytes(), raw_before)
+
+        # CLI forwards PD2_FPS to prepare() and fails closed on empty/invalid PD2_FPS.
+        with mock.patch.dict(os.environ, {'PD2_FPS': '2'}), mock.patch.object(layout, 'prepare') as mocked_prepare:
+            self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state), '--save-settings']), 0)
+            self.assertEqual(mocked_prepare.call_args.kwargs['perf_overlay'], '2')
+            self.assertTrue(mocked_prepare.call_args.kwargs['save_settings'])
+        for bad_env in ('', '5', 'invalid'):
+            with mock.patch.dict(os.environ, {'PD2_FPS': bad_env}), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state)]), 1)
+
+        # Switching back to 640x480 / OFF / default persists cleanly as well.
+        prepare_menu(resolution='640x480', overlay='0', loot='default', save=True)
+        settings = json.loads((self.port / 'config/settings.json').read_bytes())
+        self.assertEqual((settings['game_resolution'], settings['perf_overlay'], settings['loot_filter']),
+                         ('640x480', 0, 'default'))
+
+        # --get perf_overlay and --dump reflect the stored overlay level.
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state),
+                                          '--get', 'perf_overlay']), 0)
+        self.assertEqual(stdout.getvalue(), '0\n')
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state), '--dump']), 0)
+        dumped = dict(line.split('\t', 1) for line in stdout.getvalue().splitlines())
+        self.assertEqual((dumped['game_resolution'], dumped['perf_overlay'], dumped['loot_filter']),
+                         ('640x480', '0', 'default'))
+
+        # Invalid perf_overlay parameters or stored values fail closed.
+        for bad in (True, False, -1, 5, '5', 'on', '', 'invalid'):
+            with self.subTest(bad=bad), self.assertRaisesRegex(layout.LayoutError, 'invalid_profile'):
+                layout.prepare(self.port, self.state, perf_overlay=bad)
+        bad_cfg = dict(settings, perf_overlay='2')
+        (self.port / 'config/settings.json').write_text(json.dumps(bad_cfg), encoding='utf-8')
+        with self.assertRaisesRegex(layout.LayoutError, 'invalid_profile'):
+            self.prepare()
+        for combo in (['--dump'], ['--get', 'profile'], ['--sync-config']):
+            self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state),
+                                          '--save-settings'] + combo), 1)
 
 
 class DumpTests(unittest.TestCase):

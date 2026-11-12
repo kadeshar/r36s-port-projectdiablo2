@@ -1,6 +1,6 @@
 #!/bin/bash
 # PORTMASTER: projectdiablo2.zip, Project Diablo 2.sh
-# Experimental private offline PD2 launcher, v1.4.
+# Experimental private offline PD2 launcher, v1.5-test.1.
 umask 077
 ulimit -c 0
 BASE=$(cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
@@ -8,8 +8,14 @@ export PD2_PORT="$BASE"
 # Native Controller from 0.1.13 is now the default; explicit test modes survive.
 export PD2_INPUT_MODE="${PD2_INPUT_MODE:-native}"
 export PD2_CONTROLLER_TEST="${PD2_CONTROLLER_TEST:-0}"
-# Experiments are opt-in; the normal audio path stays unchanged by default.
-export PD2_FPS="${PD2_FPS:-0}"
+# Empty means use the user's stored choice; 0..4 is a session-only override.
+if [[ -n ${PD2_FPS:-} ]]; then
+ case "$PD2_FPS" in 0|1|2|3|4) export PD2_FPS;; *) exit 1;; esac
+else
+ unset PD2_FPS
+fi
+_pd2_caller_fps=${PD2_FPS:-}
+_pd2_caller_ld_preload=${LD_PRELOAD:-}
 export PD2_AUDIO_TEST="${PD2_AUDIO_TEST:-1}"
 export PD2_AUDIO_PROBE="${PD2_AUDIO_PROBE:-0}"
 # Opt-in measurement/tuning experiments; both stay off unless a launcher sets them.
@@ -28,9 +34,11 @@ export PD2_DIAGNOSTIC="${PD2_DIAGNOSTIC:-off}"
 case "$PD2_DIAGNOSTIC" in off|present|sdl|glx|ddraw) ;; *) exit 1;; esac
 # Empty means use the user's stored choice; an explicit variant is session-only.
 if [[ -n ${PD2_GAME_RESOLUTION:-} ]]; then export PD2_GAME_RESOLUTION; else unset PD2_GAME_RESOLUTION; fi
+_pd2_caller_res=${PD2_GAME_RESOLUTION:-}
 # Loot filter: 'default' or a *.filter name from port/filters; empty uses the
 # stored choice. Only safe names survive layout validation; nothing else here.
 if [[ -n ${PD2_LOOT_FILTER:-} && ${PD2_LOOT_FILTER} =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.filter$ ]]; then export PD2_LOOT_FILTER; else unset PD2_LOOT_FILTER; fi
+_pd2_caller_filter=${PD2_LOOT_FILTER:-}
 fixed_message() { printf '%s\n' "$1" > /dev/tty0 2>/dev/null || printf '%s\n' "$1" >&2; }
 for cmd in python3 timeout setsid unshare flock mount umount mountpoint mkfifo ps readlink stat chgrp runuser; do
  command -v "$cmd" >/dev/null || { fixed_message 'PD2: missing required system tool.'; exit 1; }
@@ -109,7 +117,7 @@ emit() {
  last_event_ms=$t
  printf 'PD2_EVENT {%s%s}\n' "$1" "$e"
 }
-emit "\"event\":\"phase\",\"phase\":\"preflight\",\"port_version\":\"1.4\",\"runtime_version\":\"8.0\""
+emit "\"event\":\"phase\",\"phase\":\"preflight\",\"port_version\":\"1.5-test.1\",\"runtime_version\":\"8.0\""
 error() { printf 'PD2_EVENT {"event":"runtime_error","phase":"preflight","reason":"%s"}\n' "$1"; exit 1; }
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [[ -d /opt/system/Tools/PortMaster ]]; then controlfolder=/opt/system/Tools/PortMaster
@@ -123,7 +131,13 @@ export PORT_32BIT=Y
 [[ -f "$controlfolder/device_info.txt" ]] && source "$controlfolder/device_info.txt"
 [[ -f "$controlfolder/mod_${CFW_NAME}.txt" ]] && source "$controlfolder/mod_${CFW_NAME}.txt"
 get_controls || error unsupported_runtime
-# Firmware hooks may install their own traps; retain our session-owned cleanup.
+# Firmware hooks may install their own traps or overlay env vars (e.g.
+# mangohud_portmaster.env setting PD2_FPS=4 / LD_PRELOAD); restore ours.
+if [[ -n $_pd2_caller_fps ]]; then export PD2_FPS="$_pd2_caller_fps"; else unset PD2_FPS; fi
+if [[ -n $_pd2_caller_res ]]; then export PD2_GAME_RESOLUTION="$_pd2_caller_res"; else unset PD2_GAME_RESOLUTION; fi
+if [[ -n $_pd2_caller_filter ]]; then export PD2_LOOT_FILTER="$_pd2_caller_filter"; else unset PD2_LOOT_FILTER; fi
+if [[ -n $_pd2_caller_ld_preload ]]; then export LD_PRELOAD="$_pd2_caller_ld_preload"; else unset LD_PRELOAD; fi
+unset MANGOHUD MANGOHUD_CONFIGFILE PERFOVERLAY_ENABLED PERFOVERLAY_LEVEL _pd2_caller_fps _pd2_caller_res _pd2_caller_filter _pd2_caller_ld_preload
 trap pd2_port_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -186,9 +200,11 @@ while IFS=$'\t' read -r layout_key layout_value; do
   profile) export PD2_PROFILE="$layout_value";;
   swap_ab) export PD2_SWAP_AB="$layout_value";;
   game_resolution) export PD2_GAME_RESOLUTION="$layout_value";;
+  perf_overlay) export PD2_FPS="$layout_value";;
   loot_filter) export PD2_LOOT_FILTER="$layout_value";;
  esac
 done <<< "$layout_dump"
+export PD2_FPS="${PD2_FPS:-0}"
 "${SUDO[@]}" mount -t squashfs -o loop,ro "$PD2_PORT/runtime/weston_pkg_0.2.squashfs" "$PD2_RUN/weston" || error unsupported_runtime
 mounted_weston=1
 export PD2_WESTON="$PD2_RUN/weston"

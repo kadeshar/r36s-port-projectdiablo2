@@ -162,8 +162,11 @@ class ArtifactTests(unittest.TestCase):
         pe = struct.unpack_from('<I', blob, 0x3c)[0]
         self.assertEqual(blob[pe:pe + 4], b'PE\0\0')
         self.assertEqual(struct.unpack_from('<H', blob, pe + 4)[0], 0x14c)
+        layout_spec = importlib.util.spec_from_file_location('pd2_layout', PORT / 'scripts/layout.py')
+        layout = importlib.util.module_from_spec(layout_spec)
+        layout_spec.loader.exec_module(layout)
         untouched = {
-            'cnc-ddraw': '85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9',
+            'cnc-ddraw': layout.CNC_DDRAW_SHA256,
             'fps-renderer': 'acb44f73f3ee0b2aa4ac98ed860b40e0d9389162eaa7de9ec0028affc778ba5a',
         }
         for name, digest in untouched.items():
@@ -175,6 +178,11 @@ class ArtifactTests(unittest.TestCase):
                          (renderer.RENDERER_SIZE, renderer.RENDERER_SHA256))
         for name, digest in manifest['build']['inputs_sha256'].items():
             self.assertEqual(hashlib.sha256((ROOT / 'tools' / name).read_bytes()).hexdigest(), digest)
+        cnc_manifest = json.loads((PORT / 'compat/cnc-ddraw/manifest.json').read_text())
+        self.assertEqual(
+            manifest['build']['inputs_sha256']['pd2_gdi_scaler.h'],
+            cnc_manifest['build']['inputs_sha256']['pd2_gdi_scaler.h'],
+        )
         patch = PORT / 'compat/present-renderer/source.patch'
         self.assertEqual(hashlib.sha256(patch.read_bytes()).hexdigest(), manifest['build']['source_patch_sha256'])
         self.assertEqual(manifest['telemetry']['max_bytes'], renderer.MAX_TELEMETRY)
@@ -182,12 +190,17 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(set(manifest['telemetry']['event']), {'1', '2', '3'})
         self.assertIn('once per backend per process', manifest['telemetry']['event']['3'])
         self.assertIn(b'p\x00d\x002\x00-\x00p\x00r\x00e\x00s\x00e\x00n\x00t\x00.\x00j\x00s\x00o\x00n\x00l\x00', blob)
+        self.assertIn(b'p\x00d\x002\x00-\x00s\x00c\x00a\x00l\x00e\x00.\x00j\x00s\x00o\x00n\x00l\x00', blob)
 
     def test_source_patch_no_added_surface_manipulation_or_hud(self):
         patch = (PORT / 'compat/present-renderer/source.patch').read_text()
         added = '\n'.join(line[1:] for line in patch.splitlines() if line.startswith('+') and not line.startswith('+++'))
-        for forbidden in ('primary->surface', 'DrawText(', 'memcpy(', 'pd2_pixels', 'SendInput(', 'WinHttp', 'urlretrieve'):
+        for forbidden in ('DrawText(', 'memcpy(', 'pd2_pixels', 'SendInput(', 'WinHttp', 'urlretrieve'):
             self.assertNotIn(forbidden, added)
+        self.assertNotIn('primary->surface =', added)
+        self.assertNotIn('primary->palette =', added)
+        self.assertIn('#include "pd2_gdi_scaler.h"', added)
+        self.assertIn('pd2_gdi_scale_present()', added)
         self.assertIn('IsWindow(g_ddraw.hwnd)', added)
         self.assertIn('SwapBuffers(g_ogl.hdc) != 0', added)
         self.assertIn('lines_copied = real_SetDIBitsToDevice(', added)

@@ -103,8 +103,10 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(menu.inherited_resolution, '800x600')
         menu.action('up')
         menu.action('up')
-        for _ in range(m.RESOLUTIONS.index('800x600')):
+        # First right advances directly from 800x600 to 1024x768 without duplicate step.
+        for expected in ('1024x768', 'native', '640x480', '800x600'):
             menu.action('right')
+            self.assertEqual(m.RESOLUTIONS[menu.resolution], expected)
         self.assertEqual(m.LABELS[menu.resolution], '800x600')
         menu.action('down')
         menu.action('down')
@@ -119,13 +121,15 @@ class MenuTests(unittest.TestCase):
 
     def test_all_15_resolution_fps_choices(self):
         choices = set()
-        for index, resolution in enumerate(m.RESOLUTIONS):
+        for steps in range(len(m.RESOLUTIONS)):
             for fps in ('default', '0', '1'):
-                menu = m.Menu()
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    menu = m.Menu()
                 for _ in range(2):
                     menu.action('up')
-                for _ in range(index):
+                for _ in range(steps):
                     menu.action('right')
+                expected_res = ('default', '800x600', '1024x768', 'native', '640x480')[steps]
                 menu.action('down')
                 if fps != 'default':
                     menu.action('accept')
@@ -134,25 +138,26 @@ class MenuTests(unittest.TestCase):
                 menu.action('down')
                 menu.action('down')
                 menu.action('accept')
-                self.assertEqual(menu.selection(), (resolution, fps, 'default'))
+                self.assertEqual(menu.selection(), (expected_res, fps, 'default'))
                 choices.add(menu.selection())
                 menu.action('cancel')
                 self.assertEqual(menu.result, 'launch')
         self.assertEqual(len(choices), 15)
 
     def test_native_disables_override_and_resolution_wraps(self):
-        menu = m.Menu()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            menu = m.Menu()
         menu.action('up')
         menu.action('up')
+        # From 640x480 default: left -> native (4), left -> 1024x768 (3), right -> native (4), right -> 640x480 (1).
         menu.action('left')
         self.assertEqual(menu.resolution, 4)
+        menu.action('left')
+        self.assertEqual(menu.resolution, 3)
         menu.action('right')
-        self.assertEqual(menu.resolution, 0)
-        menu.action('accept')
+        self.assertEqual(menu.resolution, 4)
+        menu.action('right')
         self.assertEqual(menu.resolution, 1)
-        for _ in range(4):
-            menu.action('right')
-        self.assertEqual(menu.resolution, 0)
 
     def test_fps_toggle_off_and_row_wrap(self):
         menu = m.Menu()
@@ -332,9 +337,10 @@ class MenuTests(unittest.TestCase):
             closed.assert_called_once_with(8)
 
     def test_pad_navigation_and_keyboard_confirm(self):
-        pad = FakePad([['up', 'up', 'right', 'right', 'down', 'accept', 'down', 'down']])
-        screen = FakeScreen([['accept']])
-        self.assertEqual(m.run(screen, pad, sleep=lambda _: None), ('800x600', '1', 'default'))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            pad = FakePad([['up', 'up', 'right', 'down', 'accept', 'down', 'down']])
+            screen = FakeScreen([['accept']])
+            self.assertEqual(m.run(screen, pad, sleep=lambda _: None), ('800x600', '1', 'default'))
 
     def test_protocol_cancel_error_and_cleanup(self):
         launch_event = {'event': 'session_probe', 'phase': 'launch',
@@ -394,9 +400,10 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(screen.draws, [(2, 0, 0, False), (1, 0, 0, False), (1, 0, 1, True)])
 
     def test_input_batch_paints_only_its_final_state(self):
-        screen = FakeScreen([['up', 'up', 'right', 'down'], ['cancel']])
-        self.assertIsNone(m.run(screen, FakePad(), sleep=lambda _: None))
-        self.assertEqual(screen.draws, [(2, 0, 0, False), (1, 1, 0, False)])
+        with mock.patch.dict(os.environ, {}, clear=True):
+            screen = FakeScreen([['up', 'up', 'right', 'down'], ['cancel']])
+            self.assertIsNone(m.run(screen, FakePad(), sleep=lambda _: None))
+        self.assertEqual(screen.draws, [(2, 0, 0, False), (1, 2, 0, False)])
 
     def test_float_active_matrix(self):
         # 'DEFAULT' is virtual (index 0); _filter_options lists real files only.
@@ -542,6 +549,18 @@ class LauncherContractTests(unittest.TestCase):
         self.assertCountEqual(assigned, ['PD2_GAME_RESOLUTION', 'PD2_FPS', 'PD2_LOOT_FILTER'])
         self.assertNotIn('settings.json', block)
 
+    def test_confirmed_menu_saves_settings_and_private_launcher_reads_perf_overlay(self):
+        self.assertIn('save_menu_settings=1', self.weston)
+        self.assertIn('--volatile-work ${save_flag:+"$save_flag"}', self.weston)
+        private = (ROOT / 'sdcard/ports/projectdiablo2/private-launcher.sh').read_text(encoding='utf-8')
+        self.assertIn('perf_overlay) export PD2_FPS="$layout_value";;', private)
+        # PortMaster mod_*.txt hooks (e.g. mangohud_portmaster.env) must not override PD2_FPS.
+        get_controls_pos = private.index('get_controls || error unsupported_runtime')
+        layout_pos = private.index('layout.py" --port "$PD2_PORT" --state "$PD2_STATE"')
+        restore_block = private[get_controls_pos:layout_pos]
+        self.assertIn('if [[ -n $_pd2_caller_fps ]]; then export PD2_FPS="$_pd2_caller_fps"; else unset PD2_FPS; fi', restore_block)
+        self.assertIn('unset MANGOHUD MANGOHUD_CONFIGFILE PERFOVERLAY_ENABLED PERFOVERLAY_LEVEL', restore_block)
+
 
 @unittest.skipUnless(sys.platform.startswith('linux') or os.environ.get('PD2_TEST_BASH'),
                      'Real Bash harness requires Linux or explicit PD2_TEST_BASH')
@@ -571,9 +590,9 @@ class LauncherShellTests(unittest.TestCase):
         block = text.split('stage x11_ready', 1)[1].split('stage volatile_work_prepare', 1)[0]
         harness = ('set -u\n'
                    'runuser() { printf "%s" "$MOCK_RESULT"; return "$MOCK_RC"; }\n'
-                   + block + '\nprintf "FLAGS:%s|%s|%s|%s|%s|%s\\n" '
+                   + block + '\nprintf "FLAGS:%s|%s|%s|%s|%s|%s|SAVE:%s\\n" '
                    '"$PD2_GAME_RESOLUTION" "$PD2_FPS" "$PD2_LOOT_FILTER" "$PD2_INPUT_MODE" '
-                   '"$PD2_CONTROLLER_TEST" "$PD2_AUDIO_TEST"\n'
+                   '"$PD2_CONTROLLER_TEST" "$PD2_AUDIO_TEST" "$save_menu_settings"\n'
                    'printf "VOLATILE_AND_GAME_WOULD_START\\n"\n')
         cases = []
         for resolution in m.RESOLUTIONS:
@@ -623,7 +642,8 @@ class LauncherShellTests(unittest.TestCase):
                     self.assertNotIn('FLAGS:', process.stdout)
                     self.assertNotIn('VOLATILE_AND_GAME_WOULD_START', process.stdout)
                 else:
-                    self.assertIn('FLAGS:' + resolution + '|' + fps + '|' + filter_name + '|mapper|1|' + audio,
+                    expected_save = '1' if status == 'selected' else '0'
+                    self.assertIn('FLAGS:' + resolution + '|' + fps + '|' + filter_name + '|mapper|1|' + audio + '|SAVE:' + expected_save,
                                   process.stdout)
                     self.assertIn('VOLATILE_AND_GAME_WOULD_START', process.stdout)
                 self.assertNotIn('\nBAD', process.stdout)

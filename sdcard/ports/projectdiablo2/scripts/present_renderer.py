@@ -13,8 +13,8 @@ from pathlib import Path
 import stat
 import sys
 
-RENDERER_SIZE = 431616
-RENDERER_SHA256 = '2da0ba6d2ad4a6c85bd7c412c3cac076ba97ab8d5a4baffae6e8a3c329e66eed'
+RENDERER_SIZE = 441856
+RENDERER_SHA256 = 'b299b5c89dd7d71c11a6574fc7b163e9efca0f4147c514084fba6f2fc13697ea'
 MAX_RENDERER = 4 * 1024 * 1024
 TELEMETRY_FILE = 'pd2-present.jsonl'
 MAX_TELEMETRY = 262144

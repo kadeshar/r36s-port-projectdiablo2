@@ -817,6 +817,7 @@ while True:time.sleep(.1)
     result,_=self.execute({} if resolution is None else {'PD2_GAME_RESOLUTION':resolution})
     self.assertEqual(result.returncode,0,result.stdout)
     self.assertIn('"check":"render_resolution","status":"640x480"',result.stdout)
+    self.assertIn('"check":"perf_overlay","status":"0"',result.stdout)
  def test_alternative_resolution_preserves_native_desktop(self):
   for resolution in ('1024x768', '640x480', '800x600'):
    with self.subTest(resolution=resolution):

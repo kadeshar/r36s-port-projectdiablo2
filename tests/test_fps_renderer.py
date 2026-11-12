@@ -156,9 +156,11 @@ class ArtifactTests(unittest.TestCase):
         pe = struct.unpack_from('<I', blob, 0x3c)[0]
         self.assertEqual(blob[pe:pe + 4], b'PE\0\0')
         self.assertEqual(struct.unpack_from('<H', blob, pe + 4)[0], 0x14c)
+        layout_spec = importlib.util.spec_from_file_location('pd2_layout', PORT / 'scripts/layout.py')
+        layout = importlib.util.module_from_spec(layout_spec)
+        layout_spec.loader.exec_module(layout)
         upstream = (PORT / 'compat/cnc-ddraw/ddraw.dll').read_bytes()
-        self.assertEqual(hashlib.sha256(upstream).hexdigest(),
-                         '85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9')
+        self.assertEqual(hashlib.sha256(upstream).hexdigest(), layout.CNC_DDRAW_SHA256)
         manifest = json.loads((PORT / 'compat/fps-renderer/manifest.json').read_text())
         self.assertEqual((manifest['size'], manifest['sha256']),
                          (fps.RENDERER_SIZE, fps.RENDERER_SHA256))

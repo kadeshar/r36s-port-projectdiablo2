@@ -13,7 +13,7 @@ import sys
 import tarfile
 import tempfile
 
-VERSION = '1.4'
+VERSION = '1.5-test.1'
 CONFIG_LIMIT = 512 * 1024
 # Community loot filters (default.filter) regularly exceed the 512 KiB config
 # bound; keep them bounded but generous. The volatile work tmpfs (16 MiB) holds
@@ -24,8 +24,8 @@ JSON_CONFIGS = ('ProjectDiablo.json', 'SGD2FreeResolution.json', 'BH.json')
 WORK_CONFIGS = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw.ini')
 ARTIFACTS = ('wine-8.0-x86.tar.xz', 'box86', 'weston_pkg_0.2.squashfs', 'vc_redist.x86.exe')
 CNC_DDRAW_VERSION = '7.1.0.0'
-CNC_DDRAW_SIZE = 411648
-CNC_DDRAW_SHA256 = '85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9'
+CNC_DDRAW_SIZE = 439296
+CNC_DDRAW_SHA256 = 'cbbdba23aa5ad52e25de42504715ded7fe86d5af04803cbb73fdce9ddfa0be76'
 # Restricted PD2 SGD2 build: fixed in-game vector and parser both force 1068x600.
 # Patch only a private generated copy, never the imported asset or an unknown DLL.
 SGD2_SOURCE_SIZE = 307200
@@ -711,9 +711,13 @@ def restore_input_config(incoming, previous):
     return result
 
 
-def prepare(port, state, data_override=None, volatile_work=False, input_mode=None, game_resolution=None, loot_filter=None):
+def prepare(port, state, data_override=None, volatile_work=False, input_mode=None, game_resolution=None, loot_filter=None, perf_overlay=None, save_settings=False):
     # A supplied session override is strictly whitelisted before any mutation.
     if game_resolution is not None and (type(game_resolution) is not str or game_resolution not in GAME_RESOLUTIONS):
+        raise LayoutError('invalid_profile')
+    if perf_overlay is not None and not (
+            (type(perf_overlay) is int and 0 <= perf_overlay <= 4)
+            or (type(perf_overlay) is str and perf_overlay in ('0', '1', '2', '3', '4'))):
         raise LayoutError('invalid_profile')
     if loot_filter is not None and (type(loot_filter) is not str
                                     or (loot_filter != LOOT_FILTER_DEFAULT and not LOOT_FILTER_NAME_RE.fullmatch(loot_filter))):
@@ -818,13 +822,16 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     # Legacy OpenGL settings fall back to GDI in memory, never rewrite user settings.
     opts['profile'] = 'gdi'
     # Existing prefixes keep their file byte-identical; a missing key takes the
-    # LCD-native default. Preserve explicit choices, including 800x600.
-    # Validate persisted settings even with an override.
+    # 640x480 LCD-native default. Validate persisted settings even with an override.
     resolution = opts.get('game_resolution', '640x480')
     if type(resolution) is not str or resolution not in GAME_RESOLUTIONS:
         raise LayoutError('invalid_profile')
     if game_resolution is not None:
         resolution = game_resolution
+    stored_overlay = opts.get('perf_overlay', 0)
+    if type(stored_overlay) is not int or not (0 <= stored_overlay <= 4):
+        raise LayoutError('invalid_profile')
+    effective_overlay = int(perf_overlay) if perf_overlay is not None else stored_overlay
     # Loot filter: the stored choice persists; an explicit session override
     # (launcher menu selection) wins and is persisted so the next menu starts
     # from it. A missing file falls back to the shipped no-filter default.
@@ -839,7 +846,15 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     effective_filter = apply_loot_filter(port, config,
                                          loot_filter if loot_filter is not None else stored_filter,
                                          announce=announce)
-    if loot_filter is not None and opts.get('loot_filter') != effective_filter:
+    if save_settings:
+        if (opts.get('game_resolution') != resolution
+                or opts.get('perf_overlay') != effective_overlay
+                or opts.get('loot_filter') != effective_filter):
+            opts['game_resolution'] = resolution
+            opts['perf_overlay'] = effective_overlay
+            opts['loot_filter'] = effective_filter
+            atomic_json(settings, opts)
+    elif loot_filter is not None and opts.get('loot_filter') != effective_filter:
         opts['loot_filter'] = effective_filter
         atomic_json(settings, opts)
     active_names = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw-gdi.ini')
@@ -954,7 +969,7 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
         z.unlink()
     elif z.exists():
         raise LayoutError('invalid_layout')
-    result = {'wine': str(wine), 'box': str(box), 'prefix': str(prefix), 'work': str(work), 'profile': opts['profile'], 'swap_ab': opts['swap_ab'], 'game_resolution': resolution, 'loot_filter': effective_filter, 'volatile_work': bool(volatile_work)}
+    result = {'wine': str(wine), 'box': str(box), 'prefix': str(prefix), 'work': str(work), 'profile': opts['profile'], 'swap_ab': opts['swap_ab'], 'game_resolution': resolution, 'perf_overlay': effective_overlay, 'loot_filter': effective_filter, 'volatile_work': bool(volatile_work)}
     if input_mode is not None:
         result['input_mode'] = input_mode
     atomic_session_json(state / 'session-layout.json', result)
@@ -1016,21 +1031,24 @@ def main(argv=None):
     parser.add_argument('--state', required=True)
     parser.add_argument('--data')
     parser.add_argument('--volatile-work', action='store_true')
+    parser.add_argument('--save-settings', action='store_true')
     parser.add_argument('--sync-config', action='store_true')
-    parser.add_argument('--get', choices=['wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution', 'loot_filter'])
+    parser.add_argument('--get', choices=['wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution', 'perf_overlay', 'loot_filter'])
     parser.add_argument('--dump', action='store_true')
     args = parser.parse_args(argv)
     try:
         if args.sync_config:
-            if args.get or args.dump or args.volatile_work or args.data:
+            if args.get or args.dump or args.volatile_work or args.data or args.save_settings:
                 raise LayoutError('invalid_layout')
             sync_config(pathlib.Path(args.port), pathlib.Path(args.state))
         elif args.get:
+            if args.save_settings:
+                raise LayoutError('invalid_layout')
             result = read_object(pathlib.Path(args.state).absolute() / 'session-layout.json')
             value = result[args.get]
             print('1' if value is True else '0' if value is False else value)
         elif args.dump:
-            if args.volatile_work or args.data:
+            if args.volatile_work or args.data or args.save_settings:
                 raise LayoutError('invalid_layout')
             # Single spawn replaces one --get per key; values are NUL-free paths
             # and bounded tokens, so TAB separation is unambiguous.
@@ -1038,11 +1056,15 @@ def main(argv=None):
             for key in ('wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution', 'loot_filter'):
                 value = result[key]
                 print('%s\t%s' % (key, '1' if value is True else '0' if value is False else value))
+            if 'perf_overlay' in result:
+                print('perf_overlay\t%s' % result['perf_overlay'])
         else:
             prepare(pathlib.Path(args.port), pathlib.Path(args.state), args.data, args.volatile_work,
                     input_mode=os.environ.get('PD2_INPUT_MODE', 'mapper'),
                     game_resolution=os.environ.get('PD2_GAME_RESOLUTION'),
-                    loot_filter=os.environ.get('PD2_LOOT_FILTER') or None)
+                    loot_filter=os.environ.get('PD2_LOOT_FILTER') or None,
+                    perf_overlay=os.environ.get('PD2_FPS'),
+                    save_settings=args.save_settings)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, tarfile.TarError, LayoutError) as error:
         reason = str(error) if isinstance(error, LayoutError) else 'invalid_layout'
         if reason not in ('invalid_layout', 'invalid_profile', 'insufficient_space', 'unsupported_runtime'):

@@ -182,6 +182,7 @@ def validate_event(value, allow_summary=False):
             'audio_metrics_library': ('ready','unavailable'),
             'dynarec_bigblock': ('1', '2'),
             'fps_counter': ('hotkey', 'renderer', 'disabled', 'unavailable', 'overlay'),
+            'perf_overlay': ('0', '1', '2', '3', '4'),
             'diagnostic_mode': ('off','present','sdl','glx','ddraw'),
             'presentation_capture': ('ready','unavailable'),
             'graphics_test_result': ('completed','failed','timeout'),

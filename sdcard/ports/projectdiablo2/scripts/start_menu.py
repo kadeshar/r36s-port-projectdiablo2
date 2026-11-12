@@ -77,6 +77,7 @@ class Menu:
         # Untouched fields inherit the already resolved main-launcher settings.
         self.row = 2
         self.resolution = 0
+        self.resolution_changed = False
         self.fps = 0
         self.fps_changed = False
         # Display resolved launcher values without changing the inheritance
@@ -114,7 +115,10 @@ class Menu:
             self.row = (self.row + (-1 if action == 'up' else 1)) % 5
         elif action in ('left', 'right', 'accept'):
             if self.row == 0:
-                self.resolution = (self.resolution + (-1 if action == 'left' else 1)) % len(RESOLUTIONS)
+                opts = RESOLUTIONS[1:]
+                cur = self.resolution - 1 if self.resolution_changed else opts.index(self.inherited_resolution)
+                self.resolution = 1 + (cur + (-1 if action == 'left' else 1)) % len(opts)
+                self.resolution_changed = True
             elif self.row == 1:
                 current = self.fps if self.fps_changed else self.inherited_fps_level
                 if isinstance(current, bool):
