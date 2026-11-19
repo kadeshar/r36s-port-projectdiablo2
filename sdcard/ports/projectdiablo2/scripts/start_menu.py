@@ -7,7 +7,9 @@ downloads or persistent writes; the launcher persists the confirmed choice.
 The normal launcher prepares PortMaster, Weston and X11 before this runs.
 FPS ON selects an automatic render-FPS HUD from the first game frames.
 """
+import json
 import os
+from pathlib import Path
 import select
 import struct
 import sys
@@ -15,9 +17,19 @@ import time
 
 RESOLUTIONS = ('default', '640x480', '800x600', '1024x768', 'native')
 LABELS = ('640x480', '640x480', '800x600', '1024x768', '1068x600')
+EDITIONS = ('pd2', 'vanilla', 'vanilla114')
+EDITION_LABELS = ('PROJECT DIABLO 2', 'VANILLA 1.13', 'VANILLA 1.14')
+EDITION_LABEL_MAP = {
+    'pd2': 'PROJECT DIABLO 2',
+    'vanilla': 'VANILLA 1.13',
+    'vanilla114': 'VANILLA 1.14',
+}
 OVERLAY_LEVELS = ('OFF', 'LEVEL 1', 'LEVEL 2', 'LEVEL 3', 'LEVEL 4')
+CONTROLLER_MODES = ('auto', 'r36s', 'retrogame', 'rg35xxh', 'manual')
+CONTROLLER_LABELS = ('AUTO', 'R36S', 'RETROGAME', 'RG35XX-H', 'MANUAL')
 CANCEL = 10
 LOOT_FILTER_DEFAULT = 'default'
+CALIB_TIMEOUT = 5.0
 EVENT = struct.Struct('@llHHi')  # Linux input_event: native timeval (aarch64/ARM32).
 PAD_ACTIONS = {0x220: 'up', 0x221: 'down', 0x222: 'left', 0x223: 'right',
                103: 'up', 108: 'down', 105: 'left', 106: 'right',
@@ -25,6 +37,84 @@ PAD_ACTIONS = {0x220: 'up', 0x221: 'down', 0x222: 'left', 0x223: 'right',
                0x13b: 'accept', 0x13a: 'cancel',
                0x2c1: 'accept', 0x2c0: 'cancel', 0x2c4: 'cancel',
                28: 'accept', 57: 'accept', 1: 'cancel'}
+
+STICK_TARGETS = {
+    'LS_X': 0,  # ABS_X
+    'LS_Y': 1,  # ABS_Y
+    'RS_X': 3,  # ABS_RX
+    'RS_Y': 4,  # ABS_RY
+}
+
+CALIB_TARGETS = (
+    ('A', 'A BUTTON'),
+    ('B', 'B BUTTON'),
+    ('X', 'X BUTTON'),
+    ('Y', 'Y BUTTON'),
+    ('UP', 'DPAD UP'),
+    ('DOWN', 'DPAD DOWN'),
+    ('LEFT', 'DPAD LEFT'),
+    ('RIGHT', 'DPAD RIGHT'),
+    ('TL', 'L1 BUTTON'),
+    ('LT', 'L2 BUTTON'),
+    ('TR', 'R1 BUTTON'),
+    ('RT', 'R2 BUTTON'),
+    ('LS_X', 'L-STICK LEFT'),
+    ('LS_Y', 'L-STICK UP'),
+    ('RS_X', 'R-STICK LEFT'),
+    ('RS_Y', 'R-STICK UP'),
+    ('SELECT', 'SELECT BUTTON'),
+    ('START', 'START BUTTON'),
+    ('THUMBL', 'L3 BUTTON'),
+    ('THUMBR', 'R3 BUTTON'),
+    ('MODE', 'MENU / FN BUTTON'),
+)
+
+
+def get_config_dir():
+    port = os.environ.get('PD2_PORT')
+    if port:
+        return Path(port) / 'config'
+    return Path(__file__).resolve().parents[1] / 'config'
+
+
+def load_controller_mode():
+    try:
+        path = get_config_dir() / 'controller.json'
+        if path.is_file():
+            with open(path, 'r', encoding='utf-8') as f:
+                mode = json.load(f).get('mode', 'auto')
+                if mode in CONTROLLER_MODES:
+                    return mode
+    except Exception:
+        pass
+    env_mode = os.environ.get('PD2_CONTROLLER_MODE')
+    return env_mode if env_mode in CONTROLLER_MODES else 'auto'
+
+
+def save_controller_mode(mode):
+    try:
+        cdir = get_config_dir()
+        cdir.mkdir(parents=True, exist_ok=True)
+        path = cdir / 'controller.json'
+        tmp = path.with_suffix('.tmp')
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump({'mode': mode}, f)
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
+def save_custom_pad(bindings):
+    try:
+        cdir = get_config_dir()
+        cdir.mkdir(parents=True, exist_ok=True)
+        path = cdir / 'custom_pad.json'
+        tmp = path.with_suffix('.tmp')
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(bindings, f, indent=2)
+        tmp.replace(path)
+    except Exception:
+        pass
 
 
 def get_pad_actions():
@@ -57,6 +147,25 @@ def _filter_options():
 
 
 
+def _detect_editions():
+    port = os.environ.get('PD2_PORT')
+    data_dir = os.environ.get('PD2_DATA')
+    if not data_dir and port:
+        data_dir = Path(port) / 'gamedata/Diablo II'
+    if data_dir:
+        try:
+            scripts_dir = str(Path(__file__).resolve().parent)
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            import layout
+            detected = layout.detect_available_editions(data_dir)
+            if detected:
+                return detected
+        except (ImportError, OSError, ValueError, AttributeError):
+            pass
+    return EDITIONS
+
+
 def _subtitle():
     """Header subtitle 'R36S PORT <version>'.
 
@@ -73,18 +182,26 @@ def _subtitle():
 
 
 class Menu:
-    def __init__(self):
-        # Untouched fields inherit the already resolved main-launcher settings.
-        self.row = 2
+    def __init__(self, editions=None):
+        self.screen = 'main'  # 'main' | 'options' | 'controller' | 'calibrate'
+        self.row = 0          # Main screen defaults to row 0: 'START GAME'
         self.resolution = 0
         self.resolution_changed = False
         self.fps = 0
         self.fps_changed = False
+        self.editions = tuple(editions) if editions else _detect_editions()
+        self.edition_labels = tuple(EDITION_LABEL_MAP.get(e, e.upper()) for e in self.editions)
+        inherited_edition = os.environ.get('PD2_EDITION', 'pd2')
+        self.edition_index = self.editions.index(inherited_edition) if inherited_edition in self.editions else 0
         # Display resolved launcher values without changing the inheritance
-        # protocol. Standalone/default sessions use 640x480 and FPS off.
-        inherited_resolution = os.environ.get('PD2_GAME_RESOLUTION', '640x480')
-        self.inherited_resolution = (inherited_resolution if inherited_resolution in
-                                     ('640x480', '800x600', '1024x768', 'native') else '640x480')
+        # protocol. Standalone/default sessions use 640x480 (800x600 for vanilla 1.14) and FPS off.
+        raw_res = os.environ.get('PD2_GAME_RESOLUTION')
+        self.inherited_resolution_explicit = bool(raw_res and raw_res in ('640x480', '800x600', '1024x768', 'native'))
+        if not self.inherited_resolution_explicit:
+            inherited_resolution = '800x600' if self.edition == 'vanilla114' else '640x480'
+        else:
+            inherited_resolution = raw_res
+        self.inherited_resolution = inherited_resolution
         inherited_fps = os.environ.get('PD2_FPS', '0')
         self.inherited_fps_level = int(inherited_fps) if inherited_fps in ('0', '1', '2', '3', '4') else 0
         self.inherited_fps = self.inherited_fps_level > 0
@@ -97,7 +214,50 @@ class Menu:
         inherited_filter = os.environ.get('PD2_LOOT_FILTER', LOOT_FILTER_DEFAULT)
         if inherited_filter in self.filters:
             self.filter_index = self.filters.index(inherited_filter) + 1
+        self.controller_mode = load_controller_mode()
         self.result = None
+
+        # Calibration state
+        self.calib_step = 0
+        self.calib_keys = {}
+        self.calib_triggers = {}
+        self.calib_axis_map = {}
+        self.calib_axis_centers = {}
+        self.calib_has_hat_axes = False
+        self.calib_held_code = None
+        self.calib_held_kind = None
+        self.calib_held_peak = 0
+        self.calib_held_start = 0.0
+        self.calib_deadline = 0.0
+        self.calib_last_sec = 5
+        self.calib_needs_repaint = False
+
+    @property
+    def edition(self):
+        return self.editions[self.edition_index]
+
+    @property
+    def edition_label(self):
+        return self.edition_labels[self.edition_index]
+
+    @property
+    def is_vanilla(self):
+        return self.edition in ('vanilla', 'vanilla114')
+
+    def edition_token(self):
+        return self.edition
+
+    def current_resolution(self):
+        if self.resolution_changed and self.resolution in range(len(RESOLUTIONS)):
+            res = RESOLUTIONS[self.resolution]
+            if self.is_vanilla and res not in ('640x480', '800x600'):
+                return '800x600' if self.edition == 'vanilla114' else '640x480'
+            return res
+        if self.inherited_resolution_explicit:
+            return self.inherited_resolution
+        if self.edition == 'vanilla114':
+            return '800x600'
+        return self.inherited_resolution
 
     @property
     def filter_label(self):
@@ -106,51 +266,433 @@ class Menu:
             return 'DEFAULT'
         return self.filters[self.filter_index - 1].upper()[:16]
 
+    @property
+    def controller_mode_label(self):
+        idx = CONTROLLER_MODES.index(self.controller_mode) if self.controller_mode in CONTROLLER_MODES else 0
+        return CONTROLLER_LABELS[idx]
+
+    @property
+    def calib_target_label(self):
+        if self.calib_step < len(CALIB_TARGETS):
+            return CALIB_TARGETS[self.calib_step][1]
+        return 'COMPLETE'
+
+    @property
+    def calib_seconds_left(self):
+        rem = max(0, int(self.calib_deadline - time.monotonic()) + 1)
+        return min(5, rem)
+
+    @property
+    def calib_total_steps(self):
+        return len(CALIB_TARGETS)
+
     def action(self, action):
         if self.result is not None:
             return
-        if action == 'cancel':
-            self.result = 'cancel'
-        elif action in ('up', 'down'):
-            self.row = (self.row + (-1 if action == 'up' else 1)) % 5
-        elif action in ('left', 'right', 'accept'):
-            if self.row == 0:
-                opts = RESOLUTIONS[1:]
-                cur = self.resolution - 1 if self.resolution_changed else opts.index(self.inherited_resolution)
-                self.resolution = 1 + (cur + (-1 if action == 'left' else 1)) % len(opts)
-                self.resolution_changed = True
-            elif self.row == 1:
-                current = self.fps if self.fps_changed else self.inherited_fps_level
-                if isinstance(current, bool):
-                    current = 1 if current else 0
-                if action == 'left':
-                    self.fps = (current - 1) % len(OVERLAY_LEVELS)
-                elif action == 'right':
-                    self.fps = (current + 1) % len(OVERLAY_LEVELS)
-                else:  # accept: toggle between off and on/level1
-                    self.fps = 0 if current > 0 else 1
-                self.fps_changed = True
-            elif self.row == 2:
-                count = len(self.filters) + 1
-                self.filter_index = (self.filter_index + (-1 if action == 'left' else 1)) % count
+
+        if self.screen == 'main':
+            if action == 'cancel':
+                self.result = 'cancel'
+            elif action in ('up', 'down'):
+                self.row = (self.row + (-1 if action == 'up' else 1)) % 3
             elif action == 'accept':
-                self.result = 'launch' if self.row == 3 else 'cancel'
+                if self.row == 0:
+                    self.result = 'launch'
+                elif self.row == 1:
+                    self.screen = 'options'
+                    self.row = 0
+                elif self.row == 2:
+                    self.result = 'cancel'
+
+        elif self.screen == 'options':
+            if action == 'cancel':
+                self.screen = 'main'
+                self.row = 1
+            elif action in ('up', 'down'):
+                self.row = (self.row + (-1 if action == 'up' else 1)) % 6
+            elif action in ('left', 'right', 'accept'):
+                if self.row == 0:
+                    delta = -1 if action == 'left' else 1
+                    self.edition_index = (self.edition_index + delta) % len(self.editions)
+                    if self.resolution_changed and self.is_vanilla:
+                        cur_val = self.current_resolution()
+                        if cur_val not in ('640x480', '800x600'):
+                            target = '800x600' if self.edition == 'vanilla114' else '640x480'
+                            self.resolution = RESOLUTIONS.index(target)
+                elif self.row == 1:
+                    opts = ('640x480', '800x600') if self.is_vanilla else RESOLUTIONS[1:]
+                    cur_val = self.current_resolution()
+                    cur = opts.index(cur_val) if cur_val in opts else 0
+                    new_val = opts[(cur + (-1 if action == 'left' else 1)) % len(opts)]
+                    self.resolution = RESOLUTIONS.index(new_val)
+                    self.resolution_changed = True
+                elif self.row == 2:
+                    current = self.fps if self.fps_changed else self.inherited_fps_level
+                    if isinstance(current, bool):
+                        current = 1 if current else 0
+                    if action == 'left':
+                        self.fps = (current - 1) % len(OVERLAY_LEVELS)
+                    elif action == 'right':
+                        self.fps = (current + 1) % len(OVERLAY_LEVELS)
+                    else:
+                        self.fps = 0 if current > 0 else 1
+                    self.fps_changed = True
+                elif self.row == 3:
+                    if not self.is_vanilla:
+                        count = len(self.filters) + 1
+                        self.filter_index = (self.filter_index + (-1 if action == 'left' else 1)) % count
+                elif self.row == 4:
+                    if action == 'accept':
+                        self.screen = 'controller'
+                        self.row = 0
+                elif self.row == 5:
+                    if action == 'accept':
+                        self.screen = 'main'
+                        self.row = 1
+
+        elif self.screen == 'controller':
+            if action == 'cancel':
+                self.screen = 'options'
+                self.row = 4
+            elif action in ('up', 'down'):
+                if self.controller_mode != 'manual':
+                    # Only row 0 (MODE) and row 2 (BACK) are selectable when not manual
+                    if action == 'down':
+                        self.row = 2 if self.row == 0 else 0
+                    else:
+                        self.row = 0 if self.row == 2 else 2
+                else:
+                    self.row = (self.row + (-1 if action == 'up' else 1)) % 3
+            elif action in ('left', 'right', 'accept'):
+                if self.row == 0:
+                    cur = CONTROLLER_MODES.index(self.controller_mode) if self.controller_mode in CONTROLLER_MODES else 0
+                    self.controller_mode = CONTROLLER_MODES[(cur + (-1 if action == 'left' else 1)) % len(CONTROLLER_MODES)]
+                    save_controller_mode(self.controller_mode)
+                    if self.controller_mode != 'manual' and self.row == 1:
+                        self.row = 0
+                elif self.row == 1:
+                    if action == 'accept' and self.controller_mode == 'manual':
+                        self.start_calibration()
+                elif self.row == 2:
+                    if action == 'accept':
+                        self.screen = 'options'
+                        self.row = 4
+
+        elif self.screen == 'calibrate':
+            if action in ('cancel', 'accept'):
+                self.cancel_calibration()
+
+    def start_calibration(self):
+        self.screen = 'calibrate'
+        self.row = 0
+        self.calib_step = 0
+        self.calib_keys = {}
+        self.calib_triggers = {}
+        self.calib_axis_map = {}
+        self.calib_axis_centers = {}
+        self.calib_held_code = None
+        self.calib_held_kind = None
+        self.calib_held_peak = 0
+        self.calib_held_start = 0.0
+        self.calib_deadline = time.monotonic() + CALIB_TIMEOUT
+        self.calib_last_sec = 5
+        self.calib_needs_repaint = True
+
+    def cancel_calibration(self):
+        self.screen = 'controller'
+        self.row = 1
+        self.calib_held_code = None
+        self.calib_held_kind = None
+        self.calib_held_peak = 0
+        self.calib_held_start = 0.0
+        self.calib_axis_centers.clear()
+        self.calib_needs_repaint = True
+
+    def skip_calibration_step(self, pad=None):
+        self.calib_step += 1
+        self.calib_held_code = None
+        self.calib_held_kind = None
+        self.calib_held_peak = 0
+        self.calib_held_start = 0.0
+        self.calib_axis_centers.clear()
+        if self.calib_step >= len(CALIB_TARGETS):
+            self.finish_calibration(pad=pad)
+        else:
+            self.calib_deadline = time.monotonic() + CALIB_TIMEOUT
+            self.calib_last_sec = 5
+        self.calib_needs_repaint = True
+
+    def record_calibration_step(self, code, pad=None):
+        if self.calib_step < len(CALIB_TARGETS):
+            target_key, _ = CALIB_TARGETS[self.calib_step]
+            if target_key == 'LT':
+                self.calib_triggers[code] = 2  # ABS_Z
+            elif target_key == 'RT':
+                self.calib_triggers[code] = 5  # ABS_RZ
+            else:
+                self.calib_keys[code] = target_key
+            self.calib_step += 1
+            self.calib_held_code = None
+            self.calib_held_kind = None
+            self.calib_held_peak = 0
+            self.calib_held_start = 0.0
+            self.calib_axis_centers.clear()
+            if self.calib_step >= len(CALIB_TARGETS):
+                self.finish_calibration(pad=pad)
+            else:
+                self.calib_deadline = time.monotonic() + CALIB_TIMEOUT
+                self.calib_last_sec = 5
+            self.calib_needs_repaint = True
+
+    def record_calibration_trigger(self, axis_code, pad=None):
+        if self.calib_step < len(CALIB_TARGETS):
+            target_key, _ = CALIB_TARGETS[self.calib_step]
+            if target_key in ('LT', 'RT'):
+                out_axis = 2 if target_key == 'LT' else 5
+                self.calib_triggers[axis_code] = out_axis
+            self.calib_step += 1
+            self.calib_held_code = None
+            self.calib_held_kind = None
+            self.calib_held_peak = 0
+            self.calib_held_start = 0.0
+            self.calib_axis_centers.clear()
+            if self.calib_step >= len(CALIB_TARGETS):
+                self.finish_calibration(pad=pad)
+            else:
+                self.calib_deadline = time.monotonic() + CALIB_TIMEOUT
+                self.calib_last_sec = 5
+            self.calib_needs_repaint = True
+
+    def record_calibration_hat(self, target_key, code, pad=None):
+        if self.calib_step < len(CALIB_TARGETS):
+            self.calib_has_hat_axes = True
+            self.calib_step += 1
+            self.calib_held_code = None
+            self.calib_held_kind = None
+            self.calib_held_peak = 0
+            self.calib_held_start = 0.0
+            self.calib_axis_centers.clear()
+            if self.calib_step >= len(CALIB_TARGETS):
+                self.finish_calibration(pad=pad)
+            else:
+                self.calib_deadline = time.monotonic() + CALIB_TIMEOUT
+                self.calib_last_sec = 5
+            self.calib_needs_repaint = True
+
+    def record_calibration_stick(self, target_key, code, pad=None):
+        if self.calib_step < len(CALIB_TARGETS):
+            target_axis = STICK_TARGETS.get(target_key)
+            if target_axis is not None:
+                self.calib_axis_map[code] = target_axis
+            self.calib_step += 1
+            self.calib_held_code = None
+            self.calib_held_kind = None
+            self.calib_held_peak = 0
+            self.calib_held_start = 0.0
+            self.calib_axis_centers.clear()
+            if self.calib_step >= len(CALIB_TARGETS):
+                self.finish_calibration(pad=pad)
+            else:
+                self.calib_deadline = time.monotonic() + CALIB_TIMEOUT
+                self.calib_last_sec = 5
+            self.calib_needs_repaint = True
+
+    def handle_calibration_event(self, kind, code, value, pad=None):
+        if self.screen != 'calibrate' or self.calib_step >= len(CALIB_TARGETS):
+            return
+
+        now = time.monotonic()
+        target_key, _ = CALIB_TARGETS[self.calib_step]
+
+        if target_key in STICK_TARGETS:
+            if kind == 3:  # EV_ABS
+                info = None
+                if pad is not None and hasattr(pad, 'axis_info'):
+                    info = pad.axis_info(code)
+
+                if info is not None:
+                    lo, hi = info[1], info[2]
+                    flat = max(16, info[4])
+                    span = max(1, hi - lo)
+                    center = (lo + hi) // 2
+                    push_thresh = max(40, int(span * 0.20))
+                    release_thresh = max(flat * 2, max(40, int(span * 0.10)))
+                else:
+                    if value < 0:
+                        center = 0
+                    else:
+                        if code not in self.calib_axis_centers:
+                            self.calib_axis_centers[code] = value
+                        center = self.calib_axis_centers[code]
+                    push_thresh = 50
+                    release_thresh = 30
+
+                delta = abs(value - center)
+                if self.calib_held_code is None:
+                    if delta >= push_thresh:
+                        self.calib_held_code = code
+                        self.calib_held_kind = 3
+                        self.calib_held_peak = delta
+                        self.calib_held_start = now
+                        self.calib_needs_repaint = True
+                elif self.calib_held_kind == 3 and self.calib_held_code == code:
+                    if delta > getattr(self, 'calib_held_peak', 0):
+                        self.calib_held_peak = delta
+                    peak = getattr(self, 'calib_held_peak', delta)
+                    if delta <= release_thresh or delta <= int(peak * 0.35):
+                        self.record_calibration_stick(target_key, code, pad=pad)
+            return
+
+        if target_key in ('UP', 'DOWN', 'LEFT', 'RIGHT') and kind == 3:  # EV_ABS hat for D-pad
+            if code in (16, 17):  # ABS_HAT0X, ABS_HAT0Y
+                is_push = (value < 0) if target_key in ('UP', 'LEFT') else (value > 0)
+                if is_push:
+                    if self.calib_held_code is None:
+                        self.calib_held_code = code
+                        self.calib_held_kind = 3
+                        self.calib_held_start = now
+                        self.calib_needs_repaint = True
+                elif value == 0:  # Released back to center
+                    if self.calib_held_kind == 3 and self.calib_held_code == code:
+                        self.record_calibration_hat(target_key, code, pad=pad)
+            return
+
+        if kind == 1:  # EV_KEY
+            if value == 1:  # Pressed down
+                if self.calib_held_code is None:
+                    self.calib_held_code = code
+                    self.calib_held_kind = 1
+                    self.calib_held_start = now
+                    self.calib_needs_repaint = True
+            elif value == 0:  # Released
+                if self.calib_held_kind == 1 and self.calib_held_code == code:
+                    self.record_calibration_step(code, pad=pad)
+
+        elif kind == 3 and target_key in ('LT', 'RT'):  # EV_ABS for analog triggers
+            if code in (2, 5, 9, 10):  # Trigger axes (ABS_Z, ABS_RZ, ABS_BRAKE, ABS_GAS)
+                if value > 100:  # Pulled
+                    if self.calib_held_code is None:
+                        self.calib_held_code = code
+                        self.calib_held_kind = 3
+                        self.calib_held_start = now
+                        self.calib_needs_repaint = True
+                elif value < 30:  # Released
+                    if self.calib_held_kind == 3 and self.calib_held_code == code:
+                        self.record_calibration_trigger(code, pad=pad)
+
+    def finish_calibration(self, pad=None):
+        axis_map = {'0': 0, '1': 1, '3': 3, '4': 4}
+        for c, t in self.calib_axis_map.items():
+            axis_map[str(c)] = t
+
+        bindings = {
+            'layout': 'manual',
+            'device_name': getattr(pad, 'device_name', '') if pad else '',
+            'vid': getattr(pad, 'vid', 0) if pad else 0,
+            'pid': getattr(pad, 'pid', 0) if pad else 0,
+            'keys': {str(c): k for c, k in self.calib_keys.items()},
+            'triggers': {str(c): t for c, t in self.calib_triggers.items()},
+            'axis_map': axis_map,
+            'has_hat_axes': getattr(self, 'calib_has_hat_axes', False),
+        }
+        save_custom_pad(bindings)
+        self.controller_mode = 'manual'
+        save_controller_mode('manual')
+        self.screen = 'controller'
+        self.row = 1
+        self.calib_held_code = None
+        self.calib_held_kind = None
+        self.calib_held_peak = 0
+        self.calib_held_start = 0.0
+        self.calib_axis_centers.clear()
+        self.calib_needs_repaint = True
+
+    def tick_calibration(self, pad=None):
+        if self.screen != 'calibrate':
+            return
+        now = time.monotonic()
+        if self.calib_held_code is not None:
+            # If an analog axis is held, check if it returned to center even if no new evdev event was emitted
+            if self.calib_held_kind == 3 and pad is not None and hasattr(pad, 'axis_val'):
+                cur_val = pad.axis_val(self.calib_held_code)
+                if cur_val is not None:
+                    info = pad.axis_info(self.calib_held_code) if hasattr(pad, 'axis_info') else None
+                    if info is not None:
+                        lo, hi = info[1], info[2]
+                        flat = max(16, info[4])
+                        span = max(1, hi - lo)
+                        center = (lo + hi) // 2
+                        release_thresh = max(flat * 2, max(40, int(span * 0.12)))
+                    else:
+                        center = self.calib_axis_centers.get(self.calib_held_code, 0)
+                        release_thresh = 40
+                    cur_delta = abs(cur_val - center)
+                    peak = getattr(self, 'calib_held_peak', cur_delta)
+                    if cur_delta <= release_thresh or cur_delta <= int(peak * 0.35):
+                        target_key, _ = CALIB_TARGETS[self.calib_step]
+                        if target_key in STICK_TARGETS:
+                            self.record_calibration_stick(target_key, self.calib_held_code, pad=pad)
+                            return
+                        elif target_key in ('LT', 'RT'):
+                            self.record_calibration_trigger(self.calib_held_code, pad=pad)
+                            return
+                        elif target_key in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
+                            self.record_calibration_hat(target_key, self.calib_held_code, pad=pad)
+                            return
+
+            # Hold safety timeout: if held for over 2.0 seconds, auto-advance so it never freezes
+            if (now - getattr(self, 'calib_held_start', now)) > 2.0:
+                target_key, _ = CALIB_TARGETS[self.calib_step]
+                if target_key in STICK_TARGETS:
+                    self.record_calibration_stick(target_key, self.calib_held_code, pad=pad)
+                    return
+                elif target_key in ('LT', 'RT'):
+                    self.record_calibration_trigger(self.calib_held_code, pad=pad)
+                    return
+                elif target_key in ('UP', 'DOWN', 'LEFT', 'RIGHT') and self.calib_held_kind == 3:
+                    self.record_calibration_hat(target_key, self.calib_held_code, pad=pad)
+                    return
+                elif self.calib_held_kind == 1:
+                    self.record_calibration_step(self.calib_held_code, pad=pad)
+                    return
+
+            # Keep deadline alive while actively held
+            self.calib_deadline = now + CALIB_TIMEOUT
+            return
+
+        if now >= self.calib_deadline:
+            self.skip_calibration_step(pad=pad)
+        else:
+            rem = max(0, int(self.calib_deadline - now) + 1)
+            if rem != self.calib_last_sec:
+                self.calib_last_sec = rem
+                self.calib_needs_repaint = True
 
     def selection(self):
         if self.result != 'launch':
             raise ValueError('not confirmed')
         filter_name = (LOOT_FILTER_DEFAULT if self.filter_index == 0
                        else self.filters[self.filter_index - 1])
-        return (RESOLUTIONS[self.resolution],
+        if self.resolution_changed:
+            res = self.current_resolution()
+        elif self.edition == 'vanilla114' and not self.inherited_resolution_explicit:
+            res = '800x600'
+        else:
+            res = RESOLUTIONS[self.resolution]
+        return (res,
                 str(int(self.fps)) if self.fps_changed else 'default',
-                filter_name)
+                filter_name,
+                self.edition)
 
     def float_active(self):
         """A long filter name is held on the filter row: its full name
         animates (marquee) in the row and the menu must repaint on a timer."""
-        if self.row != 2 or self.filter_index == 0:
+        if self.screen != 'options' or self.row != 3 or self.filter_index == 0:
             return False
         return len(self.filters[self.filter_index - 1]) > 16
+
+    def calib_active(self):
+        return self.screen == 'calibrate'
 
 
 class KeyDecoder:
@@ -165,13 +707,16 @@ class KeyDecoder:
         self.hat_y = 0
         self.stick_x = 0
         self.stick_y = 0
+        self.last_raw = []
 
     def feed(self, data):
         self.buffer += data
         actions = []
+        raw = []
         while len(self.buffer) >= EVENT.size:
             _, _, kind, code, value = EVENT.unpack(self.buffer[:EVENT.size])
             self.buffer = self.buffer[EVENT.size:]
+            raw.append((kind, code, value))
             if kind == 0 and code == 3:  # SYN_DROPPED: do not trust stale state.
                 raise OSError('input synchronization lost')
             if kind == 1:  # EV_KEY
@@ -214,6 +759,7 @@ class KeyDecoder:
                         elif new_dir == 1:
                             actions.append('down')
                         self.stick_y = new_dir
+        self.last_raw = raw
         return actions
 
 
@@ -249,6 +795,9 @@ class Pad:
     def __init__(self):
         self.fds = []
         self.fd = None
+        self.device_name = ''
+        self.vid = 0
+        self.pid = 0
         # Reuse the already verified physical R36S identity/layout when available.
         # Fall back to opening candidate event devices for other handhelds (RG353V, etc.).
         import fcntl
@@ -259,6 +808,9 @@ class Pad:
             dev = mapper.choose_pad(mapper.physical_devices())
             if dev is not None:
                 device_paths = [dev[0]]
+                self.device_name = dev[1]
+                self.vid = dev[2]
+                self.pid = dev[3]
         except Exception:
             pass
 
@@ -350,6 +902,7 @@ class Pad:
             return []
         readable, _, _ = select.select(self.fds, [], [], 0)
         if not readable:
+            self.decoder.last_raw = []
             return []
         all_actions = []
         for fd in readable:
@@ -358,6 +911,29 @@ class Pad:
                 raise OSError('controller disconnected')
             all_actions.extend(self.decoder.feed(data))
         return all_actions
+
+    def raw_events(self):
+        res = getattr(self.decoder, 'last_raw', [])
+        self.decoder.last_raw = []
+        return res
+
+    def axis_info(self, code):
+        """Query (value, min, max, fuzz, flat, res) for axis code via EVIOCGABS."""
+        import fcntl, struct
+        for fd in self.fds:
+            try:
+                # EVIOCGABS(code) = 0x80184540 + code
+                val = struct.unpack('<6i', fcntl.ioctl(fd, 0x80184540 + code, bytes(24)))
+                if val[2] > val[1]:
+                    return val
+            except Exception:
+                pass
+        return None
+
+    def axis_val(self, code):
+        """Query current instantaneous value for axis code."""
+        info = self.axis_info(code)
+        return info[0] if info else None
 
     def close(self):
         for fd in self.fds:
@@ -401,21 +977,39 @@ def run(screen, pad, sleep=time.sleep):
     pad.actions()
     screen.actions()
     while menu.result is None:
-        # Handle all input from this frame before repainting, but never accept
-        # a second action once launch/cancel has already been confirmed.
-        before = (menu.row, menu.resolution, menu.fps, menu.fps_changed, menu.filter_index)
-        for action in pad.actions() + screen.actions():
-            menu.action(action)
+        before = (menu.screen, menu.row, menu.resolution, menu.fps, menu.fps_changed, menu.filter_index, menu.controller_mode, menu.edition_index)
+        pad_actions = pad.actions()
+        screen_actions = screen.actions()
+        if menu.screen == 'calibrate':
+            if 'cancel' in screen_actions:
+                menu.cancel_calibration()
+            else:
+                held_keys = getattr(getattr(pad, 'decoder', None), 'held', set())
+                # Cancel only if Select AND Start chord is held simultaneously for > 0.4s
+                has_select = any(c in held_keys for c in (0x2c0, 0x13a, 0x136))
+                has_start = any(c in held_keys for c in (0x2c1, 0x13b, 0x137))
+                if has_select and has_start:
+                    if getattr(menu, '_cancel_chord_since', 0.0) == 0.0:
+                        menu._cancel_chord_since = time.monotonic()
+                    elif time.monotonic() - menu._cancel_chord_since >= 0.4:
+                        menu.cancel_calibration()
+                else:
+                    menu._cancel_chord_since = 0.0
+                    raw_events = getattr(pad, 'raw_events', lambda: [])()
+                    for kind, code, value in raw_events:
+                        menu.handle_calibration_event(kind, code, value, pad=pad)
+                    menu.tick_calibration(pad=pad)
+        else:
+            for action in pad_actions + screen_actions:
+                menu.action(action)
         if menu.result is None:
-            # Static menus need no periodic repaint. Expose recovery is handled
-            # by screen.actions(); coalesce input into at most one new frame.
-            after = (menu.row, menu.resolution, menu.fps, menu.fps_changed, menu.filter_index)
+            after = (menu.screen, menu.row, menu.resolution, menu.fps, menu.fps_changed, menu.filter_index, menu.controller_mode, menu.edition_index)
             if after != before:
                 screen.draw(menu)
+            elif menu.screen == 'calibrate' and menu.calib_needs_repaint:
+                menu.calib_needs_repaint = False
+                screen.draw(menu)
             elif menu.float_active():
-                # A long filter name is held on the filter row: repaint on the
-                # loop timer so its full name keeps scrolling in the row even
-                # with no further input.
                 screen.draw(menu)
             sleep(0.02)
     return menu.selection() if menu.result == 'launch' else None

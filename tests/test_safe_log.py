@@ -644,6 +644,20 @@ class TimingStageTests(unittest.TestCase):
         self.assertIsNone(safe_log.validate_event(dict(value, elapsed_ms=36000001)))
         self.assertIsNone(safe_log.validate_event(dict(value, rc=40000)))
 
+    def test_display_resolution_probe_bounds(self):
+        for phase, status in (('preflight', 'portmaster'), ('preflight', 'drm'), ('preflight', 'fb'),
+                              ('preflight', 'override'), ('preflight', 'default'), ('launch', 'applied')):
+            ev = dict(event='session_probe', phase=phase, check='display_resolution',
+                      status=status, width=1280, height=720)
+            self.assertEqual(safe_log.validate_event(ev), ev)
+        for bad in (dict(width=319, height=240), dict(width=3841, height=2160),
+                    dict(width=1280, height=239), dict(width=1280, height=2161),
+                    dict(width='1280', height=720), dict(status='unknown')):
+            ev = dict(event='session_probe', phase='preflight', check='display_resolution',
+                      status='portmaster', width=1280, height=720)
+            ev.update(bad)
+            self.assertIsNone(safe_log.validate_event(ev))
+
 
 if __name__ == "__main__":
     unittest.main()

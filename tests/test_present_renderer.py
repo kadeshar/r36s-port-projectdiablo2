@@ -60,6 +60,20 @@ class RendererTests(unittest.TestCase):
         self.target = self.directory / 'DDraw.DLL'
         self.test_authenticated_selection_preserves_original()
 
+    def test_prepare_renderer_vanilla_root_layout(self):
+        vanilla_work = self.root / 'vanilla_work'
+        vanilla_work.mkdir(parents=True)
+        vanilla_target = vanilla_work / 'ddraw.dll'
+        try:
+            vanilla_target.symlink_to(self.original)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows symlink privilege unavailable')
+            raise
+        renderer.prepare_renderer(self.port, vanilla_work, edition='vanilla')
+        self.assertFalse(vanilla_target.is_symlink())
+        self.assertEqual(vanilla_target.read_bytes(), self.data)
+
     def test_tampered_truncated_oversize_source(self):
         for data in (b'', b'x' * len(self.data), self.data + b'x'):
             self.source.write_bytes(data)

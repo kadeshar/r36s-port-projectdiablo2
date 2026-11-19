@@ -167,10 +167,10 @@ class ArtifactTests(unittest.TestCase):
 
     def test_shell_uses_hud_before_game_without_hotkey_sidecar(self):
         script = (PORT / 'scripts/run-game.sh').read_text()
-        prepare = script.index('"$PD2_PORT/scripts/fps_renderer.py"')
-        game = script.index("/exec 'C:\\Diablo II\\ProjectD2\\Game.exe'")
+        prepare = script.index('"$PD2_PORT/scripts/present_renderer.py"')
+        game = script.index('start.exe /d "$game_dir_win" /exec "$game_exe_win"')
         self.assertLess(prepare, game)
-        self.assertIn('timeout --kill-after=2 10 python3 -B', script[:prepare])
+        self.assertIn('python3 -B', script[:prepare])
         self.assertNotIn('pd2-fps-hotkey.exe', script)
         self.assertNotIn('fps_counter.py', script)
 

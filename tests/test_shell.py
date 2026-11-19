@@ -17,6 +17,10 @@ class ProductionRuntimeTests(unittest.TestCase):
   self.assertNotIn('headless',compositor)
   self.assertNotIn('--renderer=noop',compositor)
   self.assertIn('SDL_VIDEODRIVER=x11',game)
+ def test_crash_dump_only_copied_on_real_crash(self):
+  game=(SCRIPTS/'run-game.sh').read_text()
+  self.assertIn('rm -f "$PD2_PORT/logs/d2-crash.txt"', game)
+  self.assertIn('UNHANDLED EXCEPTION|Assertion Failure|Fault address:', game)
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Native Linux needed for process groups')
 class ShellTests(unittest.TestCase):
@@ -826,6 +830,20 @@ while True:time.sleep(.1)
     game=next(v for v in self.records() if any(a.endswith('Game.exe') for a in v['args']))
     self.assertIn('/desktop=PD2Native,640x480',game['args'])
     self.assertIn(f'"check":"render_resolution","status":"{resolution}"',result.stdout)
+ def test_display_resolution_configures_wine_desktop_and_rejects_invalid(self):
+  for disp in ('1280x720', '720x720', '480x320'):
+   with self.subTest(disp=disp):
+    self.tearDown(); self.setUp()
+    result,_=self.execute({'PD2_DISPLAY_RESOLUTION':disp,'PD2_GAME_RESOLUTION':'native'})
+    self.assertEqual(result.returncode,0,result.stdout)
+    game=next(v for v in self.records() if any(a.endswith('Game.exe') for a in v['args']))
+    self.assertIn(f'/desktop=PD2Native,{disp}',game['args'])
+    w,h=disp.split('x')
+    self.assertIn(f'"check":"display_resolution","status":"applied","width":{w},"height":{h}',result.stdout)
+  self.tearDown(); self.setUp()
+  bad,_=self.execute({'PD2_DISPLAY_RESOLUTION':'9999x9999'})
+  self.assertEqual(bad.returncode,1,bad.stdout)
+  self.assertFalse(any(pathlib.Path(v['args'][0]).name=='wine' for v in self.records()))
  def test_diagnostic_presentation_selects_light_not_hud(self):
   (self.port/'scripts/present_renderer.py').write_text('import pathlib,os\n(pathlib.Path(os.environ["PD2_WORK"])/"light-selected").touch()\n')
   (self.port/'scripts/presentation_watch.py').write_text('# synthetic-only watcher\n')

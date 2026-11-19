@@ -133,7 +133,8 @@ def ready(sockets, *_args):
 
 
 class Menu:
-    row = 3
+    screen = 'main'
+    row = 0
     resolution = 0
     fps = False
     fps_changed = False
@@ -218,11 +219,36 @@ class ProtocolTests(unittest.TestCase):
 
     def test_missing_inherited_resolution_draws_lcd_default(self):
         screen, _ = self.screen()
+        menu = Menu()
+        menu.screen = 'options'
+        menu.row = 4
         with mock.patch.object(screen, '_text') as text:
-            screen.draw(Menu())
+            screen.draw(menu)
         labels = [call.args[2] for call in text.call_args_list]
         self.assertIn('  RESOLUTION: 640x480', labels)
         self.assertNotIn('  RESOLUTION: 800x600', labels)
+
+    def test_options_overlay_label_and_active_under_vanilla(self):
+        screen, _ = self.screen()
+        menu = Menu()
+        menu.screen = 'options'
+        menu.row = 0
+        menu.edition = 'vanilla'
+        menu.edition_label = 'VANILLA 1.13'
+        menu.fps = 1
+        menu.fps_changed = True
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(menu)
+        calls_by_label = {call.args[2]: call.args for call in text.call_args_list}
+        self.assertIn('  PERF OVERLAY: LEVEL 1', calls_by_label)
+        # Row 2 (Perf Overlay) is NOT dimmed
+        self.assertEqual(calls_by_label['  PERF OVERLAY: LEVEL 1'][3], (185, 175, 160))
+        # Row 1 (Resolution) is changeable and NOT dimmed
+        self.assertIn('  RESOLUTION: 640x480', calls_by_label)
+        self.assertEqual(calls_by_label['  RESOLUTION: 640x480'][3], (185, 175, 160))
+        # Row 3 (Loot filter) IS dimmed
+        self.assertIn('  LOOT FILTER: N/A (VANILLA)', calls_by_label)
+        self.assertEqual(calls_by_label['  LOOT FILTER: N/A (VANILLA)'][3], (95, 90, 85))
 
     def test_header_subtitle_default_is_centered(self):
         screen, _ = self.screen()
@@ -264,30 +290,99 @@ class ProtocolTests(unittest.TestCase):
         screen, _ = self.screen()
         with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': '800x600', 'PD2_FPS': '0'}):
             menu = start_menu.Menu()
-        self.assertEqual(menu.row, 2)  # opens on the loot-filter row
+        self.assertEqual(menu.row, 0)  # opens on START GAME on main screen
+        self.assertEqual(menu.screen, 'main')
         with mock.patch.object(screen, '_text') as text:
             screen.draw(menu)
         labels = [call.args[2] for call in text.call_args_list]
+        self.assertIn('> START GAME', labels)
+        self.assertIn('  OPTIONS', labels)
+        self.assertIn('  EXIT TO SYSTEM', labels)
+        for row in range(3):
+            menu.row = row
+            screen.draw(menu)
+        for row in (-1, 3, 4):
+            menu.row = row
+            with self.assertRaises(ValueError):
+                screen.draw(menu)
+
+        # Options screen
+        menu.screen = 'options'
+        menu.row = 3
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(menu)
+        labels = [call.args[2] for call in text.call_args_list]
+        self.assertIn('  GAME: PROJECT DIABLO 2', labels)
         self.assertIn('> LOOT FILTER: DEFAULT', labels)
         self.assertIn('  RESOLUTION: 800x600', labels)
         self.assertIn('  PERF OVERLAY: OFF', labels)
-        self.assertIn('  ENTER SANCTUARY / LAUNCH', labels)
-        self.assertIn('  EXIT TO SYSTEM', labels)
-        for row in range(5):
+        self.assertIn('  CONTROLLER SETUP', labels)
+        self.assertIn('  BACK', labels)
+        for row in range(6):
             menu.row = row
             screen.draw(menu)
-        for row in (-1, 5, 6):
+        for row in (-1, 6, 7):
             menu.row = row
             with self.assertRaises(ValueError):
                 screen.draw(menu)
         # An out-of-range filter choice is rejected as well.
-        menu.row = 2
+        menu.row = 3
         menu.filters = ('One.filter',)
         menu.filter_index = 2
         with self.assertRaises(ValueError):
             screen.draw(menu)
         menu.filter_index = 1
         screen.draw(menu)
+
+    def test_controller_and_calibration_screens_render_prompts(self):
+        screen, _ = self.screen()
+        menu = Menu()
+        menu.screen = 'controller'
+        menu.row = 0
+        menu.controller_mode_label = 'AUTO'
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(menu)
+        labels = [call.args[2] for call in text.call_args_list]
+        self.assertIn('> MODE: AUTO', labels)
+        self.assertIn('  ASSIGN BUTTONS', labels)
+        self.assertIn('  BACK', labels)
+
+        # Calibrate screen: button
+        menu.screen = 'calibrate'
+        menu.row = 0
+        menu.calib_target_label = 'A BUTTON'
+        menu.calib_seconds_left = 5
+        menu.calib_step = 0
+        menu.calib_total_steps = 21
+        menu.calib_held_code = None
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(menu)
+        labels = [call.args[2] for call in text.call_args_list]
+        self.assertIn('  PRESS: A BUTTON', labels)
+        self.assertIn('  TIMEOUT: 5S - WAIT TO SKIP', labels)
+        self.assertIn('  STEP 1 OF 21', labels)
+
+        # Calibrate screen: button held
+        menu.calib_held_code = 304
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(menu)
+        labels = [call.args[2] for call in text.call_args_list]
+        self.assertIn('  RELEASE BUTTON', labels)
+
+        # Calibrate screen: stick target
+        menu.calib_held_code = None
+        menu.calib_target_label = 'L-STICK LEFT'
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(menu)
+        labels = [call.args[2] for call in text.call_args_list]
+        self.assertIn('  PUSH: L-STICK LEFT', labels)
+
+        # Calibrate screen: stick held
+        menu.calib_held_code = 0
+        with mock.patch.object(screen, '_text') as text:
+            screen.draw(menu)
+        labels = [call.args[2] for call in text.call_args_list]
+        self.assertIn('  RELEASE STICK', labels)
 
     def test_resolved_labels_and_all_rows_fit_inside_highlight(self):
         import start_menu
@@ -296,6 +391,8 @@ class ProtocolTests(unittest.TestCase):
             for fps in ('0', '1', '2', '3', '4'):
                 with mock.patch.dict(os.environ, {'PD2_GAME_RESOLUTION': inherited, 'PD2_FPS': fps}):
                     menu = start_menu.Menu()
+                menu.screen = 'options'
+                menu.row = 4
                 with mock.patch.object(screen, '_text') as text:
                     screen.draw(menu)
                 labels = [call.args[2] for call in text.call_args_list]
@@ -549,7 +646,8 @@ class FloatingFilterNameTests(unittest.TestCase):
     @staticmethod
     def menu_for(name):
         menu = Menu()
-        menu.row = 2
+        menu.screen = 'options'
+        menu.row = 3
         menu.filters = (name,)
         menu.filter_index = 1
         menu.filter_label = name[:16].upper()
@@ -562,7 +660,7 @@ class FloatingFilterNameTests(unittest.TestCase):
         return [call.args for call in text.call_args_list]
 
     def row_calls(self, texts):
-        return [args for args in texts if len(args) >= 2 and args[1] == 194]
+        return [args for args in texts if len(args) >= 2 and args[1] == 216]
 
     def marquee(self, texts):
         return [args for args in self.row_calls(texts) if len(args) >= 6 and args[5] is not None]
@@ -584,7 +682,7 @@ class FloatingFilterNameTests(unittest.TestCase):
         self.assertEqual(len(row[0]), 5)                        # no clip on the prefix
         x, y, label, _color, _deadline, clip = row[1]
         self.assertEqual(label, 'HIIM_CRAFTING_SORCERESS_FOCUSED.FILTER')
-        self.assertEqual(y, 194)
+        self.assertEqual(y, 216)
         text_w = 38 * 18
         self.assertEqual(x, self.NAME_X + self.NAME_WINDOW - int(2.0 * x11.FLOAT_SPEED) % (text_w + self.NAME_WINDOW))
         self.assertEqual(clip, (self.NAME_X, 606))
@@ -611,10 +709,10 @@ class FloatingFilterNameTests(unittest.TestCase):
         self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
         clock[0] = 1002.0
         self.assertEqual(len(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0])))), 1)
-        menu.row = 3  # leaving the filter row hides the float immediately
+        menu.row = 4  # leaving the filter row hides the float immediately
         clock[0] = 1002.2
         self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
-        menu.row = 2  # returning restarts the 2 s hold instead of flashing
+        menu.row = 3  # returning restarts the 2 s hold instead of flashing
         self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
         clock[0] = 1004.3
         self.assertEqual(len(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0])))), 1)
@@ -640,6 +738,8 @@ class FloatingFilterNameTests(unittest.TestCase):
         clock[0] = 1010.0
         self.assertEqual(len(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0])))), 1)
         menu = Menu()  # DEFAULT, no filter selected
+        menu.screen = 'options'
+        menu.row = 3
         clock[0] = 1010.0
         self.assertEqual(self.marquee(self.row_calls(self.draw_texts(screen, menu, lambda: clock[0]))), [])
 
@@ -726,6 +826,40 @@ class LiveX11Tests(unittest.TestCase):
             screen.actions()
         finally:
             screen.close()
+
+
+class MultiResolutionTests(unittest.TestCase):
+    def _setup_with_size(self, w, h):
+        raw = bytearray(setup_body())
+        # Root entry starts at 32 + 0 + 8 = 40; width/height at +20
+        struct.pack_into('<HH', raw, 40 + 20, w, h)
+        return bytes(raw)
+
+    def test_menu_adapts_window_pixmap_and_bounds_across_device_resolutions(self):
+        for w, h in ((480, 320), (640, 480), (720, 720), (1280, 720), (1920, 1080)):
+            with self.subTest(width=w, height=h):
+                server = FakeSocket(setup=self._setup_with_size(w, h))
+                with mock.patch.object(x11.x11_probe, '_auth_status', return_value=('ready', b'k' * 16)), \
+                     mock.patch.object(x11.socket, 'socket', return_value=server), \
+                     mock.patch.object(x11.socket, 'AF_UNIX', 1, create=True):
+                    screen = x11.Screen(FONT, LABELS, 'R36S PORT 1.5-test.11')
+                try:
+                    self.assertEqual((screen.width, screen.height), (w, h))
+                    create = next(p for p in server.requests[1:] if p[0] == 1)
+                    self.assertEqual(struct.unpack_from('<HH', create, 16), (w, h))
+                    before = len(server.requests)
+                    screen.draw(Menu())
+                    draws = [p for p in server.requests[before:] if p[0] == 70]
+                    self.assertTrue(draws)
+                    for packet in draws:
+                        for offset in range(12, len(packet), 8):
+                            rx, ry, rw, rh = struct.unpack_from('<hhHH', packet, offset)
+                            self.assertTrue(0 <= rx < w and 0 <= ry < h)
+                            self.assertTrue(rw > 0 and rh > 0 and rx + rw <= w and ry + rh <= h)
+                    copy = next(p for p in server.requests[before:] if p[0] == 62)
+                    self.assertEqual(struct.unpack_from('<HH', copy, 24), (w, h))
+                finally:
+                    screen.close()
 
 
 if __name__ == '__main__':

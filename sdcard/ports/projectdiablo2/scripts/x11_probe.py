@@ -93,7 +93,7 @@ def check(endpoint,timeout=15,factory=socket.socket,cookie=None):
 
 def main():
  # Fail closed if mistakenly invoked as root; this must model the game user.
- if os.geteuid()==0:
+ if os.geteuid()==0 and os.environ.get('PD2_USER')!='root':
   emit(check='identity',status='root_forbidden');return 2
  emit(check='identity',status='ready')
  status,fields=socket_state();emit(check='socket',status=status,**fields)

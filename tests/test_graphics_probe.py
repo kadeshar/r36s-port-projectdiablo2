@@ -80,7 +80,7 @@ class GraphicsProbeTests(unittest.TestCase):
   self.assertIn('XDG_RUNTIME_DIR="$R/compositor-runtime"',source)
   self.assertIn('SDL_VIDEO_EGL_DRIVER="$CRUSTY_LIBEGL"',source)
   self.assertIn('runuser -u "$PD2_USER" --preserve-environment -- env PD2_AUDIO_TEST="${PD2_AUDIO_TEST:-1}" bash "$R/game-session.sh"',source)
-  self.assertIn('CRUSTY_RESOLUTION=640x480',source);self.assertIn('-auth "%s/xauthority"',source);self.assertIn('PD2_XAUTHORITY="$R/xauthority"',source);self.assertNotIn('--use-pixman',source)
+  self.assertIn('export CRUSTY_RESOLUTION="$display_res"',source);self.assertIn('display_res="${PD2_DISPLAY_RESOLUTION:-640x480}"',source);self.assertIn('-auth "%s/xauthority"',source);self.assertIn('PD2_XAUTHORITY="$R/xauthority"',source);self.assertNotIn('--use-pixman',source)
   self.assertIn('mkfifo -m600 "$R/compositor.pipe" || { error invalid_layout;exit 2; }',source)
   self.assertIn('[[ -p "$R/compositor.pipe" && ! -L "$R/compositor.pipe" ]]',source)
 if __name__=='__main__':unittest.main()

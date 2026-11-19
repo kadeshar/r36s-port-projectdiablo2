@@ -378,7 +378,15 @@ def route(run, proc_root=Path('/proc/asound'), snd_root=Path('/dev/snd'),
     aggregate = 'ready' if 'ready' in statuses.values() else ('denied' if 'denied' in statuses.values() else 'missing')
     result['audio_device'] = aggregate
     known = [number for number, stable in cards.items()
-             if 'rk817' in stable.lower() and 'hdmi' not in stable.lower()]
+             if any(k in stable.lower() for k in ('rk817', 'audiocodec')) and 'hdmi' not in stable.lower()]
+    if not known:
+        non_hdmi = [number for number, stable in cards.items()
+                    if 'hdmi' not in stable.lower()]
+        if len(non_hdmi) == 1:
+            known = non_hdmi
+        elif len(non_hdmi) > 1:
+            result['audio_route'] = 'ambiguous'
+            return result
     if not known:
         result['audio_route'] = 'default' if cards else 'missing'
         return result
@@ -420,7 +428,7 @@ def route(run, proc_root=Path('/proc/asound'), snd_root=Path('/dev/snd'),
         result['audio_route'] = 'default'
         return result
     _publish(destination, config_bytes(cards[card], device, profile=profile))
-    result['audio_route'] = 'rk817'
+    result['audio_route'] = 'rk817' if 'rk817' in cards[card].lower() else 'generic'
     return result
 
 

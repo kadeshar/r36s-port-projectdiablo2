@@ -96,7 +96,8 @@ def verify_owner(prefix, drive_c):
     # Production runs as its regular owner, never through a root Wine process.
     if hasattr(os, 'getuid'):
         uid = os.getuid()
-        if uid == 0 or any(path.stat().st_uid != uid for path in (prefix, drive_c)):
+        allow_root = os.environ.get('PD2_USER') == 'root'
+        if (uid == 0 and not allow_root) or any(path.stat().st_uid != uid for path in (prefix, drive_c)):
             raise DsoalError()
 
 
@@ -154,9 +155,11 @@ def payload(port):
     return result
 
 
-def stage(port, prefix, work):
+def stage(port, prefix, work, root=False):
     port = directory(port)
     prefix, work = prefix_paths(prefix, work)
+    # Vanilla keeps Game.exe at the work root, so its audio DLLs belong there.
+    target = work if root else directory(work / 'ProjectD2')
     # A miswired caller must not turn imported game data into a writable target.
     if work == port or port in work.parents or work in port.parents:
         # SD storage stores ext4 state below its ROM payload.
@@ -172,9 +175,8 @@ def stage(port, prefix, work):
                 if str(_scripts) not in _sys.path:
                     _sys.path.insert(0, str(_scripts))
                 from experimental_audio_storage import accepts_workspace
-        if not accepts_workspace(port, prefix, work):
+        if not accepts_workspace(port, prefix, work, target):
             raise DsoalError()
-    target = directory(work / 'ProjectD2')
     reserved = {name.casefold() for name in DLLS}
     if any(child.name.casefold() in reserved for child in target.iterdir()):
         raise DsoalError()
@@ -252,13 +254,14 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='operation', required=True)
     staging = commands.add_parser('stage')
     staging.add_argument('--port', required=True)
+    staging.add_argument('--root', action='store_true')
     for command in (staging, commands.add_parser('collect')):
         command.add_argument('--prefix', required=True)
         command.add_argument('--work', required=True)
     try:
         args = parser.parse_args(argv)
         if args.operation == 'stage':
-            stage(args.port, args.prefix, args.work)
+            stage(args.port, args.prefix, args.work, args.root)
         else:
             collect(args.prefix, args.work)
     except (DsoalError, OSError, ValueError, TypeError, KeyError, struct.error):

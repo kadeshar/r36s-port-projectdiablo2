@@ -101,6 +101,7 @@ PAD_BUTTON_ACTIONS = {
     PAD_A: 'select', PAD_B: 'backspace', PAD_X: 'space', PAD_Y: 'caps',
     PAD_START: 'confirm', PAD_SELECT: 'cancel', PAD_MENU: 'cancel',
     0x13b: 'confirm', 0x13a: 'cancel', 0x13c: 'cancel',
+    0x136: 'cancel', 0x137: 'confirm', 0x162: 'cancel',
     28: 'confirm', 1: 'cancel', 57: 'space', 14: 'backspace',
 }
 
@@ -154,6 +155,14 @@ class OSKDisplayError(OSError):
 
 def _pad(data):
     return data + b'\0' * (-len(data) % 4)
+
+
+def _setup_screen_size(data):
+    """Extract root screen width/height from validated X11 setup bytes."""
+    vendor_len = struct.unpack_from('<H', data, 16)[0]
+    formats = data[21]
+    pos = 32 + ((vendor_len + 3) & ~3) + formats * 8
+    return struct.unpack_from('<HH', data, pos + 20)
 
 
 def _setup(data):
@@ -463,7 +472,30 @@ class OSKScreen:
         else:
             status, cookie = 'ready', bytes(16)
         if status != 'ready' or not isinstance(cookie, bytes) or len(cookie) != 16:
-            raise OSKDisplayError('auth_failed')
+            for fallback_path in (os.environ.get('XAUTHORITY'), os.environ.get('PD2_XAUTHORITY'), str(Path.home() / '.Xauthority')):
+                if fallback_path and os.path.isfile(fallback_path):
+                    try:
+                        with open(fallback_path, 'rb') as f:
+                            raw = f.read()
+                        pos = 0
+                        while pos < len(raw):
+                            if len(raw) - pos < 2: break
+                            family = struct.unpack_from('>H', raw, pos)[0]; pos += 2
+                            fields = []
+                            for _ in range(4):
+                                if len(raw) - pos < 2: break
+                                l = struct.unpack_from('>H', raw, pos)[0]; pos += 2
+                                fields.append(raw[pos:pos+l]); pos += l
+                            if len(fields) == 4 and len(fields[3]) == 16:
+                                cookie = fields[3]
+                                status = 'ready'
+                                break
+                    except Exception:
+                        pass
+                if status == 'ready':
+                    break
+        if status != 'ready' or not isinstance(cookie, bytes) or len(cookie) != 16:
+            cookie = bytes(16)
 
         deadline = time.monotonic() + TIMEOUT
         if not hasattr(socket, 'AF_UNIX'):
@@ -479,7 +511,9 @@ class OSKScreen:
         setup_status, _, major, minor, units = struct.unpack('<BBHHH', header)
         if setup_status != 1 or major != 11 or minor != 0:
             raise OSKDisplayError('setup_invalid')
-        setup = _setup(self._receive(units * 4, deadline))
+        setup_data = self._receive(units * 4, deadline)
+        setup = _setup(setup_data)
+        self.width, self.height = _setup_screen_size(setup_data)
         base, mask, self.maximum, self.low, self.high, root = setup
         self.root, self.colormap, self.visual, self.depth, self.masks = root
         bit1 = mask & -mask
@@ -497,13 +531,13 @@ class OSKScreen:
             self._xtest_opcode = None
         event_mask = 1 | 2 | (1 << 15) | (1 << 16) | (1 << 17)
         self._request(1, self.depth, struct.pack('<IIhhHHHHIIIII', self.window, self.root,
-                      0, 0, WIDTH, HEIGHT, 0, 1, self.visual,
+                      0, 0, self.width, self.height, 0, 1, self.visual,
                       2 | 2048 | 8192, self._pixel((12, 10, 10)), event_mask, self.colormap), deadline)
         # Match Diablo II / Wine window class for Weston kiosk-shell scanout
         self._property(39, b'Diablo II', deadline)
         self._property(67, b'game.exe\0game.exe\0', deadline)
 
-        self._request(53, self.depth, struct.pack('<IIHH', self.pixmap, self.window, WIDTH, HEIGHT), deadline)
+        self._request(53, self.depth, struct.pack('<IIHH', self.pixmap, self.window, self.width, self.height), deadline)
         self._request(55, 0, struct.pack('<IIIII', self.gc, self.window, 4 | 65536, 0, 0), deadline)
         self._request(8, 0, struct.pack('<I', self.window), deadline)
         self._roundtrip(deadline)
@@ -696,16 +730,19 @@ class OSKScreen:
     def _rectangles(self, rectangles, color, deadline):
         if not rectangles:
             return
+        w = getattr(self, 'width', WIDTH)
+        h = getattr(self, 'height', HEIGHT)
         self._request(56, 0, struct.pack('<III', self.gc, 4, self._pixel(color)), deadline)
         batch = min(2048, (self.maximum - 3) // 2)
         for start in range(0, len(rectangles), batch):
             body = bytearray(struct.pack('<II', self.pixmap, self.gc))
             for x, y, width, height in rectangles[start:start + batch]:
-                if 0 <= x < WIDTH and 0 <= y < HEIGHT:
-                    cw = min(width, WIDTH - x)
-                    ch = min(height, HEIGHT - y)
+                if 0 <= x < w and 0 <= y < h and width > 0 and height > 0:
+                    cw = min(width, w - x)
+                    ch = min(height, h - y)
                     body.extend(struct.pack('<hhHH', x, y, cw, ch))
-            self._request(70, 0, body, deadline)
+            if len(body) > 8:
+                self._request(70, 0, body, deadline)
 
     def _text(self, x, y, text, color, scale, deadline):
         rectangles = []
@@ -724,30 +761,53 @@ class OSKScreen:
     def draw(self, model):
         """Render the complete on-screen keyboard UI."""
         deadline = time.monotonic() + TIMEOUT
+        w = getattr(self, 'width', WIDTH)
+        h = getattr(self, 'height', HEIGHT)
+        if w >= WIDTH and h >= HEIGHT:
+            s = 2 if (w >= WIDTH * 2 and h >= HEIGHT * 2) else 1
+            ox = (w - WIDTH * s) // 2
+            oy = (h - HEIGHT * s) // 2
+            sx_fn = lambda x: ox + x * s
+            sy_fn = lambda y: oy + y * s
+            sw_fn = lambda v: v * s
+            sh_fn = lambda v: v * s
+            t_title, t_sub, t_key = 3 * s, 2 * s, 2 * s
+        else:
+            sx_r, sy_r = w / float(WIDTH), h / float(HEIGHT)
+            sx_fn = lambda x: int(round(x * sx_r))
+            sy_fn = lambda y: int(round(y * sy_r))
+            sw_fn = lambda v: max(1, int(round(v * sx_r)))
+            sh_fn = lambda v: max(1, int(round(v * sy_r)))
+            t_title = 2 if w >= 440 else 1
+            t_sub = 1
+            t_key = 1
+
         # Background
-        self._rectangles([(0, 0, WIDTH, HEIGHT)], (12, 10, 10), deadline)
+        self._rectangles([(0, 0, w, h)], (12, 10, 10), deadline)
 
         # Outer gold & inner crimson frames
         self._rectangles([
-            (6, 6, 628, 2), (6, 472, 628, 2), (6, 6, 2, 468), (632, 6, 2, 468),
+            (6, 6, w - 12, 2), (6, h - 8, w - 12, 2), (6, 6, 2, h - 12), (w - 8, 6, 2, h - 12),
         ], (140, 105, 35), deadline)
         self._rectangles([
-            (12, 12, 616, 1), (12, 467, 616, 1), (12, 12, 1, 456), (627, 12, 1, 456),
+            (12, 12, w - 24, 1), (12, h - 13, w - 24, 1), (12, 12, 1, h - 24), (w - 13, 12, 1, h - 24),
         ], (95, 20, 20), deadline)
 
         # Header titles
-        self._text(167, 18, 'PROJECT DIABLO II', (235, 195, 60), 3, deadline)
-        self._text(200, 48, 'CHARACTER NAME INPUT', (185, 45, 35), 2, deadline)
+        title_str = 'PROJECT DIABLO II'
+        sub_str = 'CHARACTER NAME INPUT'
+        self._text(sx_fn(320) - (len(title_str) * 6 * t_title) // 2, sy_fn(18), title_str, (235, 195, 60), t_title, deadline)
+        self._text(sx_fn(320) - (len(sub_str) * 6 * t_sub) // 2, sy_fn(48), sub_str, (185, 45, 35), t_sub, deadline)
 
         # Input box
-        self._rectangles([(78, 73, 484, 44)], (160, 125, 45), deadline)
-        self._rectangles([(80, 75, 480, 40)], (20, 16, 16), deadline)
-        self._text(90, 85, 'NAME: ', (200, 160, 50), 3, deadline)
+        self._rectangles([(sx_fn(78), sy_fn(73), sw_fn(484), sh_fn(44))], (160, 125, 45), deadline)
+        self._rectangles([(sx_fn(80), sy_fn(75), sw_fn(480), sh_fn(40))], (20, 16, 16), deadline)
+        self._text(sx_fn(90), sy_fn(85), 'NAME: ', (200, 160, 50), t_title, deadline)
         display_text = model.text + '_'
-        self._text(198, 85, display_text, (255, 255, 220), 3, deadline)
+        self._text(sx_fn(90) + 6 * 6 * t_title, sy_fn(85), display_text, (255, 255, 220), t_title, deadline)
 
         # Divider line
-        self._rectangles([(40, 126, 560, 2)], (140, 105, 35), deadline)
+        self._rectangles([(sx_fn(40), sy_fn(126), sw_fn(560), 2 if h >= HEIGHT else 1)], (140, 105, 35), deadline)
 
         # Keys Grid
         row_configs = [
@@ -758,9 +818,10 @@ class OSKScreen:
         ]
         for r in range(4):
             keys = KEYBOARD_ROWS[r]
-            y, h, kw, gap = row_configs[r]
+            ry, rh, rkw, rgap = row_configs[r]
+            y, kh, kw, gap = sy_fn(ry), sh_fn(rh), sw_fn(rkw), sw_fn(rgap)
             total_w = len(keys) * kw + (len(keys) - 1) * gap
-            start_x = (WIDTH - total_w) // 2
+            start_x = (w - total_w) // 2
             for c, k in enumerate(keys):
                 x = start_x + c * (kw + gap)
                 is_sel = (model.row == r and model.col == c)
@@ -768,21 +829,21 @@ class OSKScreen:
                 border_col = (255, 215, 0) if is_sel else (75, 60, 45)
                 text_col = (255, 255, 220) if is_sel else (210, 200, 180)
                 # Key frame & background
-                self._rectangles([(x, y, kw, h)], border_col, deadline)
-                self._rectangles([(x + 1, y + 1, kw - 2, h - 2)], bg_col, deadline)
+                self._rectangles([(x, y, kw, kh)], border_col, deadline)
+                self._rectangles([(x + 1, y + 1, kw - 2, kh - 2)], bg_col, deadline)
                 # Label
                 label = k.upper() if model.caps else k.lower()
-                tx = x + (kw - 12) // 2
-                ty = y + (h - 14) // 2
-                self._text(tx, ty, label, text_col, 2, deadline)
+                tx = x + max(1, (kw - 6 * t_key) // 2)
+                ty = y + max(1, (kh - 7 * t_key) // 2)
+                self._text(tx, ty, label, text_col, t_key, deadline)
 
         # Row 4: Action buttons
         action_keys = KEYBOARD_ROWS[4]
-        action_widths = [80, 75, 75, 75, 75, 80]
-        action_gap = 8
+        action_widths = [sw_fn(v) for v in (80, 75, 75, 75, 75, 80)]
+        action_gap = sw_fn(8)
         total_w = sum(action_widths) + (len(action_widths) - 1) * action_gap
-        start_x = (WIDTH - total_w) // 2
-        y, h = 296, 34
+        start_x = (w - total_w) // 2
+        y, kh = sy_fn(296), sh_fn(34)
         cur_x = start_x
         for c, k in enumerate(action_keys):
             kw = action_widths[c]
@@ -799,35 +860,36 @@ class OSKScreen:
                 bg_col = (30, 24, 24)
                 border_col = (75, 60, 45)
                 text_col = (210, 200, 180)
-            self._rectangles([(cur_x, y, kw, h)], border_col, deadline)
-            self._rectangles([(cur_x + 1, y + 1, kw - 2, h - 2)], bg_col, deadline)
+            self._rectangles([(cur_x, y, kw, kh)], border_col, deadline)
+            self._rectangles([(cur_x + 1, y + 1, kw - 2, kh - 2)], bg_col, deadline)
             label = k
             if k == 'CAPS':
                 label = 'CAPS:ON' if model.caps else 'CAPS:OFF'
-                label_w = len(label) * 12
-                tx = cur_x + max(2, (kw - label_w) // 2)
-            else:
-                label_w = len(label) * 12
-                tx = cur_x + max(2, (kw - label_w) // 2)
-            ty = y + (h - 14) // 2
-            self._text(tx, ty, label, text_col, 2, deadline)
+            label_w = len(label) * 6 * t_key
+            tx = cur_x + max(2, (kw - label_w) // 2)
+            ty = y + max(1, (kh - 7 * t_key) // 2)
+            self._text(tx, ty, label, text_col, t_key, deadline)
             cur_x += kw + action_gap
 
         # Bottom Legend / Controller Shortcuts
-        self._rectangles([(40, 348, 560, 1)], (95, 20, 20), deadline)
-        self._text(68, 362, 'D-PAD: MOVE   A: TYPE   B: BKSP   X: SPACE', (170, 150, 120), 2, deadline)
-        self._text(86, 386, 'Y: CAPS (UPPER/LOWER)   START: CONFIRM', (170, 150, 120), 2, deadline)
-        self._text(206, 410, 'SELECT / FN: CANCEL', (170, 150, 120), 2, deadline)
+        self._rectangles([(sx_fn(40), sy_fn(348), sw_fn(560), 1)], (95, 20, 20), deadline)
+        for ry, msg in (
+            (362, 'D-PAD: MOVE   A: TYPE   B: BKSP   X: SPACE'),
+            (386, 'Y: CAPS (UPPER/LOWER)   START: CONFIRM'),
+            (410, 'SELECT / FN: CANCEL'),
+        ):
+            msg_w = len(msg) * 6 * t_sub
+            self._text(max(16, (w - msg_w) // 2), sy_fn(ry), msg, (170, 150, 120), t_sub, deadline)
 
         # Status or warning message
         if model.message:
-            msg_w = len(model.message) * 12
-            mx = (WIDTH - msg_w) // 2
-            self._text(mx, 436, model.message, (255, 80, 40), 2, deadline)
+            msg_w = len(model.message) * 6 * t_sub
+            mx = max(16, (w - msg_w) // 2)
+            self._text(mx, sy_fn(436), model.message, (255, 80, 40), t_sub, deadline)
 
         # Blit offscreen pixmap to window: Opcode 62 (CopyArea)
         self._request(62, 0, struct.pack('<IIIhhhhHH', self.pixmap, self.window,
-                                         self.gc, 0, 0, 0, 0, WIDTH, HEIGHT), deadline)
+                                         self.gc, 0, 0, 0, 0, w, h), deadline)
         self._roundtrip(deadline)
 
     def close(self):
@@ -1006,35 +1068,37 @@ def is_hotkey(kind, code, value, held_keys):
     if kind != EV_KEY:
         return False
     if value == 1:
-        # Select + X combo (PortMaster standard text shortcut: 0x2c0 or 0x13a)
-        is_select = bool(held_keys & {PAD_SELECT, 0x13a})
-        is_menu = bool(held_keys & {PAD_MENU, 0x13c})
-        is_l3 = bool(held_keys & {PAD_L3, 0x13d})
-        is_r3 = bool(held_keys & {PAD_R3, 0x13e})
+        # Select + X combo (PortMaster standard text shortcut: 0x2c0, 0x13a, 0x136)
+        is_select = bool(held_keys & {PAD_SELECT, 0x13a, 0x136})
+        is_menu = bool(held_keys & {PAD_MENU, 0x13c, 0x162})
+        is_l3 = bool(held_keys & {PAD_L3, 0x13d, 0x139})
+        is_r3 = bool(held_keys & {PAD_R3, 0x13e, 0x13c})
 
-        if code == PAD_X and (is_select or is_menu):
+        is_x_button = code in (PAD_X, 0x134)
+        has_x_held = bool(held_keys & {PAD_X, 0x134})
+        if is_x_button and (is_select or is_menu):
             return True
-        if code in (PAD_SELECT, 0x13a, PAD_MENU, 0x13c) and PAD_X in held_keys:
+        if code in (PAD_SELECT, 0x13a, 0x136, PAD_MENU, 0x13c, 0x162) and has_x_held:
             return True
         # L3 + R3 combo (both sticks pressed)
-        if (code in (PAD_R3, 0x13e) and is_l3) or (code in (PAD_L3, 0x13d) and is_r3):
+        if (code in (PAD_R3, 0x13e, 0x13c) and is_l3) or (code in (PAD_L3, 0x13d, 0x139) and is_r3):
             return True
         # Select + D-Pad Down combo
         if code in (PAD_DOWN, 108) and is_select:
             return True
-        if code in (PAD_SELECT, 0x13a) and (PAD_DOWN in held_keys or 108 in held_keys):
+        if code in (PAD_SELECT, 0x13a, 0x136) and (PAD_DOWN in held_keys or 108 in held_keys):
             return True
     return False
 
 
 def is_game_kill_hotkey(kind, code, value, held_keys):
     """Recognize FN+SELECT, Guide+SELECT, or SELECT+START as game exit request."""
-    is_guide_down = bool(held_keys & {PAD_MENU, 0x13c})
-    is_select_down = bool(held_keys & {PAD_SELECT, 0x13a})
+    is_guide_down = bool(held_keys & {PAD_MENU, 0x13c, 0x162})
+    is_select_down = bool(held_keys & {PAD_SELECT, 0x13a, 0x136})
     if kind == EV_KEY and value == 1:
-        if code in (PAD_SELECT, 0x13a) and is_guide_down:
+        if (code in (PAD_SELECT, 0x13a, 0x136) and is_guide_down) or (code in (PAD_MENU, 0x13c, 0x162) and is_select_down):
             return True
-        if code in (PAD_START, 0x13b) and is_select_down:
+        if code in (PAD_START, 0x13b, 0x137) and is_select_down:
             return True
     return False
 

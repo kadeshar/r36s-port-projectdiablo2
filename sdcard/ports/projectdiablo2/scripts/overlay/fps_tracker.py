@@ -28,7 +28,16 @@ class FPSTracker:
         self.last_check_time = time.monotonic()
         self.recent_frames = collections.deque(maxlen=60)
         self.all_fps_samples = []
-        self.telemetry_path = os.path.join(work_dir, 'ProjectD2', 'pd2-present.jsonl') if work_dir else None
+        self.telemetry_path = None
+        if work_dir:
+            p_pd2 = os.path.join(work_dir, 'ProjectD2', 'pd2-present.jsonl')
+            p_root = os.path.join(work_dir, 'pd2-present.jsonl')
+            if os.path.isfile(p_root) and not os.path.isfile(p_pd2):
+                self.telemetry_path = p_root
+            elif not os.path.isdir(os.path.join(work_dir, 'ProjectD2')):
+                self.telemetry_path = p_root
+            else:
+                self.telemetry_path = p_pd2
         self._file = None
 
         # Pre-fill history with typical 33.3ms (30 FPS) baseline
@@ -84,9 +93,20 @@ class FPSTracker:
     def _read_telemetry(self, path):
         try:
             if self._file is None:
-                if not os.path.isfile(path):
-                    return False
-                self._file = open(path, 'r', encoding='ascii', errors='ignore')
+                target = path
+                if not os.path.isfile(target):
+                    if self.work_dir:
+                        alt = (os.path.join(self.work_dir, 'pd2-present.jsonl')
+                               if target.endswith(os.path.join('ProjectD2', 'pd2-present.jsonl'))
+                               else os.path.join(self.work_dir, 'ProjectD2', 'pd2-present.jsonl'))
+                        if os.path.isfile(alt):
+                            target = alt
+                            self.telemetry_path = alt
+                        else:
+                            return False
+                    else:
+                        return False
+                self._file = open(target, 'r', encoding='ascii', errors='ignore')
 
             lines = self._file.readlines()
             if not lines:

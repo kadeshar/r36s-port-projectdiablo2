@@ -13,7 +13,7 @@ import sys
 import tarfile
 import tempfile
 
-VERSION = '1.5-test.1'
+VERSION = '1.5'
 CONFIG_LIMIT = 512 * 1024
 # Community loot filters (default.filter) regularly exceed the 512 KiB config
 # bound; keep them bounded but generous. The volatile work tmpfs (16 MiB) holds
@@ -24,8 +24,8 @@ JSON_CONFIGS = ('ProjectDiablo.json', 'SGD2FreeResolution.json', 'BH.json')
 WORK_CONFIGS = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw.ini')
 ARTIFACTS = ('wine-8.0-x86.tar.xz', 'box86', 'weston_pkg_0.2.squashfs', 'vc_redist.x86.exe')
 CNC_DDRAW_VERSION = '7.1.0.0'
-CNC_DDRAW_SIZE = 439296
-CNC_DDRAW_SHA256 = 'cbbdba23aa5ad52e25de42504715ded7fe86d5af04803cbb73fdce9ddfa0be76'
+CNC_DDRAW_SIZE = 439808
+CNC_DDRAW_SHA256 = 'f00372035c9862443d0554f545f1d88f8fb80a874ff4b112a0a2d4daaec8f673'
 # Restricted PD2 SGD2 build: fixed in-game vector and parser both force 1068x600.
 # Patch only a private generated copy, never the imported asset or an unknown DLL.
 SGD2_SOURCE_SIZE = 307200
@@ -53,6 +53,29 @@ SGD2_640_PATCHES = (
     (0xc6b5, bytes.fromhex('58020000'), bytes.fromhex('e0010000')),
 )
 GAME_RESOLUTIONS = ('640x480', '800x600', '1024x768', 'native')
+EDITIONS = ('pd2', 'vanilla', 'vanilla114')
+VANILLA_EDITIONS = ('vanilla', 'vanilla114')
+# Root entries are session-owned for vanilla: cnc-ddraw, DSOAL and the engine
+# cache are staged into the writable work dir, never linked from imported data.
+VANILLA_ROOT_SKIP = ('ddraw.dll', 'ddraw.ini', 'dsound.dll', 'dsoal-aldrv.dll',
+                     'bncache.dat', 'bnetlog.txt')
+VANILLA_SAVES = 'vanilla'
+DISPLAY_MIN_W, DISPLAY_MAX_W = 320, 3840
+DISPLAY_MIN_H, DISPLAY_MAX_H = 240, 2160
+DISPLAY_RESOLUTION_RE = re.compile(r'([0-9]{3,4})x([0-9]{3,4})\Z', re.ASCII)
+
+
+def parse_display_resolution(value):
+    """Validate WxH physical display resolution within bounded handheld/TV range."""
+    if type(value) is not str:
+        raise LayoutError('invalid_profile')
+    match = DISPLAY_RESOLUTION_RE.fullmatch(value)
+    if not match:
+        raise LayoutError('invalid_profile')
+    width, height = int(match.group(1)), int(match.group(2))
+    if not (DISPLAY_MIN_W <= width <= DISPLAY_MAX_W and DISPLAY_MIN_H <= height <= DISPLAY_MAX_H):
+        raise LayoutError('invalid_profile')
+    return str(width), str(height)
 DISPLAY_KEYS = {
     'width': '640', 'height': '480', 'fullscreen': 'true', 'windowed': 'true',
     'maintas': 'true', 'boxing': 'false', 'adjmouse': 'true', 'handlemouse': 'true',
@@ -159,6 +182,63 @@ def link(path, target):
         raise LayoutError('invalid_layout')
     else:
         path.symlink_to(target)
+
+
+def mirror_tree(source, destination, limit=20000):
+    """Link a data subdirectory entry-by-entry; never follow a link.
+
+    Vanilla -direct reads loose files below data\\; the read-only bind stays
+    the only source, so every entry is validated before it is exposed.
+    """
+    checked_dir(destination)
+    pending = [(pathlib.Path(source), pathlib.Path(destination))]
+    seen = 0
+    while pending:
+        active, target = pending.pop()
+        for entry in active.iterdir():
+            no_links(entry)
+            seen += 1
+            if seen > limit:
+                raise LayoutError('invalid_layout')
+            if entry.is_dir():
+                child = target / entry.name
+                checked_dir(child)
+                pending.append((entry, child))
+            elif entry.is_file():
+                link(target / entry.name, entry)
+
+
+def edition_ready(data, edition):
+    """Lenient probe for the stored-choice fallback; strict checks follow."""
+    d = pathlib.Path(data)
+    try:
+        if edition == 'pd2':
+            names = ('d2data.mpq', 'd2exp.mpq', 'd2char.mpq',
+                     'ProjectD2/Game.exe', 'ProjectD2/ProjectDiablo.dll')
+            return all((d / name).is_file() for name in names)
+        elif edition in VANILLA_EDITIONS:
+            names = ('Game.exe', 'd2data.mpq', 'd2exp.mpq', 'd2char.mpq')
+            if not all((d / name).is_file() for name in names):
+                return False
+            sz = (d / 'Game.exe').stat().st_size
+            if edition == 'vanilla114':
+                return sz >= 1_000_000
+            elif edition == 'vanilla':
+                return sz < 1_000_000
+    except OSError:
+        return False
+    return False
+
+
+def detect_available_editions(data):
+    """Return tuple of available edition tokens in data directory."""
+    try:
+        d = pathlib.Path(data)
+        if not d.is_dir():
+            return ()
+        return tuple(e for e in EDITIONS if edition_ready(d, e))
+    except (OSError, TypeError, ValueError):
+        return ()
 
 
 def sgd2_800_bytes(content):
@@ -711,10 +791,18 @@ def restore_input_config(incoming, previous):
     return result
 
 
-def prepare(port, state, data_override=None, volatile_work=False, input_mode=None, game_resolution=None, loot_filter=None, perf_overlay=None, save_settings=False):
+def prepare(port, state, data_override=None, volatile_work=False, input_mode=None, game_resolution=None, loot_filter=None, perf_overlay=None, save_settings=False, display_resolution=None, edition=None):
     # A supplied session override is strictly whitelisted before any mutation.
     if game_resolution is not None and (type(game_resolution) is not str or game_resolution not in GAME_RESOLUTIONS):
         raise LayoutError('invalid_profile')
+    if edition is not None and edition not in EDITIONS:
+        raise LayoutError('invalid_profile')
+    if display_resolution is None:
+        display_res = '640x480'
+        disp_w, disp_h = '640', '480'
+    else:
+        disp_w, disp_h = parse_display_resolution(display_resolution)
+        display_res = disp_w + 'x' + disp_h
     if perf_overlay is not None and not (
             (type(perf_overlay) is int and 0 <= perf_overlay <= 4)
             or (type(perf_overlay) is str and perf_overlay in ('0', '1', '2', '3', '4'))):
@@ -726,10 +814,30 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
         raise LayoutError('invalid_profile')
     port = pathlib.Path(port).absolute()
     state = pathlib.Path(state).absolute()
+    if input_mode is None:
+        cfg_file = port / 'config' / 'input_mode'
+        cfg_file_txt = port / 'config' / 'input_mode.txt'
+        if cfg_file.is_file():
+            try:
+                val = cfg_file.read_text(encoding='ascii', errors='ignore').strip()
+                if val in ('mapper', 'native'):
+                    input_mode = val
+            except OSError:
+                pass
+        elif cfg_file_txt.is_file():
+            try:
+                val = cfg_file_txt.read_text(encoding='ascii', errors='ignore').strip()
+                if val in ('mapper', 'native'):
+                    input_mode = val
+            except OSError:
+                pass
     no_links(port)
     wrapper = companion_file(port)
     checked_dir(state)
-    if shutil.disk_usage(state).free < 700 * 1024 * 1024 and not (state / 'wineprefix/.initialized').exists():
+    prefix_dir = state / 'wineprefix'
+    if prefix_dir.exists() and not (prefix_dir / '.initialized').exists():
+        shutil.rmtree(prefix_dir, ignore_errors=True)
+    if shutil.disk_usage(state).free < 350 * 1024 * 1024 and not (state / 'wineprefix/.initialized').exists():
         raise LayoutError('insufficient_space')
     probe = state / '.symlink-test'
     if probe.exists() or probe.is_symlink():
@@ -798,32 +906,61 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     runtime_file(wine, 'bin/wineserver')
     data = pathlib.Path(data_override).absolute() if data_override else port / 'gamedata/Diablo II'
     no_links(data)
-    no_links(data / 'ProjectD2')
-    if not data.is_dir() or not (data / 'ProjectD2').is_dir():
-        raise LayoutError('invalid_layout')
-    required = ('d2data.mpq', 'd2exp.mpq', 'd2char.mpq', 'ProjectD2/Game.exe', 'ProjectD2/ProjectDiablo.dll', 'ProjectD2/pd2data.mpq', 'ProjectD2/pd2monchars.mpq')
-    for name in required:
-        regular(data / name)
-    original_wrappers = [p for p in (data / 'ProjectD2').iterdir() if p.name.lower() == 'ddraw.dll']
-    if len(original_wrappers) != 1:
-        raise LayoutError('invalid_layout')
-    regular(original_wrappers[0])
     config = port / 'config'
-    saves = port / 'saves'
     checked_dir(config)
-    checked_dir(saves)
     settings = config / 'settings.json'
     no_links(settings)
     if not settings.exists():
-        atomic_json(settings, {'schema_version': 1, 'profile': 'gdi', 'swap_ab': False, 'game_resolution': '640x480'})
+        atomic_json(settings, {'schema_version': 1, 'profile': 'gdi', 'swap_ab': False,
+                               'game_resolution': '640x480', 'edition': 'pd2'})
     opts = read_object(settings)
     if opts.get('schema_version') != 1 or opts.get('profile') not in ('gdi', 'opengl') or type(opts.get('swap_ab')) is not bool:
         raise LayoutError('invalid_profile')
     # Legacy OpenGL settings fall back to GDI in memory, never rewrite user settings.
     opts['profile'] = 'gdi'
+    stored_edition = opts.get('edition', 'pd2')
+    if type(stored_edition) is not str or stored_edition not in EDITIONS:
+        raise LayoutError('invalid_profile')
+    # An explicit session choice must match its imported data. A stored choice
+    # falls back to the other installed edition so removing one install still
+    # boots; the fallback is reported with a closed enum, never a path.
+    active_edition = edition if edition is not None else stored_edition
+    if edition is None and not edition_ready(data, active_edition):
+        for candidate in EDITIONS:
+            if candidate != active_edition and edition_ready(data, candidate):
+                active_edition = candidate
+                print('PD2_EVENT {"event":"session_probe","phase":"preflight","check":"edition_fallback","status":"%s"}'
+                      % candidate, file=sys.stderr, flush=True)
+                break
+    if active_edition in VANILLA_EDITIONS:
+        if not data.is_dir():
+            raise LayoutError('invalid_layout')
+        for name in ('Game.exe', 'd2data.mpq', 'd2exp.mpq', 'd2char.mpq'):
+            regular(data / name)
+        if active_edition == 'vanilla114' and (data / 'Game.exe').stat().st_size < 1_000_000:
+            raise LayoutError('invalid_layout')
+        if active_edition == 'vanilla' and (data / 'Game.exe').stat().st_size >= 1_000_000:
+            raise LayoutError('invalid_layout')
+    else:
+        no_links(data / 'ProjectD2')
+        if not data.is_dir() or not (data / 'ProjectD2').is_dir():
+            raise LayoutError('invalid_layout')
+        required = ('d2data.mpq', 'd2exp.mpq', 'd2char.mpq', 'ProjectD2/Game.exe', 'ProjectD2/ProjectDiablo.dll', 'ProjectD2/pd2data.mpq', 'ProjectD2/pd2monchars.mpq')
+        for name in required:
+            regular(data / name)
+        original_wrappers = [p for p in (data / 'ProjectD2').iterdir() if p.name.lower() == 'ddraw.dll']
+        if len(original_wrappers) != 1:
+            raise LayoutError('invalid_layout')
+        regular(original_wrappers[0])
+    saves = port / 'saves' / VANILLA_SAVES if active_edition in VANILLA_EDITIONS else port / 'saves'
+    checked_dir(saves)
     # Existing prefixes keep their file byte-identical; a missing key takes the
-    # 640x480 LCD-native default. Validate persisted settings even with an override.
-    resolution = opts.get('game_resolution', '640x480')
+    # 640x480 LCD-native default (800x600 for vanilla 1.14). Validate persisted settings even with an override.
+    default_res = '800x600' if active_edition == 'vanilla114' else '640x480'
+    if active_edition == 'vanilla114' and opts.get('edition') != 'vanilla114' and game_resolution is None:
+        resolution = '800x600'
+    else:
+        resolution = opts.get('game_resolution', default_res)
     if type(resolution) is not str or resolution not in GAME_RESOLUTIONS:
         raise LayoutError('invalid_profile')
     if game_resolution is not None:
@@ -849,15 +986,20 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
     if save_settings:
         if (opts.get('game_resolution') != resolution
                 or opts.get('perf_overlay') != effective_overlay
-                or opts.get('loot_filter') != effective_filter):
+                or opts.get('loot_filter') != effective_filter
+                or opts.get('edition') != active_edition):
             opts['game_resolution'] = resolution
             opts['perf_overlay'] = effective_overlay
             opts['loot_filter'] = effective_filter
+            opts['edition'] = active_edition
             atomic_json(settings, opts)
     elif loot_filter is not None and opts.get('loot_filter') != effective_filter:
         opts['loot_filter'] = effective_filter
         atomic_json(settings, opts)
-    active_names = JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw-gdi.ini')
+    # Vanilla never loads PD2 plugins or their configuration; its engine reads
+    # only the session ddraw template staged below.
+    active_names = (('ddraw-gdi.ini',) if active_edition in VANILLA_EDITIONS
+                    else JSON_CONFIGS + ('ProjectDiablo.cfg', 'default.filter', 'ddraw-gdi.ini'))
     for name in active_names:
         active = config / name
         no_links(active)
@@ -867,109 +1009,144 @@ def prepare(port, state, data_override=None, volatile_work=False, input_mode=Non
             filter_content(active)
         else:
             config_content(active, name in JSON_CONFIGS)
-    migrate_display(config)
-    migrate_save_path(config)
+    if active_edition == 'pd2':
+        migrate_display(config)
+        migrate_save_path(config)
     prefix = state / 'wineprefix'
     checked_dir(prefix)
     checked_dir(prefix / 'drive_c')
     checked_dir(prefix / 'dosdevices')
     work = state / 'game'
     checked_dir(work)
-    checked_dir(work / 'ProjectD2')
-    # Preflight the pinned 4:3 copy before any work mutation; native bypasses
-    # it so a broken or missing resolution DLL still falls back to the asset.
-    sgd2_cache = None
-    if resolution == '640x480':
-        sgd2_cache = sgd2_640_file(data, state)
-    elif resolution == '800x600':
-        sgd2_cache = sgd2_800_file(data, state)
-    elif resolution == '1024x768':
-        sgd2_cache = sgd2_1024_file(data, state)
-    cast_cache = (native_cast_file(data, state)
-                  if resolution == '640x480' and input_mode == 'native' else None)
-    for directory, destination in ((data, work), (data / 'ProjectD2', work / 'ProjectD2')):
-        for source in directory.iterdir():
+    if active_edition == 'pd2':
+        checked_dir(work / 'ProjectD2')
+        # Preflight the pinned 4:3 copy before any work mutation; native bypasses
+        # it so a broken or missing resolution DLL still falls back to the asset.
+        sgd2_cache = None
+        if resolution == '640x480':
+            sgd2_cache = sgd2_640_file(data, state)
+        elif resolution == '800x600':
+            sgd2_cache = sgd2_800_file(data, state)
+        elif resolution == '1024x768':
+            sgd2_cache = sgd2_1024_file(data, state)
+        cast_cache = (native_cast_file(data, state)
+                      if resolution == '640x480' and input_mode == 'native' else None)
+        for directory, destination in ((data, work), (data / 'ProjectD2', work / 'ProjectD2')):
+            for source in directory.iterdir():
+                no_links(source)
+                if source.is_dir():
+                    continue
+                if destination == work / 'ProjectD2' and (
+                        source.name in WORK_CONFIGS
+                        or source.name.lower() in ('bncache.dat', 'bnetlog.txt', 'dsound.dll', 'dsoal-aldrv.dll')):
+                    # Imported engine cache/logs are not immutable assets. Wine must
+                    # create fresh files in RAM; persistent mode uses game-state below.
+                    # Audio DLLs are staged exclusively by audio_dsoal into volatile work.
+                    continue
+                regular(source)
+                target = source
+                if destination == work / 'ProjectD2' and source.name.lower() == 'sgd2freeres.dll' and sgd2_cache is not None:
+                    target = sgd2_cache
+                elif destination == work / 'ProjectD2' and source.name.lower() == 'projectdiablo.dll' and cast_cache is not None:
+                    target = cast_cache
+                elif destination == work / 'ProjectD2' and source.name.lower() == 'ddraw.dll':
+                    target = wrapper
+                link(destination / source.name, target)
+        for lng in ('D2.LNG', 'd2.lng'):
+            if (data / lng).is_file() and not (work / 'ProjectD2' / lng).exists():
+                link(work / 'ProjectD2' / lng, data / lng)
+        for name in WORK_CONFIGS:
+            active_name = 'ddraw-' + opts['profile'] + '.ini' if name == 'ddraw.ini' else name
+            active = config / active_name
+            destination = work / 'ProjectD2' / name
+            if volatile_work:
+                # Wine may replace these by rename; links to persistent config break it.
+                if name == LOOT_FILTER_NAME:
+                    content = filter_content(active)
+                else:
+                    content = config_content(active, name in JSON_CONFIGS)
+                if name == 'ProjectDiablo.json' and input_mode is not None:
+                    content = input_config(content, input_mode)
+                if name == 'ddraw.ini':
+                    # Use a clean known template; user game-specific INI sections
+                    # can override global keys. Never sync this session template to config.
+                    content = config_content(port / 'defaults/ddraw-gdi.ini', False)
+                    content = display_ini(content, {
+                        'width': disp_w, 'height': disp_h,
+                        'renderer': 'gdi', 'shader': 'Nearest neighbor',
+                        'maxfps': '30', 'minfps': '0', 'vsync': 'false',
+                        'singlecpu': 'false', 'maxgameticks': '-1',
+                        'inject_resolution': resolution if resolution != 'native' else '1068x600',
+                    })
+                if name == LOOT_FILTER_NAME:
+                    differs = destination.exists() and filter_content(destination) != content
+                else:
+                    differs = destination.exists() and config_content(destination, name in JSON_CONFIGS) != content
+                if not destination.exists() or differs:
+                    atomic_bytes(destination, content)
+            else:
+                if destination.exists() and not destination.is_symlink():
+                    destination.unlink()
+                link(destination, active)
+        if volatile_work:
+            # Caller mounts a fresh tmpfs here. Refuse persistent legacy log links
+            # even if an incorrect caller reused an old work directory.
+            for name in ('bncache.dat', 'BnetLog.txt'):
+                no_links(work / 'ProjectD2' / name)
+        else:
+            mutable = config / 'game-state'
+            checked_dir(mutable)
+            for name in ('bncache.dat', 'BnetLog.txt'):
+                active = mutable / name
+                no_links(active)
+                if not active.exists():
+                    active.touch()
+                regular(active)
+                dest = work / 'ProjectD2' / name
+                if dest.exists() and not dest.is_symlink():
+                    dest.unlink()
+                link(dest, active)
+    else:
+        # Vanilla runs from the install root: C:\Diablo II\Game.exe.
+        for source in data.iterdir():
             no_links(source)
-            if source.is_dir():
-                continue
-            if destination == work / 'ProjectD2' and (
-                    source.name in WORK_CONFIGS
-                    or source.name.lower() in ('bncache.dat', 'bnetlog.txt', 'dsound.dll', 'dsoal-aldrv.dll')):
-                # Imported engine cache/logs are not immutable assets. Wine must
-                # create fresh files in RAM; persistent mode uses game-state below.
-                # Audio DLLs are staged exclusively by audio_dsoal into volatile work.
+            if source.is_dir() or source.name.casefold() in VANILLA_ROOT_SKIP:
                 continue
             regular(source)
-            target = source
-            if destination == work / 'ProjectD2' and source.name.lower() == 'sgd2freeres.dll' and sgd2_cache is not None:
-                target = sgd2_cache
-            elif destination == work / 'ProjectD2' and source.name.lower() == 'projectdiablo.dll' and cast_cache is not None:
-                target = cast_cache
-            elif destination == work / 'ProjectD2' and source.name.lower() == 'ddraw.dll':
-                target = wrapper
-            link(destination / source.name, target)
-    for lng in ('D2.LNG', 'd2.lng'):
-        if (data / lng).is_file() and not (work / 'ProjectD2' / lng).exists():
-            link(work / 'ProjectD2' / lng, data / lng)
-    for name in WORK_CONFIGS:
-        active_name = 'ddraw-' + opts['profile'] + '.ini' if name == 'ddraw.ini' else name
-        active = config / active_name
-        destination = work / 'ProjectD2' / name
+            link(work / source.name, source)
+        # -direct reads loose game files (e.g. translated text) below data\.
+        overlay = data / 'data'
+        if overlay.exists() or overlay.is_symlink():
+            no_links(overlay)
+            if overlay.is_dir():
+                mirror_tree(overlay, work / 'data')
+        vanilla_res = resolution if resolution != 'native' else '800x600'
+        vanilla_ini = config_content(port / 'defaults/ddraw-gdi-vanilla.ini', False)
+        vanilla_ini = display_ini(vanilla_ini, {
+            'width': disp_w, 'height': disp_h,
+            'renderer': 'gdi', 'shader': 'Nearest neighbor',
+            'maxfps': '30', 'minfps': '0', 'vsync': 'false',
+            'singlecpu': 'false', 'maxgameticks': '-1',
+            'inject_resolution': vanilla_res,
+            'fake_mode': vanilla_res + 'x16',
+        })
+        atomic_bytes(work / 'ddraw.ini', vanilla_ini)
+        link(work / 'ddraw.dll', wrapper)
         if volatile_work:
-            # Wine may replace these by rename; links to persistent config break it.
-            if name == LOOT_FILTER_NAME:
-                content = filter_content(active)
-            else:
-                content = config_content(active, name in JSON_CONFIGS)
-            if name == 'ProjectDiablo.json' and input_mode is not None:
-                content = input_config(content, input_mode)
-            if name == 'ddraw.ini':
-                # Use a clean known template; user game-specific INI sections
-                # can override global keys. Never sync this session template to config.
-                content = config_content(port / 'defaults/ddraw-gdi.ini', False)
-                content = display_ini(content, {
-                    'renderer': 'gdi', 'shader': 'Nearest neighbor',
-                    'maxfps': '30', 'minfps': '0', 'vsync': 'false',
-                    'singlecpu': 'false', 'maxgameticks': '-1',
-                    'inject_resolution': resolution if resolution != 'native' else '1068x600',
-                })
-            if name == LOOT_FILTER_NAME:
-                differs = destination.exists() and filter_content(destination) != content
-            else:
-                differs = destination.exists() and config_content(destination, name in JSON_CONFIGS) != content
-            if not destination.exists() or differs:
-                atomic_bytes(destination, content)
-        else:
-            if destination.exists() and not destination.is_symlink():
-                destination.unlink()
-            link(destination, active)
-    if volatile_work:
-        # Caller mounts a fresh tmpfs here. Refuse persistent legacy log links
-        # even if an incorrect caller reused an old work directory.
-        for name in ('bncache.dat', 'BnetLog.txt'):
-            no_links(work / 'ProjectD2' / name)
-    else:
-        mutable = config / 'game-state'
-        checked_dir(mutable)
-        for name in ('bncache.dat', 'BnetLog.txt'):
-            active = mutable / name
-            no_links(active)
-            if not active.exists():
-                active.touch()
-            regular(active)
-            dest = work / 'ProjectD2' / name
-            if dest.exists() and not dest.is_symlink():
-                dest.unlink()
-            link(dest, active)
+            for name in ('bncache.dat', 'BnetLog.txt'):
+                no_links(work / name)
+        if not (work / 'Save').exists():
+            link(work / 'Save', saves)
     link(prefix / 'drive_c/Diablo II', work)
     link(prefix / 'dosdevices/c:', prefix / 'drive_c')
+    link(prefix / 'dosdevices/d:', work)
     link(prefix / 'dosdevices/s:', saves)
     z = prefix / 'dosdevices/z:'
     if z.is_symlink():
         z.unlink()
     elif z.exists():
         raise LayoutError('invalid_layout')
-    result = {'wine': str(wine), 'box': str(box), 'prefix': str(prefix), 'work': str(work), 'profile': opts['profile'], 'swap_ab': opts['swap_ab'], 'game_resolution': resolution, 'perf_overlay': effective_overlay, 'loot_filter': effective_filter, 'volatile_work': bool(volatile_work)}
+    result = {'wine': str(wine), 'box': str(box), 'prefix': str(prefix), 'work': str(work), 'profile': opts['profile'], 'swap_ab': opts['swap_ab'], 'edition': active_edition, 'game_resolution': resolution, 'display_resolution': display_res, 'perf_overlay': effective_overlay, 'loot_filter': effective_filter, 'volatile_work': bool(volatile_work)}
     if input_mode is not None:
         result['input_mode'] = input_mode
     atomic_session_json(state / 'session-layout.json', result)
@@ -983,6 +1160,8 @@ def sync_config(port, state):
     no_links(port)
     no_links(state)
     session = read_object(state / 'session-layout.json')
+    if session.get('edition') in VANILLA_EDITIONS:
+        return 0  # Vanilla has no PD2 plugin config to persist.
     work = state / 'game'
     if session.get('work') != str(work) or session.get('profile') != 'gdi' or session.get('volatile_work') is not True:
         raise LayoutError('invalid_layout')
@@ -1033,7 +1212,7 @@ def main(argv=None):
     parser.add_argument('--volatile-work', action='store_true')
     parser.add_argument('--save-settings', action='store_true')
     parser.add_argument('--sync-config', action='store_true')
-    parser.add_argument('--get', choices=['wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution', 'perf_overlay', 'loot_filter'])
+    parser.add_argument('--get', choices=['wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'edition', 'input_mode', 'game_resolution', 'display_resolution', 'perf_overlay', 'loot_filter'])
     parser.add_argument('--dump', action='store_true')
     args = parser.parse_args(argv)
     try:
@@ -1056,15 +1235,39 @@ def main(argv=None):
             for key in ('wine', 'box', 'prefix', 'work', 'profile', 'swap_ab', 'input_mode', 'game_resolution', 'loot_filter'):
                 value = result[key]
                 print('%s\t%s' % (key, '1' if value is True else '0' if value is False else value))
+            if 'edition' in result:
+                print('edition\t%s' % result['edition'])
             if 'perf_overlay' in result:
                 print('perf_overlay\t%s' % result['perf_overlay'])
+            if 'display_resolution' in result:
+                print('display_resolution\t%s' % result['display_resolution'])
         else:
+            in_mode = os.environ.get('PD2_INPUT_MODE')
+            if not in_mode:
+                cfg_file = pathlib.Path(args.port) / 'config' / 'input_mode'
+                cfg_file_txt = pathlib.Path(args.port) / 'config' / 'input_mode.txt'
+                if cfg_file.is_file():
+                    try:
+                        val = cfg_file.read_text(encoding='ascii', errors='ignore').strip()
+                        if val in ('mapper', 'native'):
+                            in_mode = val
+                    except OSError:
+                        pass
+                elif cfg_file_txt.is_file():
+                    try:
+                        val = cfg_file_txt.read_text(encoding='ascii', errors='ignore').strip()
+                        if val in ('mapper', 'native'):
+                            in_mode = val
+                    except OSError:
+                        pass
             prepare(pathlib.Path(args.port), pathlib.Path(args.state), args.data, args.volatile_work,
-                    input_mode=os.environ.get('PD2_INPUT_MODE', 'mapper'),
+                    input_mode=in_mode or 'mapper',
                     game_resolution=os.environ.get('PD2_GAME_RESOLUTION'),
                     loot_filter=os.environ.get('PD2_LOOT_FILTER') or None,
                     perf_overlay=os.environ.get('PD2_FPS'),
-                    save_settings=args.save_settings)
+                    save_settings=args.save_settings,
+                    display_resolution=os.environ.get('PD2_DISPLAY_RESOLUTION') or None,
+                    edition=os.environ.get('PD2_EDITION') or None)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, tarfile.TarError, LayoutError) as error:
         reason = str(error) if isinstance(error, LayoutError) else 'invalid_layout'
         if reason not in ('invalid_layout', 'invalid_profile', 'insufficient_space', 'unsupported_runtime'):

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: MIT
- * Fast division-free GDI downscaler for cnc-ddraw on R36S (Cortex-A35 / Box86).
+ * Fast division-free GDI scaler for cnc-ddraw on PortMaster handhelds (Box86).
  *
  * Specialized 5:4 SWAR area-weighted path for 800x600 -> 640x480 (8/16/32bpp),
- * plus cached fixed-point bilinear downscale fallback for 1024x768 -> 640x480
- * and 1068x600 -> 640x360 so 1px bitmap fonts and dithered UI never lose lines
- * to Wine GDI's nearest-neighbor StretchDIBits.
+ * plus cached fixed-point bilinear scaler for arbitrary resolutions up to 4K
+ * (downscale and upscale, 8/16/32bpp) so 1px bitmap fonts and dithered UI
+ * never lose lines to Wine GDI's nearest-neighbor StretchDIBits.
  *
  * Includes bounded numeric telemetry (max 64 lines in pd2-scale.jsonl + stderr).
  */
@@ -13,20 +13,25 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef PD2_SCALER_CORE_ONLY
 #include <windows.h>
 #endif
 
-#define PD2_SCALE_MAX_W 640
-#define PD2_SCALE_MAX_H 480
+#define PD2_SCALE_MAX_W 3840
+#define PD2_SCALE_MAX_H 2160
 #define PD2_SCALE_MAX_LINES 64
 #define PD2_SCALE_FRAMES 120
 #define PD2_SCALE_FILE_LIMIT 16384u
 
-static uint16_t s_pd2_scaled16[PD2_SCALE_MAX_W * PD2_SCALE_MAX_H];
-static uint32_t s_pd2_scaled32[PD2_SCALE_MAX_W * PD2_SCALE_MAX_H];
+#ifdef PD2_SCALER_CORE_ONLY
+static uint16_t s_pd2_scaled16[640 * 480];
+static uint32_t s_pd2_scaled32[640 * 480];
+#endif
+static void*    s_pd2_dyn_out = NULL;
+static size_t   s_pd2_dyn_cap = 0;
 static uint32_t s_pd2_pal_rb[256];
 static uint32_t s_pd2_pal_g[256];
 
@@ -37,6 +42,21 @@ static uint8_t  s_pd2_hw[PD2_SCALE_MAX_W];
 static uint16_t s_pd2_vy[PD2_SCALE_MAX_H];
 static uint8_t  s_pd2_vw[PD2_SCALE_MAX_H];
 static int s_pd2_tbl_sw = 0, s_pd2_tbl_sh = 0, s_pd2_tbl_dw = 0, s_pd2_tbl_dh = 0;
+
+static void* pd2_ensure_out_buf(size_t needed)
+{
+    void* buf;
+    if (needed == 0)
+        return NULL;
+    if (needed <= s_pd2_dyn_cap && s_pd2_dyn_out)
+        return s_pd2_dyn_out;
+    buf = realloc(s_pd2_dyn_out, needed);
+    if (!buf)
+        return NULL;
+    s_pd2_dyn_out = buf;
+    s_pd2_dyn_cap = needed;
+    return s_pd2_dyn_out;
+}
 
 static __inline uint32_t pd2_mix32_13_3(uint32_t a, uint32_t b)
 {
@@ -409,13 +429,15 @@ static void pd2_down_bilinear_16(const uint8_t* src, size_t pitch, int sw, int s
     uint32_t* cur0 = s_pd2_hrow_a;
     uint32_t* cur1 = s_pd2_hrow_b;
 
+    size_t dst_stride16 = (size_t)((dw + 1) & ~1);
+
     pd2_ensure_tables(sw, sh, dw, dh);
     for (dy = 0; dy < dh; dy++)
     {
         int sy0 = s_pd2_vy[dy];
         uint32_t wy = s_pd2_vw[dy];
         int sy1 = wy ? (sy0 + 1) : sy0;
-        uint16_t* out = dst + (size_t)dy * (size_t)dw;
+        uint16_t* out = dst + (size_t)dy * dst_stride16;
 
         if (sy0 == cached_y0 && sy1 == cached_y1)
         {
@@ -474,11 +496,11 @@ static int pd2_scale_select(int sw, int sh, int bpp, int dw, int dh,
     size_t min_pitch;
     if (!surface || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0)
         return 0;
-    if (dw > PD2_SCALE_MAX_W || dh > PD2_SCALE_MAX_H || sw < dw || sh < dh)
+    if (sw == dw && sh == dh)
+        return 0;
+    if (dw > PD2_SCALE_MAX_W || dh > PD2_SCALE_MAX_H)
         return 0;
     if (bpp != 8 && bpp != 16 && bpp != 32)
-        return 0;
-    if (bpp == 16 && (dw & 1))
         return 0;
     if (bpp == 8 && !palette)
         return 0;
@@ -613,6 +635,8 @@ static int pd2_gdi_scale_present(void)
     int dh = g_ddraw.render.viewport.height;
     int path;
     int lines_copied = 0;
+    size_t row_bytes, needed;
+    void* out_buf;
     LARGE_INTEGER q0, q1, q2;
 
     static struct { BITMAPINFOHEADER bmiHeader; RGBQUAD bmiColors[3]; } s_bmi16;
@@ -631,6 +655,14 @@ static int pd2_gdi_scale_present(void)
 
     pd2_scale_log_mode(path, sw, sh, bpp, dw, dh);
     if (!path)
+        return 0;
+
+    row_bytes = (path == 1 || path == 4)
+        ? ((size_t)((dw + 1) & ~1) * sizeof(uint16_t))
+        : ((size_t)dw * sizeof(uint32_t));
+    needed = row_bytes * (size_t)dh;
+    out_buf = pd2_ensure_out_buf(needed);
+    if (!out_buf)
         return 0;
 
     if (!s_bmi_init)
@@ -662,34 +694,34 @@ static int pd2_gdi_scale_present(void)
     if (path == 1)
     {
         pd2_down_800x600_16((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
-                            s_pd2_scaled16, g_config.rgb555 ? 1 : 0);
+                            (uint16_t*)out_buf, g_config.rgb555 ? 1 : 0);
     }
     else if (path == 2)
     {
         pd2_down_800x600_32((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
-                            s_pd2_scaled32);
+                            (uint32_t*)out_buf);
     }
     else if (path == 3)
     {
         pd2_scale_palette_rgb((const uint8_t*)g_ddraw.primary->palette->data_rgb);
         pd2_down_800x600_8((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
-                           s_pd2_scaled32);
+                           (uint32_t*)out_buf);
     }
     else if (path == 4)
     {
         pd2_down_bilinear_16((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
-                             sw, sh, s_pd2_scaled16, dw, dh, g_config.rgb555 ? 1 : 0);
+                             sw, sh, (uint16_t*)out_buf, dw, dh, g_config.rgb555 ? 1 : 0);
     }
     else if (path == 5)
     {
         pd2_down_bilinear_32((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
-                             sw, sh, s_pd2_scaled32, dw, dh, 0);
+                             sw, sh, (uint32_t*)out_buf, dw, dh, 0);
     }
     else
     {
         pd2_scale_palette_rgb((const uint8_t*)g_ddraw.primary->palette->data_rgb);
         pd2_down_bilinear_32((const uint8_t*)g_ddraw.primary->surface, (size_t)g_ddraw.primary->pitch,
-                             sw, sh, s_pd2_scaled32, dw, dh, 1);
+                             sw, sh, (uint32_t*)out_buf, dw, dh, 1);
     }
 
     QueryPerformanceCounter(&q1);
@@ -708,7 +740,7 @@ static int pd2_gdi_scale_present(void)
             0,
             0,
             (UINT)dh,
-            s_pd2_scaled16,
+            out_buf,
             (BITMAPINFO*)&s_bmi16,
             DIB_RGB_COLORS);
     }
@@ -726,7 +758,7 @@ static int pd2_gdi_scale_present(void)
             0,
             0,
             (UINT)dh,
-            s_pd2_scaled32,
+            out_buf,
             (BITMAPINFO*)&s_bmi32,
             DIB_RGB_COLORS);
     }

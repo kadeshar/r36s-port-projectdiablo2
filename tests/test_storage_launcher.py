@@ -53,6 +53,94 @@ class StorageLauncherTests(unittest.TestCase):
         self.assertEqual(events[1], ('validated', {'write_stamp': True}))
         self.assertEqual(events[-1], ('lock-exit', 'session.lock'))
 
+    def test_launch_root_user_knulli_no_sudo_required(self):
+        temp = os.path.join(tempfile.gettempdir(), 'pd2-launcher-root-' + uuid.uuid4().hex)
+        os.makedirs(temp)
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        port = Path(temp) / 'projectdiablo2'
+        (port / 'logs').mkdir(parents=True)
+        (port / 'runtime').mkdir()
+        (port / 'runtime' / 'box86').write_bytes(b'box')
+
+        @contextlib.contextmanager
+        def fake_lock(path):
+            yield
+
+        def fake_validated(path, **kwargs):
+            return Path(path), {}, {'wine-8.0-x86.tar.xz': {'sha256': 'x'}}
+
+        spawned_cmd = []
+        def fake_popen(cmd, **kwargs):
+            spawned_cmd.extend(cmd)
+            return mock.Mock(stdout=[], wait=mock.Mock(return_value=0))
+
+        # which returns None for sudo and runuser (missing on Knulli)
+        def fake_which(tool):
+            if tool in ('sudo', 'runuser'):
+                return None
+            return '/bin/' + tool
+
+        with mock.patch.object(storage_launcher.sys, 'platform', 'linux'), \
+             mock.patch.object(storage_launcher.os, 'getuid', return_value=0, create=True), \
+             mock.patch.object(storage_launcher.shutil, 'which', side_effect=fake_which), \
+             mock.patch.object(storage_launcher, 'lock', side_effect=fake_lock), \
+             mock.patch.object(storage_launcher, 'validated', side_effect=fake_validated), \
+             mock.patch.object(storage_launcher.subprocess, 'Popen', side_effect=fake_popen), \
+             mock.patch.object(storage_launcher.os, 'readlink', return_value='mnt:[1]'), \
+             mock.patch.object(storage_launcher, 'fixed_message'):
+            self.assertEqual(storage_launcher.launch(port, 'check'), 0)
+
+        self.assertNotIn('sudo', spawned_cmd)
+        self.assertEqual(spawned_cmd[0], 'unshare')
+        self.assertIn('--uid', spawned_cmd)
+        self.assertEqual(spawned_cmd[spawned_cmd.index('--uid') + 1], '0')
+
+    def test_launch_root_user_knulli_no_unshare_uses_shim(self):
+        temp = os.path.join(tempfile.gettempdir(), 'pd2-launcher-root-shim-' + uuid.uuid4().hex)
+        os.makedirs(temp)
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        port = Path(temp) / 'projectdiablo2'
+        (port / 'logs').mkdir(parents=True)
+        (port / 'runtime').mkdir()
+        (port / 'runtime' / 'box86').write_bytes(b'box')
+        (port / 'storage-tools').mkdir()
+        (port / 'storage-tools' / 'unshare_shim.py').write_bytes(b'# shim')
+
+        @contextlib.contextmanager
+        def fake_lock(path):
+            yield
+
+        def fake_validated(path, **kwargs):
+            return Path(path), {}, {'wine-8.0-x86.tar.xz': {'sha256': 'x'}}
+
+        spawned_cmd = []
+        def fake_popen(cmd, **kwargs):
+            spawned_cmd.extend(cmd)
+            return mock.Mock(stdout=[], wait=mock.Mock(return_value=0))
+
+        # which returns None for sudo, runuser, unshare, and losetup (missing on Knulli)
+        def fake_which(tool):
+            if tool in ('sudo', 'runuser', 'unshare', 'losetup'):
+                return None
+            return '/bin/' + tool
+
+        with mock.patch.object(storage_launcher.sys, 'platform', 'linux'), \
+             mock.patch.object(storage_launcher.os, 'getuid', return_value=0, create=True), \
+             mock.patch.object(storage_launcher.shutil, 'which', side_effect=fake_which), \
+             mock.patch.object(storage_launcher, 'lock', side_effect=fake_lock), \
+             mock.patch.object(storage_launcher, 'validated', side_effect=fake_validated), \
+             mock.patch.object(storage_launcher.subprocess, 'Popen', side_effect=fake_popen), \
+             mock.patch.object(storage_launcher.os, 'readlink', return_value='mnt:[1]'), \
+             mock.patch.object(storage_launcher, 'fixed_message'):
+            self.assertEqual(storage_launcher.launch(port, 'check'), 0)
+
+        self.assertNotIn('sudo', spawned_cmd)
+        self.assertNotIn('unshare', spawned_cmd)
+        self.assertTrue(any('unshare_shim.py' in str(arg) for arg in spawned_cmd))
+        self.assertIn('--propagation', spawned_cmd)
+        self.assertIn('--uid', spawned_cmd)
+        self.assertEqual(spawned_cmd[spawned_cmd.index('--uid') + 1], '0')
+
     def test_launch_missing_game_files_triggers_screen_message(self):
         temp = os.path.join(tempfile.gettempdir(), 'pd2-launcher-' + uuid.uuid4().hex)
         os.makedirs(temp)

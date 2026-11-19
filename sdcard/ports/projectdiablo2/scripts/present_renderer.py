@@ -13,8 +13,8 @@ from pathlib import Path
 import stat
 import sys
 
-RENDERER_SIZE = 441856
-RENDERER_SHA256 = 'b299b5c89dd7d71c11a6574fc7b163e9efca0f4147c514084fba6f2fc13697ea'
+RENDERER_SIZE = 442368
+RENDERER_SHA256 = 'e9d9e4f8583eb424191a7bb73dc0b827032d2dfb57457aee10cf205f21268e7a'
 MAX_RENDERER = 4 * 1024 * 1024
 TELEMETRY_FILE = 'pd2-present.jsonl'
 MAX_TELEMETRY = 262144
@@ -70,10 +70,15 @@ def _renderer(source):
             os.close(fd)
 
 
-def prepare_renderer(port, work):
+def prepare_renderer(port, work, edition=None):
     port, work = _absolute(port), _absolute(work)
     data = _renderer(port / 'compat/present-renderer/ddraw.dll')
-    directory = work / 'ProjectD2'
+    if edition in ('vanilla', 'vanilla114'):
+        directory = work
+    elif (work / 'ProjectD2').is_dir():
+        directory = work / 'ProjectD2'
+    else:
+        directory = work
     _directory(directory)
     expected = port / 'compat/cnc-ddraw/ddraw.dll'
     targets = [path for path in directory.iterdir() if path.name.lower() == 'ddraw.dll']
@@ -118,9 +123,10 @@ def main(argv=None, stdout=None):
     parser = _Parser(description=__doc__)
     parser.add_argument('--port', required=True)
     parser.add_argument('--work', required=True)
+    parser.add_argument('--edition', choices=['pd2', 'vanilla', 'vanilla114'], default=None)
     try:
         args = parser.parse_args(argv)
-        prepare_renderer(args.port, args.work)
+        prepare_renderer(args.port, args.work, edition=args.edition)
         rc = 0
     except (OSError, ValueError, TypeError, RecursionError):
         rc = 1

@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -351,6 +352,197 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(keymap[0x133], 'X')
         self.assertEqual(keymap[0x134], 'Y')
         self.assertEqual(triggers, {0x138: m.ABS_Z, 0x139: m.ABS_RZ})
+
+    def test_es_input_device_auto_discovery(self):
+        # Device not in PORTMASTER_PAD_IDS or PORTMASTER_PAD_NAMES
+        custom_pad = ('/dev/input/event9', 'CustomHandheld-keys', 0x9999, 0x8888, KEYS, ABS)
+        # Without ES config, it is not recognized
+        with mock.patch.object(m, 'es_input_devices', return_value=(set(), set())):
+            self.assertIsNone(m.choose_pad([custom_pad]))
+        # With ES config discovering the deviceName
+        with mock.patch.object(m, 'es_input_devices', return_value=({'customhandheld-keys'}, set())):
+            self.assertEqual(m.choose_pad([custom_pad]), custom_pad)
+        # With ES config discovering the (vid, pid)
+        with mock.patch.object(m, 'es_input_devices', return_value=(set(), {(0x9999, 0x8888)})):
+            self.assertEqual(m.choose_pad([custom_pad]), custom_pad)
+
+    def test_axis_deadband_and_pending_sync(self):
+        keymap, triggers, _ = m.build_keymap(KEYS, ABS)
+        out = []
+        translator = m.Translator(keymap, triggers, {m.ABS_X: (0, 1023)}, lambda *e: out.append(e))
+        # Initial position in deadzone (511 -> 0)
+        translator.process(m.EV_ABS, m.ABS_X, 511)
+        self.assertEqual(out, [(m.EV_ABS, m.ABS_X, 0)])
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(out[-1], (m.EV_SYN, m.SYN_REPORT, 0))
+        out.clear()
+
+        # Tiny ADC jitter inside deadzone (512 -> 0) must NOT emit
+        translator.process(m.EV_ABS, m.ABS_X, 512)
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(out, [])
+
+        # Significant movement past deadzone (1023 -> 32767) must emit
+        translator.process(m.EV_ABS, m.ABS_X, 1023)
+        self.assertEqual(out, [(m.EV_ABS, m.ABS_X, 32767)])
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(out[-1], (m.EV_SYN, m.SYN_REPORT, 0))
+        out.clear()
+
+        # Minor ADC jitter at stick position (< AXIS_DEADBAND) must NOT emit
+        # 1020 maps to ~32575 (delta ~192 < 256)
+        translator.process(m.EV_ABS, m.ABS_X, 1020)
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(out, [])
+
+    def test_rg35xxh_deeplay_layout_mapping(self):
+        # Deeplay / RG35XX-H keys & axes bits
+        rg_keys = sum(1 << c for c in (0x130, 0x131, 0x132, 0x133, 0x134, 0x135,
+                                      0x136, 0x137, 0x139, 0x13a, 0x13b, 0x13c, 0x162,
+                                      0x220, 0x221, 0x222, 0x223))
+        # ABS_Z (2), ABS_RZ (5), ABS_RX (3), ABS_RY (4)
+        rg_abs = (1 << m.ABS_Z) | (1 << m.ABS_RZ) | (1 << m.ABS_RX) | (1 << m.ABS_RY)
+        keys, triggers, layout = m.build_keymap(rg_keys, rg_abs, name='Deeplay-keys', vid=0x0001, pid=0x0001)
+
+        self.assertEqual(layout, 'rg35xxh')
+        self.assertEqual(keys[0x130], 'A')
+        self.assertEqual(keys[0x131], 'B')
+        self.assertEqual(keys[0x133], 'X')
+        self.assertEqual(keys[0x132], 'Y')
+        self.assertEqual(keys[0x139], 'THUMBL')
+        self.assertEqual(keys[0x13c], 'MODE')  # R3 mapped to MODE (Map) for Archix221 v2
+        self.assertEqual(keys[0x162], 'MODE')  # FN also maps to MODE
+        self.assertEqual(triggers[0x13a], (m.ABS_Z, m.ABS_BRAKE))
+        self.assertEqual(triggers[0x13b], (m.ABS_RZ,))
+
+    def test_rg35xxh_axis_remapping_in_translator(self):
+        out = []
+        def emit(kind, code, value):
+            out.append((kind, code, value))
+
+        ranges = {
+            m.ABS_X: (-32768, 32767),
+            m.ABS_Y: (-32768, 32767),
+            m.ABS_Z: (0, 255),
+            m.ABS_RZ: (0, 255),
+            m.ABS_BRAKE: (0, 255),
+        }
+        axis_map = {m.ABS_Z: m.ABS_X, m.ABS_RX: m.ABS_Y, m.ABS_RY: m.ABS_RX, m.ABS_RZ: m.ABS_RY}
+        translator = m.Translator({}, {}, ranges, emit, axis_map=axis_map)
+
+        # Sending hardware ABS_Z should be remapped to virtual ABS_X
+        translator.process(m.EV_ABS, m.ABS_Z, 20000)
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertTrue(any(item[1] == m.ABS_X for item in out), f"Expected ABS_X in {out}")
+
+    def test_load_custom_config_with_axis_map(self):
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+            json.dump({
+                'layout': 'manual',
+                'keys': {'304': 'A', '305': 'B'},
+                'triggers': {'2': 2},
+                'axis_map': {'0': 0, '1': 1, '2': 3, '5': 4}
+            }, f)
+            cfg_path = f.name
+        try:
+            res = m.load_custom_config(cfg_path)
+            self.assertIsNotNone(res)
+            keys, triggers, layout = res
+            self.assertEqual(layout, 'manual')
+            self.assertEqual(keys[304], 'A')
+            self.assertEqual(triggers[2], 2)
+            self.assertEqual(m.LAST_CUSTOM_AXIS_MAP, {0: 0, 1: 1, 2: 3, 5: 4})
+        finally:
+            os.remove(cfg_path)
+
+    def test_write_exact_handles_blocking_and_interrupted(self):
+        with mock.patch('os.write', side_effect=BlockingIOError('resource busy')):
+            # Must not raise exception
+            m.write_exact(1, b'test')
+        with mock.patch('os.write', side_effect=InterruptedError('interrupted')):
+            m.write_exact(1, b'test')
+
+    def test_translator_process_unknown_key_does_not_crash(self):
+        emitted = []
+        translator = m.Translator({999: 'UNKNOWN_BUTTON'}, {}, {}, lambda *args: emitted.append(args))
+        # Unknown target key must not raise KeyError or crash
+        translator.process(1, 999, 1)
+        translator.process(1, 999, 0)
+        self.assertEqual(len(emitted), 0)
+
+    def test_choose_pad_matches_saved_vid_pid_in_manual_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg_dir = Path(td) / 'config'
+            cfg_dir.mkdir()
+            custom_file = cfg_dir / 'custom_pad.json'
+            custom_file.write_text(json.dumps({'vid': 0x1234, 'pid': 0x5678}), encoding='utf-8')
+            usb_pad = ('/dev/input/event9', 'USB Gamepad', 0x1234, 0x5678, KEYS, ABS)
+            r36s_pad = ('/dev/input/event2', 'GO-Super Gamepad', 0x484b, 0x1100, KEYS, ABS)
+            with mock.patch.dict(os.environ, {'PD2_PORT': td, 'PD2_CONTROLLER_MODE': 'manual'}):
+                chosen = m.choose_pad([r36s_pad, usb_pad], mode='manual')
+                self.assertEqual(chosen[0], '/dev/input/event9')
+
+    def test_load_custom_config_defaults_axis_map_when_missing(self):
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+            json.dump({
+                'layout': 'manual',
+                'keys': {'304': 'A', '305': 'B'},
+            }, f)
+            cfg_path = f.name
+        try:
+            res = m.load_custom_config(cfg_path)
+            self.assertIsNotNone(res)
+            self.assertEqual(m.LAST_CUSTOM_AXIS_MAP, {m.ABS_X: m.ABS_X, m.ABS_Y: m.ABS_Y, m.ABS_RX: m.ABS_RX, m.ABS_RY: m.ABS_RY})
+        finally:
+            os.remove(cfg_path)
+
+    def test_translator_button_swap_emission(self):
+        emitted = []
+        keys = {304: 'A', 305: 'B'}
+        translator = m.Translator(keys, {}, {}, lambda *args: emitted.append(args))
+        translator.process(m.EV_KEY, 304, 1)
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(emitted, [(m.EV_KEY, 0x130, 1), (m.EV_SYN, m.SYN_REPORT, 0)])
+
+        emitted.clear()
+        translator.process(m.EV_KEY, 305, 1)
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(emitted, [(m.EV_KEY, 0x131, 1), (m.EV_SYN, m.SYN_REPORT, 0)])
+
+    def test_translator_hat_axes_emission(self):
+        emitted = []
+        translator = m.Translator({}, {}, {}, lambda *args: emitted.append(args), has_hat_axes=True)
+        # Hat0X deflection left (-1)
+        translator.process(m.EV_ABS, m.ABS_HAT0X, -1)
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(emitted, [(m.EV_ABS, m.ABS_HAT0X, -1), (m.EV_SYN, m.SYN_REPORT, 0)])
+
+        emitted.clear()
+        # Hat0X center (0)
+        translator.process(m.EV_ABS, m.ABS_HAT0X, 0)
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(emitted, [(m.EV_ABS, m.ABS_HAT0X, 0), (m.EV_SYN, m.SYN_REPORT, 0)])
+
+        emitted.clear()
+        # Hat0Y deflection down (1)
+        translator.process(m.EV_ABS, m.ABS_HAT0Y, 1)
+        translator.process(m.EV_SYN, m.SYN_REPORT, 0)
+        self.assertEqual(emitted, [(m.EV_ABS, m.ABS_HAT0Y, 1), (m.EV_SYN, m.SYN_REPORT, 0)])
+
+    def test_load_custom_config_reads_has_hat_axes(self):
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+            json.dump({
+                'layout': 'manual',
+                'keys': {'304': 'A'},
+                'has_hat_axes': True
+            }, f)
+            cfg_path = f.name
+        try:
+            res = m.load_custom_config(cfg_path)
+            self.assertIsNotNone(res)
+            self.assertTrue(m.LAST_CUSTOM_HAS_HAT_AXES)
+        finally:
+            os.remove(cfg_path)
 
 
 if __name__ == '__main__':

@@ -69,7 +69,7 @@ FIELDS = {
     "graphics_probe": COMMON | {"event", "role", "arch", "status"},
     "compositor_note": COMMON | {"event", "note"},
     "x11_probe": frozenset(('event', 'phase', 'check', 'status', 'duration_ms', 'mode', 'owner')),
-    "session_probe": frozenset(('event', 'phase', 'check', 'status', 'count', 'detail', 'alsa_rc', 'arch', 'node', 'device_kind', 'device_major', 'device_minor', 'syscall_rc', 'fd', 'request')),
+    "session_probe": frozenset(('event', 'phase', 'check', 'status', 'count', 'detail', 'alsa_rc', 'arch', 'node', 'device_kind', 'device_major', 'device_minor', 'syscall_rc', 'fd', 'request', 'width', 'height')),
     "metrics": COMMON | METRICS | {"event", "game_scope"},
     "setup_stage": frozenset(('event','phase','stage','status','elapsed_ms')),
     "render_sample": frozenset(('event','backend','frames','duration_ms','width','height')),
@@ -175,7 +175,7 @@ def validate_event(value, allow_summary=False):
             'xinput_buttons': ('changed', 'unchanged', 'unavailable'),
             'xinput_axes': ('changed', 'unchanged', 'unavailable'),
             'controller_mapper': ('ready', 'missing', 'denied', 'invalid', 'fallback'),
-            'mapper_layout': ('standard',),
+            'mapper_layout': ('standard', 'retrogame', 'rg35xxh', 'deeplay', 'manual'),
             'render_resolution': ('640x480', '800x600', '1024x768', 'native'),
             'audio_metrics': ('ready', 'unavailable'),
             'audio_metrics_capture': ('ready', 'playback_observed', 'sustained_playback', 'no_playback', 'partial_coverage', 'capture_limit', 'data_lost', 'no_stream', 'invalid_capture', 'unavailable'),
@@ -188,7 +188,7 @@ def validate_event(value, allow_summary=False):
             'graphics_test_result': ('completed','failed','timeout'),
             'start_menu': ('selected', 'failed', 'cancelled'),
             'menu_display': ('connect_failed', 'auth_failed', 'setup_invalid', 'window_failed', 'not_visible', 'protocol_error', 'disconnected', 'timeout', 'input_failed', 'unavailable'),
-            'audio_route': ('rk817', 'default', 'missing', 'denied', 'ambiguous', 'busy'),
+            'audio_route': ('rk817', 'generic', 'default', 'missing', 'denied', 'ambiguous', 'busy'),
             'audio_route_profile': ('baseline', 'buffer80', 'buffer160', 'dmix160', 'dmix80'),
             'audio_config_path': ('active', 'default', 'missing'),
             'audio_device': ('ready', 'missing', 'denied'),
@@ -224,6 +224,7 @@ def validate_event(value, allow_summary=False):
             'audio_alsa_endpoint': ('render_seen', 'capture_only', 'not_observed'),
             'audio_test': ('invalid',),
             'loot_filter': ('selected', 'default', 'missing', 'unavailable'),
+            'display_resolution': ('portmaster', 'drm', 'fb', 'override', 'default', 'applied'),
         }
         for stage in ('default', 'plughw', 'control', 'cards', 'devices', 'stream', 'params'):
             allowed['audio_alsa_' + stage] = ('attempted', 'not_observed', 'missing', 'denied', 'busy', 'invalid', 'unsupported', 'other_error')
@@ -291,7 +292,11 @@ def validate_event(value, allow_summary=False):
             fields.add('count')
             if not _integer(value.get('count'), 0, 512):
                 return None
-        phases = (('preflight', 'launch') if check in ('native_cast', 'loot_filter') else
+        if check == 'display_resolution':
+            fields.update(('width', 'height'))
+            if not _integer(value.get('width'), 320, 3840) or not _integer(value.get('height'), 240, 2160):
+                return None
+        phases = (('preflight', 'launch') if check in ('native_cast', 'loot_filter', 'display_resolution') else
                   ('launch', 'shutdown') if check == 'audio_output' else ('launch',))
         if value.get('phase') not in phases or set(value) != fields:
             return None

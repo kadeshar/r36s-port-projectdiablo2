@@ -56,6 +56,10 @@ class X11Tests(unittest.TestCase):
   output=io.StringIO()
   with mock.patch.object(probe.os,'geteuid',return_value=0,create=True),mock.patch.object(probe,'check') as check,contextlib.redirect_stdout(output):self.assertEqual(probe.main(),2)
   check.assert_not_called();self.assertIn('root_forbidden',output.getvalue())
+ def test_main_root_allowed_when_pd2_user_is_root(self):
+  output=io.StringIO()
+  with mock.patch.object(probe.os,'geteuid',return_value=0,create=True),mock.patch.dict(probe.os.environ,{'PD2_USER':'root'}),mock.patch.object(probe,'socket_state',return_value=('ready',{'mode':0o660,'owner':'user'})),mock.patch.object(probe,'_auth_status',return_value=('ready',b'x'*16)),mock.patch.object(probe,'check',side_effect=['ready','ready']),contextlib.redirect_stdout(output):self.assertEqual(probe.main(),0)
+  self.assertNotIn('root_forbidden',output.getvalue())
  def test_main_records_both_transports_and_requires_filesystem(self):
   for filesystem,abstract,rc in [('ready','refused',0),('denied','ready',1)]:
    output=io.StringIO()

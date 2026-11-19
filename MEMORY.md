@@ -4,6 +4,78 @@ This document records the detailed history of engineering work, architectural an
 
 ---
 
+## Version Bump to `1.5` + Release ZIP in `.temp/release/` & Console Deployment (User-Directed, 2026-11-19)
+
+- **User Request:**
+  - *"Change version on 1.5 and release to .temp\release as zip and deploy on console. Also give text of changelog similar to this from existing releases https://github.com/kadeshar/r36s-port-projectdiablo2/releases"*
+- **Six-Pin Version Update to `1.5` (Rule 7):**
+  - [`sdcard/ports/projectdiablo2/scripts/layout.py`](sdcard/ports/projectdiablo2/scripts/layout.py) L16: `VERSION = '1.5'`
+  - [`runtime-manifest.json`](runtime-manifest.json) L2: `"port_version": "1.5"`
+  - [`sdcard/ports/projectdiablo2/runtime-manifest.json`](sdcard/ports/projectdiablo2/runtime-manifest.json) L2: `"port_version": "1.5"`
+  - [`sdcard/ports/Project Diablo 2.sh`](sdcard/ports/Project%20Diablo%202.sh) L186: `"port_version":"1.5"`
+  - [`sdcard/ports/projectdiablo2/private-launcher.sh`](sdcard/ports/projectdiablo2/private-launcher.sh) L3 (`v1.5.`) and L140 (`\"port_version\":\"1.5\"`)
+  - [`tools/check_update.py`](tools/check_update.py) L5: `VERSION='1.5'`
+- **Supporting Version References Synchronized:**
+  - [`sdcard/ports/projectdiablo2/scripts/run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh) L21: `export PORT_VERSION="${PD2_PORT_VERSION:-1.5}"`
+  - [`sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py`](sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py) L221: `return '1.5'`
+- **Local Validation:**
+  - Full test suite: 900 tests passed, 0 failures (130 skipped, `OK (skipped=130)`).
+  - Pin verification script [`.temp/check_pins_1_5.py`](.temp/check_pins_1_5.py): verified all 6 pins and supporting pins consistent at `1.5`.
+- **Release Artifacts Created in `.temp/release/`:**
+  - Archive: [`.temp/release/projectdiablo2-port-1.5.zip`](.temp/release/projectdiablo2-port-1.5.zip)
+    - Size: 188,932,186 bytes (180.18 MB)
+    - SHA256: `963e045816e1285ba836649af2aa0b7d877e09de6209426153c49b5f0850b9fc`
+    - Entries: 125 payload entries (matching `sdcard/ports`).
+    - Validated with `testzip()`, in-zip version pins and Unix file attributes (`0o755`/`0o644`).
+  - Extracted Payload Folder: [`.temp/release/projectdiablo2-port-1.5/`](.temp/release/projectdiablo2-port-1.5/)
+- **Console Deployment (`ark@192.168.50.136`, 2026-11-19):**
+  - Created remote backup in `/roms2/ports/backup-pre-1.5-*`.
+  - Deployed updated 6 version-pinned files with exact permissions.
+  - Remote syntax check (`bash -n`, `py_compile`) passed clean.
+  - Remote version pins verified across all 6 components.
+  - Full remote audit: 125 / 125 files byte-for-byte identical between zip and `/roms2/ports` (`IDENTICAL=125 MISMATCH=0 MISSING=0`).
+  - Fresh install simulation executed via `tools/simulate_fresh_install.py --host 192.168.50.136`:
+    - All 36 saves preserved and verified (`saves/`, `saves_s14/`, `gamedata/`).
+    - Gamedata verified untouched (`Game.exe` intact).
+    - Loop mounts detached, `state.ext4` cleared for clean first-boot initialization.
+  - Game not launched by agent (Rule 8 strictly preserved).
+
+---
+
+## Version Bump to `1.5-test.2` + Release ZIP in `.temp/release/` (User-Directed, 2026-11-12)
+
+- **User request:**
+  - *"Change version on 1.5-test.2 and prepare zip in .temp\release"*
+  - *"Make that fast. Replace 1.5-test.1 on 1.5-test.2 and zip."*
+- **Six-Pin Version Update to `1.5-test.2` (Rule 7):**
+  - [`sdcard/ports/projectdiablo2/scripts/layout.py`](sdcard/ports/projectdiablo2/scripts/layout.py) L16: `VERSION = '1.5-test.2'`
+  - [`runtime-manifest.json`](runtime-manifest.json) L2: `"port_version": "1.5-test.2"`
+  - [`sdcard/ports/projectdiablo2/runtime-manifest.json`](sdcard/ports/projectdiablo2/runtime-manifest.json) L2: `"port_version": "1.5-test.2"`
+  - [`sdcard/ports/Project Diablo 2.sh`](sdcard/ports/Project%20Diablo%202.sh) L186: `"port_version":"1.5-test.2"`
+  - [`sdcard/ports/projectdiablo2/private-launcher.sh`](sdcard/ports/projectdiablo2/private-launcher.sh) L3 (`v1.5-test.2.`) and L122 (`\"port_version\":\"1.5-test.2\"`)
+  - [`tools/check_update.py`](tools/check_update.py) L5: `VERSION='1.5-test.2'`
+- **Supporting Version References Synchronized:**
+  - [`sdcard/ports/projectdiablo2/scripts/run-game.sh`](sdcard/ports/projectdiablo2/scripts/run-game.sh) L21: `export PORT_VERSION="${PD2_PORT_VERSION:-1.5-test.2}"`
+  - [`sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py`](sdcard/ports/projectdiablo2/scripts/overlay/x11_hud.py) L221: `return '1.5-test.2'`
+  - [`tests/test_performance_overlay.py`](tests/test_performance_overlay.py) L388–389, L408: `version='1.5-test.2'`
+  - [`tests/test_menu_x11.py`](tests/test_menu_x11.py) L745: `'R36S PORT 1.5-test.2'`
+- **Verification & Artifact:**
+  - `unittest`: `test_layout.py` (56/56 OK).
+  - Archive: [`.temp/release/projectdiablo2-port-1.5-test.2.zip`](.temp/release/projectdiablo2-port-1.5-test.2.zip) (122 entries, 188,914,123 bytes, SHA256 `bef6766a207835cf404e17cc28c22fc28315de25a524e4d76edc803dcb2275a6`, `testzip()` OK, all in-ZIP version pins and payload hashes verified).
+  - Clean payload folder: [`.temp/release/projectdiablo2-port-1.5-test.2/`](.temp/release/projectdiablo2-port-1.5-test.2/).
+- **Console Deployment & Verification (`ark@192.168.50.136`, 2026-11-12):**
+  - Pre-flight process check clean (no active game/wine/weston processes).
+  - Created timestamped pre-deployment backup on console: `/roms2/ports/projectdiablo2/pre-1.5-test.2-backup-20261112_221052`.
+  - Deployed 6 payload files (`Project Diablo 2.sh`, `private-launcher.sh`, `runtime-manifest.json`, `scripts/layout.py`, `scripts/overlay/x11_hud.py`, `scripts/run-game.sh`) with byte-for-byte SHA256 verification and correct permissions (`0755`/`0644`).
+  - Remote syntax verified: `bash -n` and `python3 -m py_compile` passed clean.
+  - Remote version pins verified: `layout.VERSION`, `runtime-manifest.json`, `Project Diablo 2.sh`, `private-launcher.sh`, `run-game.sh`, and `x11_hud.py` all resolved `1.5-test.2`.
+  - Full 121-file payload audit against local `sdcard/ports/`: `IDENTICAL=121 MISMATCHED=0 MISSING=0`.
+  - Storage launcher namespace check: `PASS: ext4 image and read-only Wine mounted in private namespace` (`705163264` bytes available).
+  - Saves verified: 42 files before and after deployment intact.
+  - No game session launched (Rule 8).
+
+---
+
 ## Version Bump to `1.5-test.1` + Release ZIP in `.temp/release/` (User-Directed, 2026-11-12)
 
 - **User request:**

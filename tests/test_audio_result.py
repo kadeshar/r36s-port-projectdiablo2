@@ -140,7 +140,7 @@ class AudioResultTests(unittest.TestCase):
             with self.assertRaises(package.PrepareError): package.validate_release_path(path)
 
     def test_audio_fps_render_log_allowlist_and_extra_secret_rejection(self):
-        states = {'audio_route': ('rk817', 'default', 'missing', 'denied', 'ambiguous', 'busy'),
+        states = {'audio_route': ('rk817', 'generic', 'default', 'missing', 'denied', 'ambiguous', 'busy'),
                   'audio_device': ('ready', 'missing', 'denied'), 'audio_backend': ('alsa', 'restored'),
                   'audio_open': audio.STATUSES, 'audio_directsound': audio.STATUSES + ('not_run',),
                   'audio_write': ('ready', 'error', 'not_run'), 'audio_tone': ('completed', 'error', 'not_run'),

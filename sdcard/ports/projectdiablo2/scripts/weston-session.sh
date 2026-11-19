@@ -36,6 +36,13 @@ stop_pid() {
  if [[ "$group" == 1 ]]; then kill -KILL -- "-$pid" 2>/dev/null || true; else kill -KILL "$pid" 2>/dev/null || true; fi
  wait "$pid" 2>/dev/null || true
 }
+pd2_run_user() {
+ if [[ "${PD2_USER:-}" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+   runuser -u "$PD2_USER" --preserve-environment -- "$@"
+ else
+   "$@"
+ fi
+}
 cleanup() {
  local rc=$?;trap - EXIT INT TERM
  stop_pid "$app_pid"
@@ -45,7 +52,7 @@ cleanup() {
    if [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && $(ps -o pgid= -p "$pid" | tr -d ' ') == "$pid" ]]; then stop_pid "$pid" 1;fi
  done
  if [[ -n ${PD2_NATIVE_LIBS:-} && ${PD2_DIAGNOSTIC:-off} != sdl && ${PD2_DIAGNOSTIC:-off} != glx ]]; then
-   timeout --kill-after=5 10 runuser -u "$PD2_USER" --preserve-environment -- env \
+   timeout --kill-after=5 10 pd2_run_user env \
     WINEPREFIX="$PD2_PREFIX" WINEARCH=win32 WINEDEBUG=-all BOX86_LOG=0 \
     LD_LIBRARY_PATH="$PD2_NATIVE_LIBS" LD_PRELOAD="$PD2_NATIVE_PRELOAD" \
     "$PD2_BOX" "$PD2_WINE/bin/wineserver" -k 2>/dev/null || true
@@ -74,10 +81,36 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# Clean up stale X11 lock if previous process died
+if [[ -f /tmp/.X0-lock ]]; then
+ x0_pid=$(cat /tmp/.X0-lock 2>/dev/null)
+ if [[ -n "$x0_pid" ]] && ! kill -0 "$x0_pid" 2>/dev/null; then
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+ fi
+fi
 # Avoid abstract X11 socket clashes with another live desktop too.
 [[ ! -e /tmp/.X11-unix/X0 && ! -e /tmp/.X0-lock ]] || { error display_conflict; exit 2; }
-[[ -c /dev/dri/card0 ]] || { error missing_drm_device; exit 2; }
-[[ -e /dev/uinput ]] || { error missing_uinput; exit 2; }
+# Ensure DRM device node exists (PortMaster / Westonpack compatibility for non-KMS/fbdev kernels)
+if [[ ! -c /dev/dri/card0 ]]; then
+ if [[ -c /dev/dri/card1 ]]; then
+  ln -sf /dev/dri/card1 /dev/dri/card0 2>/dev/null || true
+ else
+  mkdir -p /dev/dri 2>/dev/null || true
+  mknod /dev/dri/card0 c 226 0 2>/dev/null || true
+ fi
+fi
+chmod 666 /dev/dri/card* 2>/dev/null || true
+[[ -c /dev/dri/card0 || -c /dev/dri/card1 ]] || { error missing_drm_device; exit 2; }
+# Ensure uinput device node exists
+if [[ ! -e /dev/uinput ]]; then
+ if [[ -e /dev/input/uinput ]]; then
+  ln -s /dev/input/uinput /dev/uinput 2>/dev/null || true
+ else
+  modprobe uinput 2>/dev/null || true
+ fi
+fi
+chmod 666 /dev/uinput /dev/input/uinput 2>/dev/null || true
+[[ -e /dev/uinput || -e /dev/input/uinput ]] || { error missing_uinput; exit 2; }
 stage namespace_setup
 pd2_namespace_open || exit 2
 stage namespace_ready
@@ -117,7 +150,7 @@ export XDG_RUNTIME_DIR="$R/wayland"
 mkdir -m700 -p "$XDG_RUNTIME_DIR" "$R/bin"
 chown "$uid:$gid" "$XDG_RUNTIME_DIR" "$R/bin"
 # Xwayland is found through PATH and this build supports a configurable path.
-runuser -u "$PD2_USER" --preserve-environment -- python3 -B "$PD2_PORT/scripts/x11_auth.py" --path "$PD2_XAUTHORITY" || { error xauth_prepare_failed;exit 2; }
+pd2_run_user python3 -B "$PD2_PORT/scripts/x11_auth.py" --path "$PD2_XAUTHORITY" || { error xauth_prepare_failed;exit 2; }
 [[ -f "$PD2_XAUTHORITY" && ! -L "$PD2_XAUTHORITY" && $(stat -c %a "$PD2_XAUTHORITY") == 600 ]] || { error xauth_prepare_failed;exit 2; }
 printf '#!/bin/bash\nexport LD_PRELOAD=\nexec "%s/bin/Xwayland" "$@" -auth "%s/xauthority" -fp built-ins\n' "$W" "$R" > "$R/bin/Xwayland"
 chmod 700 "$R/bin/Xwayland";chown "$uid:$gid" "$R/bin/Xwayland"
@@ -132,10 +165,21 @@ if CRUSTY_LIBGBM=$(python3 -B "$PD2_PORT/scripts/graphics_probe.py" --weston "$W
 if CRUSTY_LIBDRM=$(python3 -B "$PD2_PORT/scripts/graphics_probe.py" --weston "$W" --role drm --arch aarch64 --search "$native_search");then export CRUSTY_LIBDRM;else unset CRUSTY_LIBDRM;fi
 # Preserve the verified GDI/DRM compositor environment and input routing.
 export CRUSTY_NO_LIBINPUT=1 CRUSTY_BLOCK_INPUT=0 CRUSTY_SHOW_CURSOR=1 CRUSTY_WLMODE=0 CRUSTY_WLDISP=wayland-pd2
-# Keep the compositor's drawable native-size. cnc-ddraw scales the game's
-# 1024x768 surface BEFORE Xwayland/Weston; a larger Crusty SDL window is not
-# a guaranteed downscaler on the R36S KMS/EGL stack.
-export CRUSTY_RESOLUTION=640x480
+# Keep the compositor's drawable at the device's physical panel resolution
+# (defaulting to 640x480 when PortMaster/DRM doesn't provide one). cnc-ddraw
+# scales the game surface to this viewport BEFORE Xwayland/Weston.
+display_res="${PD2_DISPLAY_RESOLUTION:-640x480}"
+if [[ "$display_res" =~ ^([0-9]{3,4})x([0-9]{3,4})$ ]]; then
+ _dw=${BASH_REMATCH[1]} _dh=${BASH_REMATCH[2]}
+ if (( _dw < 320 || _dw > 3840 || _dh < 240 || _dh > 2160 )); then
+  display_res="640x480"
+ fi
+else
+ display_res="640x480"
+fi
+unset _dw _dh
+export PD2_DISPLAY_RESOLUTION="$display_res"
+export CRUSTY_RESOLUTION="$display_res"
 export PD2_NATIVE_LIBS="$W/lib_armhf/extra_wayland:$W/lib_armhf:/usr/local/lib/arm-linux-gnueabihf:/usr/lib/arm-linux-gnueabihf:/lib/arm-linux-gnueabihf:/usr/lib32"
 # Preserve the real-provider search path before GL proxy directories are added.
 native32_search="$PD2_NATIVE_LIBS"
@@ -181,7 +225,7 @@ if [[ ! -S "$SEATD_SOCK" ]];then
  exit 2
 fi
 stage seatd_ready
-printf '[core]\nxwayland=true\n[output]\nname=DSI-1\nscale=1\nx11-wm-class=game.exe,Game.exe,explorer.exe,Explorer.exe,wine,Wine\nx11-wm-name=Diablo II,Wine desktop,Default,Game.exe,explorer.exe\n[output]\nname=DPI-1\nscale=1\nx11-wm-class=game.exe,Game.exe,explorer.exe,Explorer.exe,wine,Wine\nx11-wm-name=Diablo II,Wine desktop,Default,Game.exe,explorer.exe\n[input-method]\npath=\n[xwayland]\npath=%s/bin/Xwayland\n' "$R" > "$R/weston.ini"
+printf '[core]\nxwayland=true\n[output]\nname=DSI-1\nscale=1\nx11-wm-class=game.exe,Game.exe,explorer.exe,Explorer.exe,wine,Wine\nx11-wm-name=Diablo II,Wine desktop,Default,Game.exe,explorer.exe\n[output]\nname=DPI-1\nscale=1\nx11-wm-class=game.exe,Game.exe,explorer.exe,Explorer.exe,wine,Wine\nx11-wm-name=Diablo II,Wine desktop,Default,Game.exe,explorer.exe\n[output]\nname=HDMI-A-1\nscale=1\nx11-wm-class=game.exe,Game.exe,explorer.exe,Explorer.exe,wine,Wine\nx11-wm-name=Diablo II,Wine desktop,Default,Game.exe,explorer.exe\n[output]\nname=eDP-1\nscale=1\nx11-wm-class=game.exe,Game.exe,explorer.exe,Explorer.exe,wine,Wine\nx11-wm-name=Diablo II,Wine desktop,Default,Game.exe,explorer.exe\n[input-method]\npath=\n[xwayland]\npath=%s/bin/Xwayland\n' "$R" > "$R/weston.ini"
 chmod 600 "$R/weston.ini";chown "$uid:$gid" "$R/weston.ini"
 cd "$W" || exit 2
 # Match upstream privileged compositor; Wine/game still use runuser below.
@@ -224,18 +268,30 @@ stage x11_probe
 chgrp "$gid" /tmp/.X11-unix/X0 && chmod 660 /tmp/.X11-unix/X0 || { error x11_socket_failed;exit 2; }
 # A listening socket is NOT readiness: the first X11 Setup triggers lazy
 # Xwayland. Probe both transports as the game user, without xdpyinfo/Xlib.
-timeout --kill-after=5 35 runuser -u "$PD2_USER" --preserve-environment -- python3 -B "$PD2_PORT/scripts/x11_probe.py"
+if [[ "${PD2_USER:-}" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+ timeout --kill-after=5 35 runuser -u "$PD2_USER" --preserve-environment -- python3 -B "$PD2_PORT/scripts/x11_probe.py"
+else
+ timeout --kill-after=5 35 python3 -B "$PD2_PORT/scripts/x11_probe.py"
+fi
 x11_rc=$?
 if [[ "$x11_rc" != 0 ]];then
  printf 'PD2_EVENT {"event":"runtime_error","phase":"runtime","reason":"x11_probe_failed","rc":%s}\n' "$x11_rc"
  exit 2
 fi
 stage x11_ready
+# The menu inherits the edition the launcher's preflight resolved (stored
+# choice or its data-driven fallback); an invalid read leaves it unset.
+resolved_edition=$(python3 -B "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --get edition 2>/dev/null) || resolved_edition=
+case "$resolved_edition" in pd2|vanilla|vanilla114) export PD2_EDITION="$resolved_edition";; esac
 # Test is only a request to show the menu in this working game session.
 # No separate pre-PortMaster KMSDRM initialization, settings writes or audio.
 save_menu_settings=0
 if [[ ${PD2_START_MENU:-0} == 1 ]]; then
- menu_selection=$(runuser -u "$PD2_USER" --preserve-environment -- python3 -B "$PD2_PORT/scripts/start_menu.py")
+ if [[ "${PD2_USER:-}" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+   menu_selection=$(runuser -u "$PD2_USER" --preserve-environment -- python3 -B "$PD2_PORT/scripts/start_menu.py")
+ else
+   menu_selection=$(python3 -B "$PD2_PORT/scripts/start_menu.py")
+ fi
  menu_rc=$?
  if [[ "$menu_rc" == 10 ]]; then
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"start_menu","status":"cancelled"}\n'
@@ -245,9 +301,10 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
  menu_resolution=''
  menu_fps=''
  menu_filter=''
+ menu_edition=''
  if [[ "$menu_rc" == 0 ]]; then
-  # Fixed three-token menu protocol: resolution fps loot_filter.
-  read -r menu_resolution menu_fps menu_filter menu_extra <<< "$menu_selection"
+  # Fixed four-token menu protocol: resolution fps loot_filter edition.
+  read -r menu_resolution menu_fps menu_filter menu_edition menu_extra <<< "$menu_selection"
   menu_res_ok=0
   case "$menu_resolution" in default|640x480|800x600|1024x768|native) menu_res_ok=1;; esac
   menu_fps_ok=0
@@ -260,7 +317,9 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
   elif [[ "$menu_filter" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.filter$ && -f "$PD2_PORT/filters/$menu_filter" && ! -L "$PD2_PORT/filters/$menu_filter" ]]; then
    menu_filter_ok=1
   fi
-  if [[ "$menu_res_ok" == 1 && "$menu_fps_ok" == 1 && "$menu_filter_ok" == 1 && -z "$menu_extra" ]]; then
+  menu_edition_ok=0
+  case "$menu_edition" in pd2|vanilla|vanilla114) menu_edition_ok=1;; esac
+  if [[ "$menu_res_ok" == 1 && "$menu_fps_ok" == 1 && "$menu_filter_ok" == 1 && "$menu_edition_ok" == 1 && -z "$menu_extra" ]]; then
    menu_valid=1
   fi
  fi
@@ -268,6 +327,7 @@ if [[ ${PD2_START_MENU:-0} == 1 ]]; then
   [[ "$menu_resolution" == default ]] || export PD2_GAME_RESOLUTION="$menu_resolution"
   [[ "$menu_fps" == default ]] || export PD2_FPS="$menu_fps"
   export PD2_LOOT_FILTER="$menu_filter"
+  export PD2_EDITION="$menu_edition"
   save_menu_settings=1
   if [[ "$menu_filter" == default ]]; then menu_filter_status=default; else menu_filter_status=selected; fi
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"loot_filter","status":"%s"}\n' "$menu_filter_status"
@@ -288,7 +348,17 @@ stage volatile_work_prepare
 mount -t tmpfs -o "size=16M,nosuid,nodev,mode=0700,uid=$uid,gid=$gid" tmpfs "$PD2_WORK" || { error volatile_work_failed; exit 2; };work_mounted=1
 save_flag=
 [[ "${save_menu_settings:-0}" == 1 ]] && save_flag=--save-settings
-runuser -u "$PD2_USER" --preserve-environment -- python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --data "$R/gamedata/Diablo II" --volatile-work ${save_flag:+"$save_flag"} || { error volatile_work_failed;exit 2; }
+if [[ "${PD2_USER:-}" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+ runuser -u "$PD2_USER" --preserve-environment -- python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --data "$R/gamedata/Diablo II" --volatile-work ${save_flag:+"$save_flag"} || { error volatile_work_failed;exit 2; }
+else
+ python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --data "$R/gamedata/Diablo II" --volatile-work ${save_flag:+"$save_flag"} || { error volatile_work_failed;exit 2; }
+fi
+# The volatile prepare is authoritative: it may fall back from an unavailable
+# stored edition, and run-game must receive exactly what was prepared.
+if resolved_edition=$(python3 -B "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --get edition 2>/dev/null); then
+ case "$resolved_edition" in pd2|vanilla|vanilla114) export PD2_EDITION="$resolved_edition";; *) unset PD2_EDITION;; esac
+fi
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"edition","status":"%s"}\n' "${PD2_EDITION:-pd2}"
 stage volatile_work_ready
 cd "$PD2_PORT" || exit 2
 export PD2_AUDIO_PROBE="${PD2_AUDIO_PROBE:-0}"
@@ -300,6 +370,10 @@ case "${PD2_DIAGNOSTIC:-off}" in present|ddraw)
  chmod 644 "$R/compositor-metrics.pid"
  ;; esac
 ln -s "$PD2_PORT/scripts/run-game.sh" "$R/game-session.sh"
-runuser -u "$PD2_USER" --preserve-environment -- env PD2_AUDIO_TEST="${PD2_AUDIO_TEST:-1}" bash "$R/game-session.sh" & app_pid=$!
+if [[ "${PD2_USER:-}" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+ runuser -u "$PD2_USER" --preserve-environment -- env PD2_AUDIO_TEST="${PD2_AUDIO_TEST:-1}" bash "$R/game-session.sh" & app_pid=$!
+else
+ env PD2_AUDIO_TEST="${PD2_AUDIO_TEST:-1}" bash "$R/game-session.sh" & app_pid=$!
+fi
 wait "$app_pid";rc=$?;app_pid=
 exit "$rc"

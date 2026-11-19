@@ -126,10 +126,10 @@ def _candidate(name, sys_root, virtual_root, dev_root):
         os.close(fd)
 
 
-def wait(path, *, run_dir=None, sys_root=Path('/sys/class/input'),
+def wait(path, *, timeout=5.0, run_dir=None, sys_root=Path('/sys/class/input'),
          virtual_root=Path('/sys/devices/virtual/input'), dev_root=Path('/dev/input'),
          clock=time.monotonic, sleep=time.sleep):
-    """Wait at most five seconds for a new openable virtual Xbox controller."""
+    """Wait for a new openable virtual Xbox controller."""
     try:
         baseline = _baseline(path, run_dir)
     except PermissionError:
@@ -140,9 +140,10 @@ def wait(path, *, run_dir=None, sys_root=Path('/sys/class/input'),
         return 'invalid'
     except OSError:
         return 'unavailable'
-    deadline = clock() + 5.0
+    deadline = clock() + timeout
+    max_polls = int(timeout * 10) + 1
     status = 'missing'
-    for poll in range(MAX_POLLS):
+    for poll in range(max_polls):
         try:
             names = _identifiers(sys_root) - baseline
             for name in sorted(names):
@@ -162,7 +163,7 @@ def wait(path, *, run_dir=None, sys_root=Path('/sys/class/input'),
             if status != 'denied':
                 status = 'unavailable'
         remaining = deadline - clock()
-        if remaining <= 0 or poll == MAX_POLLS - 1:
+        if remaining <= 0 or poll == max_polls - 1:
             break
         sleep(min(0.1, remaining))
     return status
@@ -173,8 +174,9 @@ def main(argv=None):
     choice = parser.add_mutually_exclusive_group(required=True)
     choice.add_argument('--snapshot', type=Path)
     choice.add_argument('--wait', type=Path)
+    parser.add_argument('--timeout', type=float, default=15.0)
     args = parser.parse_args(argv)
-    status = snapshot(args.snapshot) if args.snapshot is not None else wait(args.wait)
+    status = snapshot(args.snapshot) if args.snapshot is not None else wait(args.wait, timeout=args.timeout)
     if args.wait is not None or status != 'ready':
         print('PD2_EVENT ' + json.dumps(dict(event='session_probe', check='virtual_gamepad',
               phase='launch', status=status), separators=(',', ':')), flush=True)

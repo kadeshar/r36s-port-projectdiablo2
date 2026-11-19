@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "file": "ddraw.dll",
-  "size": 441856,
-  "sha256": "b299b5c89dd7d71c11a6574fc7b163e9efca0f4147c514084fba6f2fc13697ea",
+  "size": 442368,
+  "sha256": "e9d9e4f8583eb424191a7bb73dc0b827032d2dfb57457aee10cf205f21268e7a",
   "upstream": {
     "project": "FunkyFr3sh/cnc-ddraw",
     "tag": "v7.1.0.0",
@@ -22,10 +22,10 @@
       "cnc_ddraw_build.py": "3841e0e135b76e3cdd6ae71aae98585764458fc5a19ccf219b94fbf0e558c154",
       "present_metrics.h": "a3fd9d3409209f6bf755d758b91b3464e3754391be3b57f9e2bbffe4ee7dfb9e",
       "test_present_metrics.c": "1082ca392232ba032bde0f0defa0c1104eea653c23c6c2a45c32c895887fc1bc",
-      "pd2_gdi_scaler.h": "578bc3b776ba9082fb05e2d0a50629ba834985d640fece2545d2e7de319e61f8",
-      "test_gdi_scaler.c": "37ea8c8bd84757514b94ae3fbeefc4aa302a7cfe17dc71d72614588ab0d09c9a"
+      "pd2_gdi_scaler.h": "81dad26802514cbd7e54dee428606f62b599ee64e64af0ebcb1269cb39873ab5",
+      "test_gdi_scaler.c": "d0cb22285c35842724df6d2b6d88eaeb16c3af49ae03afe689b749830ba9f4e8"
     },
-    "source_patch_sha256": "434f903a0c5b76aae8bc8a87ed1d8c60d9052e04f8e3580225e3d5b62e055778"
+    "source_patch_sha256": "87adabd05c5a5f7895ac431c38e2270d3491ca4a5fa09e7846045b31f3aa64df"
   },
   "telemetry": {
     "file": "pd2-present.jsonl",

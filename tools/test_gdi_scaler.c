@@ -161,14 +161,40 @@ static void test_custom_pitch_and_guards(void)
     assert(pd2_scale_select(1024, 768, 32, 640, 480, 4096, g_src32, NULL) == 5);
     assert(pd2_scale_select(1068, 600, 8, 640, 360, 1068, g_src8, g_pal) == 6);
 
+    assert(pd2_scale_select(1024, 768, 8, 800, 600, 1024, g_src8, g_pal) == 6);
+    assert(pd2_scale_select(640, 480, 16, 960, 720, 1280, g_src16, NULL) == 4);
+    assert(pd2_scale_select(1068, 600, 32, 1280, 720, 4272, g_src32, NULL) == 5);
+    assert(pd2_scale_select(800, 600, 16, 720, 540, 1600, g_src16, NULL) == 4);
+    assert(pd2_scale_select(640, 480, 16, 427, 320, 1280, g_src16, NULL) == 4);
+
     /* Guard rejections must return 0 (safe fallback to StretchDIBits). */
     assert(pd2_scale_select(800, 600, 8, 640, 480, 800, NULL, g_pal) == 0);
     assert(pd2_scale_select(800, 600, 8, 640, 480, 800, g_src8, NULL) == 0);
     assert(pd2_scale_select(800, 600, 8, 640, 480, 799, g_src8, g_pal) == 0);
     assert(pd2_scale_select(800, 600, 24, 640, 480, 2400, g_src8, g_pal) == 0);
-    assert(pd2_scale_select(640, 480, 8, 800, 600, 640, g_src8, g_pal) == 0);
-    assert(pd2_scale_select(1024, 768, 8, 800, 600, 1024, g_src8, g_pal) == 0);
-    assert(pd2_scale_select(800, 600, 16, 639, 480, 1600, g_src16, NULL) == 0);
+    assert(pd2_scale_select(640, 480, 16, 640, 480, 1280, g_src16, NULL) == 0);
+    assert(pd2_scale_select(800, 600, 32, 3841, 2160, 3200, g_src32, NULL) == 0);
+    assert(pd2_scale_select(800, 600, 32, 1920, 2161, 3200, g_src32, NULL) == 0);
+
+    /* Multi-device upscale + odd-width 16bpp DWORD-aligned stride verification. */
+    {
+        uint16_t* up16 = (uint16_t*)malloc(960u * 720u * sizeof(uint16_t));
+        uint16_t* odd16 = (uint16_t*)malloc(428u * 320u * sizeof(uint16_t));
+        int i;
+        assert(up16 && odd16);
+        for (i = 0; i < 640 * 480; i++)
+            g_src16[i] = 0x52AAu;
+        pd2_down_bilinear_16((const uint8_t*)g_src16, 640u * 2u, 640, 480, up16, 960, 720, 0);
+        for (i = 0; i < 960 * 720; i++)
+            assert(up16[i] == 0x52AAu);
+        memset(odd16, 0xCC, 428u * 320u * sizeof(uint16_t));
+        pd2_down_bilinear_16((const uint8_t*)g_src16, 640u * 2u, 640, 480, odd16, 427, 320, 0);
+        for (y = 0; y < 320; y++)
+            for (x = 0; x < 427; x++)
+                assert(odd16[(size_t)y * 428u + (size_t)x] == 0x52AAu);
+        free(up16);
+        free(odd16);
+    }
 }
 
 static void benchmark(void)

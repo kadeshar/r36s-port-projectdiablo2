@@ -5,7 +5,7 @@ pd2_run_layer() {
  step graphics_test
  if [[ $mode == ddraw ]]; then
   python3 -B "$PD2_PORT/scripts/graphics_artifacts.py" --port "$PD2_PORT" --work "$PD2_WORK" --arch win32 || { error invalid_layout 1; return 1; }
-  timeout --kill-after=2 15 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\pd2-graphics.exe' 2>&1 | python3 -B "$PD2_PORT/scripts/diagnostic_capture.py"
+  timeout --kill-after=2 15 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop="PD2Native,${display_res:-640x480}" start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\pd2-graphics.exe' 2>&1 | python3 -B "$PD2_PORT/scripts/diagnostic_capture.py"
   rc=${PIPESTATUS[0]}
  else
   python3 -B "$PD2_PORT/scripts/graphics_artifacts.py" --port "$PD2_PORT" --work "$PD2_WORK" --arch armhf || { error invalid_layout 1; return 1; }

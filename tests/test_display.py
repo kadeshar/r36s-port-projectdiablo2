@@ -35,14 +35,16 @@ class DisplayTests(unittest.TestCase):
 
     def test_wine_and_compositor_are_native_not_fake_downscalers(self):
         source = (PORT / 'scripts/weston-session.sh').read_text()
-        self.assertIn('export CRUSTY_RESOLUTION=640x480', source)
+        self.assertIn('display_res="${PD2_DISPLAY_RESOLUTION:-640x480}"', source)
+        self.assertIn('export CRUSTY_RESOLUTION="$display_res"', source)
         self.assertIn('weston_args=(-B drm --drm-device card0 --renderer=gl)', source)
         self.assertNotIn('WESTON_HEADLESS_', source)
         self.assertNotIn('-B headless', source)
         self.assertNotIn('CRUSTY_RESOLUTION=1024x768', source)
         game = (PORT / 'scripts/run-game.sh').read_text()
-        desktop = next(line for line in game.splitlines() if '/v Default /t REG_SZ' in line)
-        self.assertIn("/d '640x480'", desktop)
+        desktop = next(line for line in game.splitlines() if 'Explorer\\\\Desktops' in line)
+        self.assertIn('"$display_res"', desktop)
+        self.assertIn('/desktop="PD2Native,$display_res"', game)
         self.assertNotIn('|| true', desktop)
 
     def test_bundled_companion_is_pinned_x86_and_not_imported_asset(self):

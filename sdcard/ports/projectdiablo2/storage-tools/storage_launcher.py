@@ -99,20 +99,26 @@ def launch(port, mode):
     log(f"Platform: {sys.platform}, UID: {os.getuid() if hasattr(os, 'getuid') else 'N/A'}")
     log(f"Port path: {port}")
 
-    if sys.platform != 'linux' or os.getuid() == 0:
-        err = 'Run from Ports as a normal Linux user, not root'
+    uid = os.getuid() if hasattr(os, 'getuid') else 1000
+    is_root = (uid == 0)
+
+    if sys.platform != 'linux':
+        err = 'PD2 SD storage requires Linux platform'
         log(err, level='ERROR')
-        fixed_message('PD2 SD: launch as normal user (ark), not root.')
+        fixed_message(err)
         raise StorageError(err)
 
     os.environ['PATH'] = system_path(os.environ.get('PATH', os.defpath))
-    for command in ('sudo', 'unshare', 'mount', 'umount', 'losetup', 'runuser', 'bash', 'python3'):
+    required_tools = ['mount', 'umount', 'bash', 'python3']
+    if not is_root:
+        required_tools = ['sudo', 'runuser'] + required_tools
+    for command in required_tools:
         if not shutil.which(command):
             err = 'Missing tool: ' + command
             log(err, level='ERROR')
             fixed_message('PD2 SD: missing tool: ' + command)
             raise StorageError(err)
-    log("Required system tools verified: sudo, unshare, mount, umount, losetup, runuser, bash, python3")
+    log("Required system tools verified: " + ", ".join(required_tools))
 
     with contextlib.ExitStack() as stack:
         # Serialize validation and stamp publication with adapter startup. A
@@ -162,10 +168,19 @@ def launch(port, mode):
                 show_missing_game_files(port)
                 raise
 
-        parent_ns = os.readlink('/proc/self/ns/mnt')
+        try:
+            parent_ns = os.readlink('/proc/self/ns/mnt')
+        except OSError:
+            parent_ns = 'none'
         adapter = no_links(port / 'storage-tools/storage_session.py')
-        command = ['sudo', '-n', 'unshare', '--mount', '--propagation', 'private',
-                   sys.executable, '-B', str(adapter), '--port', str(port), '--uid', str(os.getuid()),
+        cmd_prefix = [] if is_root else ['sudo', '-n']
+        if shutil.which('unshare'):
+            unshare_cmd = ['unshare', '--mount', '--propagation', 'private']
+        else:
+            shim_path = str(no_links(port / 'storage-tools/unshare_shim.py'))
+            unshare_cmd = [sys.executable, '-B', shim_path, '--mount', '--propagation', 'private']
+        command = cmd_prefix + unshare_cmd + [
+                   sys.executable, '-B', str(adapter), '--port', str(port), '--uid', str(uid),
                    '--parent-ns', parent_ns, '--mode', mode]
         log("Starting adapter: " + ' '.join(command))
 

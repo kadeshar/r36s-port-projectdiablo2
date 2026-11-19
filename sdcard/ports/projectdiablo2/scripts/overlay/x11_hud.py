@@ -218,7 +218,7 @@ def resolve_port_version(version=None):
             return str(layout.VERSION).strip()
     except Exception:
         pass
-    return '1.5-test.1'
+    return '1.5'
 
 
 class X11HUD:
@@ -242,6 +242,10 @@ class X11HUD:
         self._prev_rendered_fps = None
         self._frame_count = 0
 
+        self.screen_width = SCREEN_WIDTH
+        self.screen_height = SCREEN_HEIGHT
+        self._explicit_x = x is not None
+        self._explicit_y = y is not None
         self.width, self.height = self._get_dimensions(level)
         self.x = self._get_default_x(level) if x is None else x
         self.y = self._get_default_y(level) if y is None else y
@@ -263,9 +267,9 @@ class X11HUD:
             return LEVEL1_X
         elif level == 2:
             if LEVEL2_ALIGN == 'center':
-                return (SCREEN_WIDTH - target_w) // 2
+                return max(0, (self.screen_width - target_w) // 2)
             elif LEVEL2_ALIGN == 'right':
-                return SCREEN_WIDTH - target_w - 8
+                return max(0, self.screen_width - target_w - 8)
             elif isinstance(LEVEL2_ALIGN, int):
                 return LEVEL2_ALIGN
             return 8
@@ -315,6 +319,13 @@ class X11HUD:
         pos = 32 + ((vendor_len + 3) & ~3) + formats * 8
 
         self.root, self.default_colormap = struct.unpack_from('<II', body, pos)
+        root_w, root_h = struct.unpack_from('<HH', body, pos + 20)
+        if root_w > 0 and root_h > 0:
+            self.screen_width, self.screen_height = root_w, root_h
+            if not self._explicit_x:
+                self.x = self._get_default_x(self.level, width=self.width)
+            if not self._explicit_y:
+                self.y = self._get_default_y(self.level)
         self.root_visual = struct.unpack_from('<I', body, pos + 32)[0]
         self.root_depth = body[pos + 38]
         num_depths = body[pos + 39]

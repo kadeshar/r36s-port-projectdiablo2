@@ -11,6 +11,7 @@ import struct
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest import mock
 import uuid
@@ -141,7 +142,7 @@ class LayoutTests(unittest.TestCase):
         write(self.port, 'runtime-manifest.json', json.dumps({'artifacts': artifacts}).encode())
         self.original_data = digest_tree(self.data)
 
-    def prepare(self, volatile=True, data_override=None):
+    def prepare(self, volatile=True, data_override=None, **kwargs):
         # Mock *only* symlink creation on Windows/Linux alike. Assets remain
         # recorded references, not fake copies; config I/O and tar extraction run.
         def fake_link(path, target):
@@ -150,8 +151,20 @@ class LayoutTests(unittest.TestCase):
             self.link_calls.append((path, target))
         def fake_probe(path, target, **kwargs):
             path.touch(exist_ok=False)
-        with mock.patch.object(layout, 'link', side_effect=fake_link), mock.patch.object(Path, 'symlink_to', new=fake_probe), mock.patch.object(layout.shutil, 'disk_usage', return_value=mock.Mock(free=2 * 1024 ** 3)):
-            return layout.prepare(self.port, self.state, data_override, volatile)
+        orig_rename = Path.rename
+        def safe_rename(path, target):
+            for i in range(5):
+                try:
+                    return orig_rename(path, target)
+                except OSError:
+                    if os.name != 'nt' or i == 4:
+                        raise
+                    time.sleep(0.05)
+        with mock.patch.object(layout, 'link', side_effect=fake_link), \
+             mock.patch.object(Path, 'symlink_to', new=fake_probe), \
+             mock.patch.object(Path, 'rename', new=safe_rename), \
+             mock.patch.object(layout.shutil, 'disk_usage', return_value=mock.Mock(free=2 * 1024 ** 3)):
+            return layout.prepare(self.port, self.state, data_override, volatile, **kwargs)
 
     def session(self):
         return json.loads((self.state / 'session-layout.json').read_text())
@@ -848,8 +861,8 @@ class LayoutTests(unittest.TestCase):
         production = importlib.util.module_from_spec(SPEC)
         SPEC.loader.exec_module(production)
         self.assertEqual(production.CNC_DDRAW_VERSION, '7.1.0.0')
-        self.assertEqual(production.CNC_DDRAW_SIZE, 439296)
-        self.assertEqual(production.CNC_DDRAW_SHA256, 'cbbdba23aa5ad52e25de42504715ded7fe86d5af04803cbb73fdce9ddfa0be76')
+        self.assertEqual(production.CNC_DDRAW_SIZE, 439808)
+        self.assertEqual(production.CNC_DDRAW_SHA256, 'f00372035c9862443d0554f545f1d88f8fb80a874ff4b112a0a2d4daaec8f673')
         # A self-consistent local manifest is not enough to bypass release pins.
         with self.assertRaisesRegex(production.LayoutError, 'unsupported_runtime'):
             production.companion_file(self.port)
@@ -1087,6 +1100,31 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state),
                                           '--save-settings'] + combo), 1)
 
+    def test_vanilla_resolution_applied_to_ddraw_ini(self):
+        write(self.port, 'defaults/ddraw-gdi-vanilla.ini', b'[ddraw]\nrenderer=gdi\nwidth=640\nheight=480\n')
+        write(self.data, 'Game.exe', b'x' * 1_200_000)
+        # vanilla 1.14 defaults to 800x600 and writes inject_resolution and fake_mode
+        res = self.prepare(edition='vanilla114')
+        self.assertEqual(res['game_resolution'], '800x600')
+        ini = (self.state / 'game/ddraw.ini').read_text()
+        self.assertIn('inject_resolution=800x600', ini)
+        self.assertIn('fake_mode=800x600x16', ini)
+
+        # explicit 640x480 override for vanilla 1.14
+        res2 = self.prepare(edition='vanilla114', game_resolution='640x480')
+        self.assertEqual(res2['game_resolution'], '640x480')
+        ini2 = (self.state / 'game/ddraw.ini').read_text()
+        self.assertIn('inject_resolution=640x480', ini2)
+        self.assertIn('fake_mode=640x480x16', ini2)
+
+        # vanilla 1.13 defaults to 640x480
+        write(self.data, 'Game.exe', b'tiny')
+        res3 = self.prepare(edition='vanilla')
+        self.assertEqual(res3['game_resolution'], '640x480')
+        ini3 = (self.state / 'game/ddraw.ini').read_text()
+        self.assertIn('inject_resolution=640x480', ini3)
+        self.assertIn('fake_mode=640x480x16', ini3)
+
 
 class DumpTests(unittest.TestCase):
     """The single --dump spawn that replaces one --get per key in preflight."""
@@ -1161,6 +1199,114 @@ class DumpTests(unittest.TestCase):
                 self.assertEqual(layout.main(['--port', str(self.port), '--state', str(self.state), '--dump'] + extra), 1)
             self.assertEqual(stdout.getvalue().strip(), 'PD2_EVENT ' + json.dumps(
                 {'event': 'runtime_error', 'reason': 'invalid_layout', 'phase': 'preflight'}))
+
+    def test_display_resolution_configures_ddraw_ini_and_validates_bounds(self):
+        real_prepare = layout.prepare
+        for disp, game_res, expected_inject in (
+                ('1280x720', 'native', '1068x600'),
+                ('720x720', '800x600', '800x600'),
+                ('480x320', '640x480', '640x480'),
+                ('1920x1080', '1024x768', '1024x768')):
+            with self.subTest(disp=disp, game_res=game_res):
+                port = self.root / ('port_' + disp)
+                state = self.root / ('state_' + disp)
+                port.mkdir(); state.mkdir()
+                data = port / 'gamedata/Diablo II'
+                for name in ('d2data.mpq', 'd2exp.mpq', 'd2char.mpq', 'ProjectD2/pd2data.mpq', 'ProjectD2/pd2monchars.mpq'):
+                    write(data, name, b'MPQ\x1a' + b'\0' * 28)
+                for name in ('ProjectD2/Game.exe', 'ProjectD2/ProjectDiablo.dll', 'ProjectD2/ddraw.dll'):
+                    write(data, name, pe())
+                write(data, 'ProjectD2/SGD2FreeRes.dll', sgd2_fixture())
+                write(port, 'defaults/ProjectDiablo.json', json.dumps({'classic_game_settings': {'other': {'save_path': 'S:\\'}}}).encode())
+                for name in ('SGD2FreeResolution.json', 'BH.json'):
+                    write(port, 'defaults/' + name, b'{"fixture": true}\n')
+                for name in ('ProjectDiablo.cfg', 'default.filter'):
+                    write(port, 'defaults/' + name, b'default\n')
+                content = '[ddraw]\nrenderer=gdi\n' + ''.join(k + '=' + v + '\n' for k, v in layout.DISPLAY_KEYS.items())
+                write(port, 'defaults/ddraw-gdi.ini', content.encode())
+                wrapper = write(port, 'compat/cnc-ddraw/ddraw.dll', pe() + b'new')
+                manifest = {'version': layout.CNC_DDRAW_VERSION, 'file': 'ddraw.dll',
+                            'size': wrapper.stat().st_size, 'sha256': hashlib.sha256(wrapper.read_bytes()).hexdigest()}
+                write(port, 'compat/cnc-ddraw/manifest.json', json.dumps(manifest).encode())
+                write(port, 'runtime/box86', b'box')
+                write(port, 'runtime/weston_pkg_0.2.squashfs', b'weston')
+                write(port, 'runtime/vc_redist.x86.exe', b'vc')
+                wine_buf = io.BytesIO()
+                with tarfile.open(fileobj=wine_buf, mode='w:xz') as tf:
+                    for rel, is_dir in (('wine-8.0-x86', True), ('wine-8.0-x86/bin', True), ('wine-8.0-x86/bin/wine', False), ('wine-8.0-x86/bin/wineserver', False)):
+                        ti = member(rel, tarfile.DIRTYPE if is_dir else tarfile.REGTYPE, 0 if is_dir else 3)
+                        tf.addfile(ti, None if is_dir else io.BytesIO(b'bin'))
+                write(port, 'runtime/wine-8.0-x86.tar.xz', wine_buf.getvalue())
+                artifacts = [{'file': f, 'size': (port / 'runtime' / f).stat().st_size,
+                              'sha256': hashlib.sha256((port / 'runtime' / f).read_bytes()).hexdigest()}
+                             for f in layout.ARTIFACTS]
+                write(port, 'runtime-manifest.json', json.dumps({'port_version': layout.VERSION, 'artifacts': artifacts}).encode())
+
+                def fake_link(path, target):
+                    layout.no_links(path.parent)
+                def fake_probe(path, target, **kwargs):
+                    path.touch(exist_ok=False)
+
+                sgd2_bytes = sgd2_fixture()
+                def fake_sgd2(data_dir, st_dir):
+                    p = st_dir / 'fake-sgd2.dll'
+                    p.write_bytes(sgd2_bytes)
+                    return p
+                with mock.patch.object(layout, 'CNC_DDRAW_SIZE', manifest['size']), \
+                     mock.patch.object(layout, 'CNC_DDRAW_SHA256', manifest['sha256']), \
+                     mock.patch.object(layout, 'sgd2_640_file', side_effect=fake_sgd2), \
+                     mock.patch.object(layout, 'sgd2_800_file', side_effect=fake_sgd2), \
+                     mock.patch.object(layout, 'sgd2_1024_file', side_effect=fake_sgd2), \
+                     mock.patch.object(layout, 'link', side_effect=fake_link), \
+                     mock.patch.object(Path, 'symlink_to', new=fake_probe), \
+                     mock.patch.object(layout.shutil, 'disk_usage', return_value=mock.Mock(free=2 * 1024 ** 3)):
+                    res = real_prepare(port, state, None, True, input_mode='mapper',
+                                       game_resolution=game_res, display_resolution=disp)
+                self.assertEqual(res['display_resolution'], disp)
+                ini = (state / 'game/ProjectD2/ddraw.ini').read_text(encoding='utf-8')
+                dw, dh = disp.split('x')
+                self.assertIn(f'width={dw}', ini)
+                self.assertIn(f'height={dh}', ini)
+                self.assertIn(f'inject_resolution={expected_inject}', ini)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(layout.main(['--port', str(port), '--state', str(state), '--get', 'display_resolution']), 0)
+                self.assertEqual(out.getvalue().strip(), disp)
+        for bad in ('', '640', '100x100', '9999x9999', '1280x720;id', 123):
+            with self.subTest(bad=bad), self.assertRaisesRegex(layout.LayoutError, 'invalid_profile'):
+                layout.parse_display_resolution(bad)
+
+    def test_edition_vanilla114_supported_and_rejected_when_invalid(self):
+        self.assertIn('vanilla114', layout.EDITIONS)
+        self.assertIn('vanilla114', layout.VANILLA_EDITIONS)
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            self.assertFalse(layout.edition_ready(p, 'vanilla114'))
+            for f in ('Game.exe', 'd2data.mpq', 'd2exp.mpq', 'd2char.mpq'):
+                (p / f).write_bytes(b'dummy')
+            # 5-byte Game.exe is 1.13c: vanilla is ready, vanilla114 is not
+            self.assertTrue(layout.edition_ready(p, 'vanilla'))
+            self.assertFalse(layout.edition_ready(p, 'vanilla114'))
+            self.assertFalse(layout.edition_ready(p, 'pd2'))
+            self.assertEqual(layout.detect_available_editions(p), ('vanilla',))
+
+            # >= 1MB Game.exe is 1.14d: vanilla114 is ready, vanilla is not
+            (p / 'Game.exe').write_bytes(b'x' * 1_200_000)
+            self.assertFalse(layout.edition_ready(p, 'vanilla'))
+            self.assertTrue(layout.edition_ready(p, 'vanilla114'))
+            self.assertFalse(layout.edition_ready(p, 'pd2'))
+            self.assertEqual(layout.detect_available_editions(p), ('vanilla114',))
+
+            # Add PD2 files
+            (p / 'ProjectD2').mkdir()
+            for f in ('ProjectD2/Game.exe', 'ProjectD2/ProjectDiablo.dll'):
+                (p / f).write_bytes(b'dummy')
+            self.assertTrue(layout.edition_ready(p, 'pd2'))
+            self.assertEqual(layout.detect_available_editions(p), ('pd2', 'vanilla114'))
+
+        for bad in ('invalid', 'pd3', 'v114', 114):
+            with self.assertRaisesRegex(layout.LayoutError, 'invalid_profile'):
+                layout.prepare(self.port, self.state, edition=bad)
 
 
 if __name__ == '__main__':

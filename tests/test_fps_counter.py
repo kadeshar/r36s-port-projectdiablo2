@@ -253,7 +253,7 @@ class FpsTests(unittest.TestCase):
         script = (PORT / 'scripts/run-game.sh').read_text()
         self.assertNotIn('fps_counter.py', script)
         self.assertNotIn('pd2-fps-hotkey.exe', script)
-        self.assertIn('fps_renderer.py', script)
+        self.assertIn('present_renderer.py', script)
 
     def test_cli_silent_success(self):
         output = io.StringIO()

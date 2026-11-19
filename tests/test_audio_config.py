@@ -305,6 +305,12 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(self.route()['audio_route'], 'rk817')
         self.assertIn(b'hw:CARD=RK817_codec,DEV=1', (self.run / audio.CONFIG_NAME).read_bytes())
 
+    def test_route_generic_non_rk817_hardware_codec_selected(self):
+        self.write_proc(b' 0 [audiocodec]: Allwinner Codec\n 1 [HDMI]: HDMI\n',
+                        b'00-00: audiocodec : playback 1\n01-00: HDMI : playback 1\n')
+        self.assertEqual(self.route()['audio_route'], 'generic')
+        self.assertIn(b'hw:CARD=audiocodec,DEV=0', (self.run / audio.CONFIG_NAME).read_bytes())
+
     def test_no_fix_unknown_hdmi_missing_ambiguous_and_invalid_ids(self):
         cases = [
             (b' 0 [HDMI]: HDMI - HDMI\n', b'00-00: HDMI : playback 1\n', 'default'),

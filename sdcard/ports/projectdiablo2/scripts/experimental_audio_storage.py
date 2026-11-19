@@ -25,24 +25,33 @@ def mount_types(content=None):
     return result
 
 
-def accepts_workspace(port, prefix, work):
-    """Caller must first apply audio_dsoal.plain/directory/verify_owner checks."""
+def accepts_workspace(port, prefix, work, target=None):
+    """Caller must first apply audio_dsoal.plain/directory/verify_owner checks.
+
+    target is the directory that will receive the staged DLLs: the PD2 plugin
+    directory, or the volatile work root itself for vanilla Game.exe.
+    """
     state = port / 'storage/mounted-state'
-    target = work / 'ProjectD2'
+    project = work / 'ProjectD2'
+    target = project if target is None else target
     drive_c = prefix / 'drive_c'
     if (port.name not in ('projectdiablo2', 'projectdiablo2-sd') or prefix != state / 'wineprefix'
-            or work != state / 'game'):
+            or work != state / 'game' or target not in (project, work)):
         return False
     try:
         uid = os.getuid()
-        if uid == 0 or not os.path.ismount(state) or not os.path.ismount(work):
+        allow_root = os.environ.get('PD2_USER') == 'root'
+        if (uid == 0 and not allow_root) or not os.path.ismount(state) or not os.path.ismount(work):
             return False
         for path in (state, target):
             if path.is_symlink():
                 return False
         mounts = mount_types()
+        # The work root is the bounded tmpfs itself, already checked below;
+        # only its subdirectories must be plain directories.
+        owned = (prefix, drive_c) if target == work else (prefix, drive_c, target)
         if (mounts.get(str(state)) != 'ext4' or mounts.get(str(work)) != 'tmpfs'
-                or any(str(p) in mounts or os.path.ismount(p) for p in (prefix, drive_c, target))):
+                or any(str(p) in mounts or os.path.ismount(p) for p in owned)):
             return False
         owner, pinfo, dinfo, winfo, tinfo, portinfo = [p.stat() for p in (state, prefix, drive_c, work, target, port)]
         if any(info.st_uid != uid for info in (owner, pinfo, dinfo, winfo, tinfo)):

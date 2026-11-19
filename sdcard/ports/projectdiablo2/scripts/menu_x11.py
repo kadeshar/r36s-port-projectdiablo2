@@ -104,14 +104,22 @@ def _setup(data):
     return base, mask, maximum, low, high, chosen
 
 
+def _setup_screen_size(data):
+    """Extract root screen width/height from a validated X11 setup response."""
+    vendor_len = struct.unpack_from('<H', data, 16)[0]
+    formats = data[21]
+    pos = 32 + ((vendor_len + 3) & ~3) + formats * 8
+    return struct.unpack_from('<HH', data, pos + 20)
+
+
 class Screen:
     def __init__(self, font, labels, subtitle='R36S PORT'):
         self.socket = None
         self.window = self.gc = self.pixmap = None
+        self.width, self.height = WIDTH, HEIGHT
         self.font, self.labels = dict(font), tuple(labels)
-        # Bitmap font is uppercase 5x7 with an 18-pixel advance; keep the
-        # header within one screen width for any port version string.
-        self.subtitle = str(subtitle).upper()[:WIDTH // 18]
+        self._raw_subtitle = str(subtitle).upper()
+        self.subtitle = self._raw_subtitle[:WIDTH // 18]
         self._buffer = bytearray()
         self._sequence = 0
         self._menu = None
@@ -154,7 +162,12 @@ class Screen:
                 raise MenuDisplayError('auth_failed')
             if status != 1 or major != 11 or minor != 0 or units < 8:
                 raise MenuDisplayError('setup_invalid')
-            setup = _setup(self._receive(units * 4, deadline))
+            setup_data = self._receive(units * 4, deadline)
+            setup = _setup(setup_data)
+            self.width, self.height = _setup_screen_size(setup_data)
+            _, compact, px = self._layout_params()
+            max_sub = (self.width - 24) // (6 * px) if compact else self.width // (6 * px)
+            self.subtitle = self._raw_subtitle[:max(1, max_sub)]
             base, mask, self.maximum, self.low, self.high, root = setup
             self.root, self.colormap, self.visual, self.depth, self.masks = root
             bit1 = mask & -mask
@@ -167,13 +180,13 @@ class Screen:
             # Managed InputOutput window: override_redirect is deliberately absent.
             event_mask = 1 | 2 | (1 << 15) | (1 << 16) | (1 << 17)
             self._request(1, self.depth, struct.pack('<IIhhHHHHIIIII', self.window, self.root,
-                          0, 0, WIDTH, HEIGHT, 0, 1, self.visual,
+                          0, 0, self.width, self.height, 0, 1, self.visual,
                           2 | 2048 | 8192, self._pixel((12, 16, 24)), event_mask, self.colormap), deadline)
             self._property(39, b'Diablo II', deadline)  # WM_NAME / STRING
             self._property(67, b'game.exe\0game.exe\0', deadline)  # WM_CLASS
             # Compose off-screen at the window's depth; the same GC can serve
             # both drawables. graphics_exposures=False avoids CopyArea events.
-            self._request(53, self.depth, struct.pack('<IIHH', self.pixmap, self.window, WIDTH, HEIGHT), deadline)
+            self._request(53, self.depth, struct.pack('<IIHH', self.pixmap, self.window, self.width, self.height), deadline)
             self._request(55, 0, struct.pack('<IIIII', self.gc, self.window, 4 | 65536, 0, 0), deadline)
             self._request(8, 0, struct.pack('<I', self.window), deadline)
             self._roundtrip(deadline)
@@ -325,6 +338,14 @@ class Screen:
             result |= ((component * (mask // bit) + 127) // 255) * bit
         return result
 
+    def _layout_params(self):
+        """Return (scale, compact, px) matching the active X11 screen dimensions."""
+        if self.width >= WIDTH and self.height >= HEIGHT:
+            scale = 2 if (self.width >= WIDTH * 2 and self.height >= HEIGHT * 2) else 1
+            return scale, False, 3 * scale
+        px = 2 if (self.width >= 440 and self.height >= 300) else 1
+        return 1, True, px
+
     def _rectangles(self, rectangles, color, deadline):
         if not rectangles:
             return
@@ -333,72 +354,80 @@ class Screen:
         for start in range(0, len(rectangles), batch):
             body = bytearray(struct.pack('<II', self.pixmap, self.gc))
             for x, y, width, height in rectangles[start:start + batch]:
-                if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > WIDTH or y + height > HEIGHT:
+                if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > self.width or y + height > self.height:
                     raise ValueError('rectangle outside menu')
                 body.extend(struct.pack('<hhHH', x, y, width, height))
             self._request(70, 0, body, deadline)
 
-    def _text(self, x, y, text, color, deadline, clip=None):
+    def _text(self, x, y, text, color, deadline, clip=None, px_size=3):
         # clip=(min_x, max_x) confines glyphs to a sub-window (floating plaque);
         # default clips only at the screen edge.
         rectangles = []
+        advance = 6 * px_size
         for char in text:
             glyph = self.font.get(char, self.font[' '])
             for row in range(7):
                 bits = int(glyph[row * 2:row * 2 + 2], 16)
                 for col in range(5):
-                    px, py = x + col * 3, y + row * 3
+                    px, py = x + col * px_size, y + row * px_size
                     if clip is not None and not clip[0] <= px < clip[1]:
                         continue
-                    if bits & (1 << (4 - col)) and 0 <= px < WIDTH and 0 <= py < HEIGHT:
-                        rectangles.append((px, py, min(3, WIDTH - px), min(3, HEIGHT - py)))
-            x += 18
+                    if bits & (1 << (4 - col)) and 0 <= px < self.width and 0 <= py < self.height:
+                        rectangles.append((px, py, min(px_size, self.width - px), min(px_size, self.height - py)))
+            x += advance
         self._rectangles(rectangles, color, deadline)
 
     def draw(self, menu):
         if self.socket is None:
             raise MenuDisplayError('protocol_error')
         filters = getattr(menu, 'filters', ()) or ()
-        if (menu.row not in range(5) or menu.resolution not in range(len(self.labels))
+        screen_type = getattr(menu, 'screen', 'main')
+        if (menu.resolution not in range(len(self.labels))
                 or getattr(menu, 'filter_index', 0) not in range(len(filters) + 1)):
             raise ValueError('invalid menu selection')
         self._menu = menu
         self._repaint = False
         deadline = time.monotonic() + TIMEOUT
+        scale, compact, px = self._layout_params()
+        adv = 6 * px
+
+        def draw_text(tx, ty, text, color, clip=None):
+            if px == 3:
+                if clip is None:
+                    self._text(tx, ty, text, color, deadline)
+                else:
+                    self._text(tx, ty, text, color, deadline, clip)
+            else:
+                self._text(tx, ty, text, color, deadline, clip, px_size=px)
 
         # Gothic dark charcoal background
-        self._rectangles([(0, 0, WIDTH, HEIGHT)], (12, 10, 10), deadline)
+        self._rectangles([(0, 0, self.width, self.height)], (12, 10, 10), deadline)
 
         # Outer decorative frame (burnished gold)
         gold_frame = (140, 105, 35)
         self._rectangles([
-            (6, 6, 628, 2),
-            (6, 472, 628, 2),
-            (6, 6, 2, 468),
-            (632, 6, 2, 468),
+            (6, 6, self.width - 12, 2),
+            (6, self.height - 8, self.width - 12, 2),
+            (6, 6, 2, self.height - 12),
+            (self.width - 8, 6, 2, self.height - 12),
         ], gold_frame, deadline)
 
         # Inner decorative frame (deep blood crimson)
         crimson_frame = (95, 20, 20)
         self._rectangles([
-            (12, 12, 616, 1),
-            (12, 467, 616, 1),
-            (12, 12, 1, 456),
-            (627, 12, 1, 456),
+            (12, 12, self.width - 24, 1),
+            (12, self.height - 13, self.width - 24, 1),
+            (12, 12, 1, self.height - 24),
+            (self.width - 13, 12, 1, self.height - 24),
         ], crimson_frame, deadline)
-
-        # Header titles; the versioned subtitle is centered for any length.
-        self._text(167, 26, 'PROJECT DIABLO II', (235, 195, 60), deadline)
-        self._text((WIDTH - len(self.subtitle) * 18) // 2, 60, self.subtitle, (185, 45, 35), deadline)
-
-        # Decorative header divider lines
-        self._rectangles([(40, 94, 560, 2)], (160, 125, 45), deadline)
-        self._rectangles([(40, 97, 560, 1)], (95, 20, 20), deadline)
 
         # Show actual inherited settings, not an unexplained DEFAULT label.
         resolution = self.labels[menu.resolution]
         if menu.resolution == 0:
-            inherited = getattr(menu, 'inherited_resolution', '640x480')
+            if hasattr(menu, 'current_resolution'):
+                inherited = menu.current_resolution()
+            else:
+                inherited = getattr(menu, 'inherited_resolution', '640x480')
             resolution = '1068x600' if inherited == 'native' else inherited
         fps = menu.fps if menu.fps_changed else getattr(menu, 'inherited_fps_level', (1 if getattr(menu, 'inherited_fps', False) else 0))
         if isinstance(fps, bool):
@@ -408,25 +437,118 @@ class Screen:
         else:
             fps_idx = 0
         overlay_levels = ('OFF', 'LEVEL 1', 'LEVEL 2', 'LEVEL 3', 'LEVEL 4')
-        # Plain numeric resolution names and 16-char filter names fit the
-        # 558-pixel text area (31 glyphs including the selection prefix).
-        rows = (
-            'RESOLUTION: ' + resolution,
-            'PERF OVERLAY: ' + overlay_levels[fps_idx],
-            'LOOT FILTER: ' + getattr(menu, 'filter_label', 'DEFAULT'),
-            'ENTER SANCTUARY / LAUNCH',
-            'EXIT TO SYSTEM',
-        )
 
-        # Highlight background box for selected row
-        sel_y = 102 + 46 * menu.row
-        self._rectangles([(34, sel_y - 4, 572, 32)], (42, 14, 14), deadline)
-        self._rectangles([
-            (34, sel_y - 4, 572, 2),
-            (34, sel_y + 26, 572, 2),
-            (34, sel_y - 4, 2, 32),
-            (604, sel_y - 4, 2, 32),
-        ], (210, 170, 60), deadline)
+        if screen_type == 'main':
+            rows = (
+                'START GAME',
+                'OPTIONS',
+                'EXIT TO SYSTEM',
+            )
+            sub = self.subtitle
+        elif screen_type == 'options':
+            edition_lbl = getattr(menu, 'edition_label', 'PROJECT DIABLO 2')
+            is_vanilla = getattr(menu, 'edition', 'pd2') in ('vanilla', 'vanilla114')
+            res_lbl = resolution
+            overlay_lbl = overlay_levels[fps_idx]
+            filter_lbl = 'N/A (VANILLA)' if is_vanilla else getattr(menu, 'filter_label', 'DEFAULT')
+            rows = (
+                'GAME: ' + edition_lbl,
+                'RESOLUTION: ' + res_lbl,
+                'PERF OVERLAY: ' + overlay_lbl,
+                'LOOT FILTER: ' + filter_lbl,
+                'CONTROLLER SETUP',
+                'BACK',
+            )
+            sub = 'OPTIONS'
+        elif screen_type == 'controller':
+            mode_lbl = getattr(menu, 'controller_mode_label', 'AUTO')
+            rows = (
+                'MODE: ' + mode_lbl,
+                'ASSIGN BUTTONS',
+                'BACK',
+            )
+            sub = 'CONTROLLER SETUP'
+        elif screen_type == 'calibrate':
+            target_lbl = getattr(menu, 'calib_target_label', 'BUTTON')
+            rem = getattr(menu, 'calib_seconds_left', 5)
+            step_idx = getattr(menu, 'calib_step', 0) + 1
+            step_tot = getattr(menu, 'calib_total_steps', 21)
+            held = getattr(menu, 'calib_held_code', None) is not None
+            is_stick = 'STICK' in target_lbl
+            if held:
+                prompt = 'RELEASE STICK' if is_stick else 'RELEASE BUTTON'
+            else:
+                prompt = ('PUSH: ' if is_stick else 'PRESS: ') + target_lbl
+            rows = (
+                prompt,
+                'TIMEOUT: ' + str(rem) + 'S - WAIT TO SKIP',
+                'STEP ' + str(step_idx) + ' OF ' + str(step_tot),
+            )
+            sub = 'CONTROLLER CALIBRATION'
+        else:
+            raise ValueError('invalid menu screen')
+
+        if menu.row not in range(len(rows)):
+            raise ValueError('invalid menu selection')
+
+        if not compact:
+            ox = (self.width - WIDTH * scale) // 2
+            oy = (self.height - HEIGHT * scale) // 2
+            title_x = ox + 167 * scale
+            title_y = oy + 26 * scale
+            sub_x = ox + (WIDTH * scale - len(sub) * adv) // 2
+            sub_y = oy + 60 * scale
+            div_x, div_w = ox + 40 * scale, 560 * scale
+            h_div1_y, h_div2_y = oy + 94 * scale, oy + 97 * scale
+            box_x, box_w, box_h = ox + 34 * scale, 572 * scale, 32 * scale
+            box_pad_y = 4 * scale
+            row_x = ox + 46 * scale
+            row_y0 = oy + 102 * scale
+            row_step = 46 * scale if len(rows) <= 5 else 38 * scale
+            clip_max_x = ox + 606 * scale
+            f_div1_y, f_div2_y = oy + 330 * scale, oy + 332 * scale
+            footer_ys = (oy + 348 * scale, oy + 382 * scale, oy + 416 * scale)
+            border_t = 2 * scale
+        else:
+            title_x = max(16, (self.width - len('PROJECT DIABLO II') * adv) // 2)
+            title_y = 18 if px == 2 else 12
+            sub_x = max(16, (self.width - len(sub) * adv) // 2)
+            sub_y = title_y + 7 * px + (6 if px == 2 else 4)
+            div_x, div_w = 24, self.width - 48
+            h_div1_y = sub_y + 7 * px + (6 if px == 2 else 4)
+            h_div2_y = h_div1_y + 3
+            footer_line_h = 7 * px + (6 if px == 2 else 4)
+            footer_ys = tuple(self.height - 18 - (3 - idx) * footer_line_h for idx in range(3))
+            f_div1_y = footer_ys[0] - 10
+            f_div2_y = f_div1_y + 2
+            row_y0 = h_div2_y + (10 if px == 2 else 6)
+            row_step = max(7 * px + 6, (f_div1_y - row_y0 - 4) // max(1, len(rows)))
+            box_x = 18
+            box_w = self.width - 36
+            box_pad_y = 3 if px == 2 else 2
+            box_h = 7 * px + box_pad_y * 2
+            row_x = box_x + 8
+            clip_max_x = box_x + box_w - 4
+            border_t = 1
+
+        # Header titles; the versioned subtitle is centered for any length.
+        draw_text(title_x, title_y, 'PROJECT DIABLO II', (235, 195, 60))
+        draw_text(sub_x, sub_y, sub, (185, 45, 35))
+
+        # Decorative header divider lines
+        self._rectangles([(div_x, h_div1_y, div_w, 2 if not compact else 1)], (160, 125, 45), deadline)
+        self._rectangles([(div_x, h_div2_y, div_w, 1)], (95, 20, 20), deadline)
+
+        # Highlight background box for selected row (skip on calibrate screen)
+        if screen_type != 'calibrate':
+            sel_y = row_y0 + row_step * menu.row
+            self._rectangles([(box_x, sel_y - box_pad_y, box_w, box_h)], (42, 14, 14), deadline)
+            self._rectangles([
+                (box_x, sel_y - box_pad_y, box_w, border_t),
+                (box_x, sel_y - box_pad_y + box_h - border_t, box_w, border_t),
+                (box_x, sel_y - box_pad_y, border_t, box_h),
+                (box_x + box_w - border_t, sel_y - box_pad_y, border_t, box_h),
+            ], (210, 170, 60), deadline)
 
         # Row labels truncate filter names to 16 chars. While a longer name is
         # held on the filter row, its full name floats in the SAME row: the
@@ -435,7 +557,7 @@ class Screen:
         # or the choice changes; the loop timer repaints keep it moving.
         float_name = None
         float_key = None
-        if menu.row == 2 and menu.filter_index > 0:
+        if screen_type == 'options' and menu.row == 3 and menu.filter_index > 0:
             candidate = filters[menu.filter_index - 1].upper()
             if len(candidate) > 16:
                 float_key = (menu.filter_index, candidate)
@@ -448,39 +570,60 @@ class Screen:
             self._float_key = None
 
         # Draw rows text
+        is_vanilla = getattr(menu, 'edition', 'pd2') in ('vanilla', 'vanilla114')
         for i, label in enumerate(rows):
-            is_sel = (i == menu.row)
+            is_sel = (i == menu.row) and (screen_type != 'calibrate')
             prefix = '> ' if is_sel else '  '
             color = (255, 225, 100) if is_sel else (185, 175, 160)
-            y = 102 + 46 * i
-            if i == 2 and float_name is not None:
+            y = row_y0 + row_step * i
+            if screen_type == 'controller' and i == 1 and getattr(menu, 'controller_mode', 'auto') != 'manual':
+                draw_text(row_x, y, '  ' + label, (95, 90, 85))
+            elif screen_type == 'options' and is_vanilla and i == 3 and not is_sel:
+                draw_text(row_x, y, prefix + label, (95, 90, 85))
+            elif screen_type == 'calibrate' and i == 0:
+                draw_text(row_x, y, '  ' + label, (255, 225, 100))
+            elif screen_type == 'options' and i == 3 and float_name is not None:
                 # Static 'LOOT FILTER: ' prefix; the full name scrolls in place.
-                self._text(46, y, prefix + 'LOOT FILTER: ', color, deadline)
-                name_x = 46 + (2 + len('LOOT FILTER: ')) * 18
-                window = 606 - name_x
-                text_w = len(float_name) * 18
-                progress = int((time.monotonic() - self._float_since) * FLOAT_SPEED) % (text_w + window)
-                self._text(name_x + window - progress, y, float_name, color, deadline, (name_x, 606))
+                draw_text(row_x, y, prefix + 'LOOT FILTER: ', color)
+                name_x = row_x + (2 + len('LOOT FILTER: ')) * adv
+                window = clip_max_x - name_x
+                text_w = len(float_name) * adv
+                progress = int((time.monotonic() - self._float_since) * FLOAT_SPEED * (adv / 18.0)) % (text_w + window)
+                draw_text(name_x + window - progress, y, float_name, color, (name_x, clip_max_x))
             else:
-                self._text(46, y, prefix + label, color, deadline)
+                draw_text(row_x, y, prefix + label, color)
 
         # Decorative footer divider lines
-        self._rectangles([(40, 330, 560, 1)], (95, 20, 20), deadline)
-        self._rectangles([(40, 332, 560, 2)], (160, 125, 45), deadline)
+        self._rectangles([(div_x, f_div1_y, div_w, 1)], (95, 20, 20), deadline)
+        self._rectangles([(div_x, f_div2_y, div_w, 2 if not compact else 1)], (160, 125, 45), deadline)
 
         # Footer control instructions
+        if screen_type == 'calibrate':
+            footer_labels = (
+                'PRESS AND RELEASE TO BIND',
+                'WAIT 5S TO SKIP BUTTON',
+                'HOLD SELECT+START: CANCEL',
+            )
+        elif screen_type == 'main':
+            footer_labels = (
+                'DPAD / ARROWS: NAVIGATE',
+                'A / START / ENTER: SELECT',
+                'B / SELECT / ESC: QUIT',
+            )
+        else:
+            footer_labels = (
+                'DPAD / ARROWS: NAVIGATE / CHANGE',
+                'A / START / ENTER: SELECT',
+                'B / SELECT / ESC: BACK',
+            )
         footer_color = (140, 130, 120)
-        for y, label in (
-            (348, 'DPAD / ARROWS: NAVIGATE / CHANGE'),
-            (382, 'A / START / ENTER: SELECT'),
-            (416, 'B / SELECT / ESC: QUIT'),
-        ):
-            self._text(46, y, label, footer_color, deadline)
+        for fy, label in zip(footer_ys, footer_labels):
+            draw_text(row_x, fy, label, footer_color)
 
         # Never clear the visible window while assembling text and borders.
         # Publish only the complete frame, in one core-X11 CopyArea request.
         self._request(62, 0, struct.pack('<IIIhhhhHH', self.pixmap, self.window,
-                      self.gc, 0, 0, 0, 0, WIDTH, HEIGHT), deadline)
+                      self.gc, 0, 0, 0, 0, self.width, self.height), deadline)
         self._roundtrip(deadline)
 
     def actions(self):

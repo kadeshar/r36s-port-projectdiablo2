@@ -441,5 +441,34 @@ class OSKUniversalControllerTests(unittest.TestCase):
         self.assertTrue(osk.is_game_kill_hotkey(osk.EV_KEY, osk.PAD_SELECT, 1, {osk.PAD_MENU}))
 
 
+class OSKMultiResolutionTests(unittest.TestCase):
+    def test_osk_draw_respects_dynamic_screen_dimensions(self):
+        for w, h in ((480, 320), (640, 480), (720, 720), (1280, 720), (1920, 1080)):
+            with self.subTest(width=w, height=h):
+                screen = osk.OSKScreen.__new__(osk.OSKScreen)
+                screen.width, screen.height = w, h
+                screen.font = osk.FONT
+                screen.maximum = 4096
+                screen.window = 10
+                screen.pixmap = 11
+                screen.gc = 12
+                screen.masks = (0xff0000, 0xff00, 0xff)
+                sent = []
+                screen._request = lambda opcode, detail, body, deadline: sent.append((opcode, body))
+                screen._roundtrip = lambda deadline: None
+                model = osk.OSKModel('Hero')
+                model.message = 'TEST'
+                screen.draw(model)
+                draws = [b for op, b in sent if op == 70]
+                self.assertTrue(draws)
+                for body in draws:
+                    for offset in range(8, len(body), 8):
+                        rx, ry, rw, rh = struct.unpack_from('<hhHH', body, offset)
+                        self.assertTrue(0 <= rx < w and 0 <= ry < h)
+                        self.assertTrue(rw > 0 and rh > 0 and rx + rw <= w and ry + rh <= h)
+                copy = next(b for op, b in sent if op == 62)
+                self.assertEqual(struct.unpack_from('<HH', copy, 20), (w, h))
+
+
 if __name__ == '__main__':
     unittest.main()

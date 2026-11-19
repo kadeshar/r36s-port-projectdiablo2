@@ -2,8 +2,8 @@
   "schema": 1,
   "version": "7.1.0.0",
   "file": "ddraw.dll",
-  "size": 439296,
-  "sha256": "cbbdba23aa5ad52e25de42504715ded7fe86d5af04803cbb73fdce9ddfa0be76",
+  "size": 439808,
+  "sha256": "f00372035c9862443d0554f545f1d88f8fb80a874ff4b112a0a2d4daaec8f673",
   "upstream": {
     "project": "FunkyFr3sh/cnc-ddraw",
     "tag": "v7.1.0.0",
@@ -21,10 +21,10 @@
     "inputs_sha256": {
       "build_cnc_ddraw_scaler.py": "1079c34da8d2e8be2b0da147b1863de90ce8f950103bc43eca4f838bb75c84bd",
       "cnc_ddraw_build.py": "3841e0e135b76e3cdd6ae71aae98585764458fc5a19ccf219b94fbf0e558c154",
-      "pd2_gdi_scaler.h": "578bc3b776ba9082fb05e2d0a50629ba834985d640fece2545d2e7de319e61f8",
-      "test_gdi_scaler.c": "37ea8c8bd84757514b94ae3fbeefc4aa302a7cfe17dc71d72614588ab0d09c9a"
+      "pd2_gdi_scaler.h": "81dad26802514cbd7e54dee428606f62b599ee64e64af0ebcb1269cb39873ab5",
+      "test_gdi_scaler.c": "d0cb22285c35842724df6d2b6d88eaeb16c3af49ae03afe689b749830ba9f4e8"
     },
-    "source_patch_sha256": "ed92ae09cd7d4958228f089592ab202f7be3058a6a23915d5a3aa9c185caf8d8"
+    "source_patch_sha256": "ce773faa40b507f433015bdc8263f8dfdbf0b3a5f0d78fb40e01a1a69cb1d3a2"
   },
   "tests": {
     "native_core": "passed",

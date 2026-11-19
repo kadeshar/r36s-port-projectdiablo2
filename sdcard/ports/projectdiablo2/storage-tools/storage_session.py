@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,12 +26,43 @@ def empty_dir(path):
         raise StorageError('Mount destination is not an empty directory: ' + str(path))
 
 
+def is_image_attached(image):
+    resolved = str(Path(image).resolve())
+    try:
+        import glob
+        for bf in glob.glob('/sys/block/loop*/loop/backing_file'):
+            try:
+                with open(bf, 'r') as f:
+                    content = f.read().strip()
+                if content and str(Path(content).resolve()) == resolved:
+                    return True
+            except (OSError, IOError):
+                continue
+    except Exception:
+        pass
+    losetup_bin = shutil.which('losetup')
+    if losetup_bin:
+        try:
+            res = subprocess.run([losetup_bin, '-j', resolved],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 universal_newlines=True)
+            if res.returncode == 0 and res.stdout.strip():
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def run(args):
-    if os.geteuid() != 0 or args.uid <= 0:
-        raise StorageError('Adapter requires root mounts and a non-root game user')
-    if not re.fullmatch(r'mnt:\[\d+\]', args.parent_ns):
+    if os.geteuid() != 0 or args.uid < 0:
+        raise StorageError('Adapter requires root mounts and a valid game user')
+    if args.parent_ns != 'none' and not re.fullmatch(r'mnt:\[\d+\]', args.parent_ns):
         raise StorageError('Missing parent mount namespace')
-    if os.readlink('/proc/self/ns/mnt') == args.parent_ns:
+    try:
+        current_ns = os.readlink('/proc/self/ns/mnt')
+    except OSError:
+        current_ns = None
+    if current_ns and current_ns == args.parent_ns and args.uid != 0:
         raise StorageError('Refusing mounts in parent namespace')
     user = pwd.getpwuid(args.uid)
     # Trust the stamp from the already-held launcher session lock (size-only)
@@ -39,9 +71,7 @@ def run(args):
     image = port / info['state_file']
     # Loop devices are global even when mounts are private. Never attach an image
     # already kept alive by an orphaned namespace or a manual diagnostic mount.
-    attached = subprocess.run(['losetup', '-j', str(image)], stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, universal_newlines=True)
-    if attached.returncode or attached.stdout.strip():
+    if is_image_attached(image):
         raise StorageError('State image already attached or loop status unavailable')
     state = port / 'storage/mounted-state'
     wine = port / info['wine_file']
@@ -81,10 +111,13 @@ def run(args):
         access_check = ('import os,sys; '
                         'bad=[p for p in sys.argv[1:] if not os.access(p,os.R_OK|os.X_OK)]; '
                         'sys.exit(1 if bad else 0)')
-        call(['runuser', '-u', user.pw_name, '--preserve-environment', '--',
-              sys.executable, '-B', '-c', access_check,
-              point / 'wine-8.0-x86/bin/wine', point / 'wine-8.0-x86/bin/wineserver',
-              port / 'runtime/box86'])
+        check_cmd = [sys.executable, '-B', '-c', access_check,
+                     point / 'wine-8.0-x86/bin/wine', point / 'wine-8.0-x86/bin/wineserver',
+                     port / 'runtime/box86']
+        if user.pw_uid != 0 and shutil.which('runuser'):
+            call(['runuser', '-u', user.pw_name, '--preserve-environment', '--'] + check_cmd)
+        else:
+            call(check_cmd)
         if args.mode == 'check':
             usage = os.statvfs(str(state))
             print('PASS: ext4 image and read-only Wine mounted in private namespace')
@@ -103,8 +136,12 @@ def run(args):
             (port / name).mkdir(exist_ok=True)
         env = dict(os.environ, HOME=user.pw_dir, USER=user.pw_name, LOGNAME=user.pw_name,
                    PD2_EXPERIMENT_ACTIVE='sd-storage-v1', PD2_EXPERIMENT_STATE=str(state))
-        child = subprocess.Popen(['runuser', '-u', user.pw_name, '--preserve-environment', '--',
-                                  'bash', str(regular(port / 'private-launcher.sh'))], env=env)
+        launcher_cmd = ['bash', str(regular(port / 'private-launcher.sh'))]
+        if user.pw_uid != 0 and shutil.which('runuser'):
+            full_cmd = ['runuser', '-u', user.pw_name, '--preserve-environment', '--'] + launcher_cmd
+        else:
+            full_cmd = launcher_cmd
+        child = subprocess.Popen(full_cmd, env=env)
         return child.wait()
     finally:
         failures = []

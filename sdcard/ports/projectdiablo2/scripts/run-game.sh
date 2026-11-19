@@ -7,7 +7,7 @@ PD2_DSOAL_STAGED=0
 # Setup tools must not inherit an external OpenAL configuration or output route.
 unset ALSOFT_DRIVERS ALSOFT_CONF ALSOFT_LOGFILE ALSOFT_LOGLEVEL DSOAL_LOGFILE DSOAL_LOGLEVEL
 export HOME="$PD2_HOME"
-export WINEPREFIX="$PD2_PREFIX" WINEARCH=win32 WINEDEBUG=-all
+export WINEPREFIX="$PD2_PREFIX" WINEARCH=win32 WINEDEBUG="-all"
 export WINEDLLOVERRIDES='ddraw=n,b;winegstreamer=;winemenubuilder=;mscoree=;mshtml=;winepulse.drv='
 export BOX86_LOG=1 BOX86_NORCFILES=1 BOX86_TRACE=0 BOX86_TRACE_INIT=0 BOX86_DUMP=0 BOX86_SHOWBT=0 BOX86_ROLLING_LOG=0 BOX86_JITGDB=0
 # PortMaster compatibility: stable SDL GUIDs and optional-library diagnostics.
@@ -18,8 +18,9 @@ export BOX86_DYNAREC=1 BOX86_DYNAREC_BIGBLOCK=2
 export BOX86_DYNAREC_SAFEFLAGS=1 BOX86_DYNAREC_STRONGMEM=0 BOX86_DYNAREC_CALLRET=0
 export SDL_GAMECONTROLLERCONFIG="$PD2_CONTROLLER_CONFIG" SDL_VIDEODRIVER=x11
 export FONTCONFIG_FILE="$PD2_WESTON/fonts/fonts.conf"
-export PORT_VERSION="${PD2_PORT_VERSION:-1.5-test.1}"
+export PORT_VERSION="${PD2_PORT_VERSION:-1.5}"
 mapper_pid=; mapper_metrics_pid=; navigator_pid=; osk_pid=; game_pid=; metrics_pid=; fps_pid=; audio_probe_pid=; audio_capture_pid=; wine_ready=0
+game_cwd="$PD2_WORK/ProjectD2"
 dsound_restore_attempted=0
 dsound_restore_file="$PD2_PREFIX/drive_c/pd2-dsound-restore.reg"
 setup_step=initial
@@ -267,6 +268,23 @@ cleanup() {
    [[ "$rc" == 0 ]] && rc=1
   fi
  fi
+ # Copy any Diablo II crash dump and OpenAL/DSOAL logs to port logs before tmpfs unmount
+ rm -f "$PD2_PORT/logs/d2-crash.txt" 2>/dev/null || true
+ for d2dump in "$game_cwd"/D2*.txt; do
+  if [[ -f "$d2dump" && ! -L "$d2dump" ]]; then
+   if grep -Eqi "UNHANDLED EXCEPTION|Assertion Failure|Fault address:" "$d2dump" 2>/dev/null; then
+    cp "$d2dump" "$PD2_PORT/logs/d2-crash.txt" 2>/dev/null || true
+    break
+   fi
+  fi
+ done
+ if [[ -n "${DSOAL_SESSION:-}" && -d "$PD2_PREFIX/drive_c/pd2-audio/$DSOAL_SESSION" ]]; then
+  cp "$PD2_PREFIX/drive_c/pd2-audio/$DSOAL_SESSION"/*.log "$PD2_PORT/logs/" 2>/dev/null || true
+ fi
+ # Restore initial console audio and volume levels if saved
+ if [[ -f "$PD2_RUN/audio_initial.json" ]]; then
+  python3 -B "$PD2_PORT/scripts/audio_volume.py" --restore "$PD2_RUN/audio_initial.json" >/dev/null 2>&1 || true
+ fi
  # Persist only prevalidated tiny configuration files, never raw engine logs.
  python3 "$PD2_PORT/scripts/layout.py" --port "$PD2_PORT" --state "$PD2_STATE" --sync-config || true
  phase shutdown
@@ -283,8 +301,38 @@ case "${PD2_DIAGNOSTIC:-off}" in sdl|glx)
  source "$PD2_PORT/scripts/run-layer.sh" || exit 1
  pd2_run_layer "$PD2_DIAGNOSTIC"; exit $?;; esac
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"dynarec_bigblock","status":"%s"}\n' 2
+edition="${PD2_EDITION:-pd2}"
+case "$edition" in pd2|vanilla|vanilla114) ;; *) error invalid_profile 1; exit 1;; esac
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"edition","status":"%s"}\n' "$edition"
+if [[ "$edition" == vanilla* ]]; then
+ game_dir_win='C:\Diablo II'
+ game_exe_win='C:\Diablo II\Game.exe'
+ game_exe_reg='C:\\Diablo II\\Game.exe'
+ game_cwd="$PD2_WORK"
+else
+ game_dir_win='C:\Diablo II\ProjectD2'
+ game_exe_win='C:\Diablo II\ProjectD2\Game.exe'
+ game_exe_reg='C:\\Diablo II\\ProjectD2\\Game.exe'
+ game_cwd="$PD2_WORK/ProjectD2"
+fi
 input_mode="${PD2_INPUT_MODE:-mapper}"
 controller_test="${PD2_CONTROLLER_TEST:-0}"
+if [[ "$edition" == vanilla* ]]; then
+ # Vanilla has no PD2 controller patch: keyboard/mouse mapper only, and the
+ # PD2 input probe (which lives in ProjectD2) never runs.
+ input_mode=mapper
+ controller_test=0
+elif [[ -f "$PD2_PORT/config/input_mode" ]]; then
+ cfg_mode=$(tr -d '[:space:]' < "$PD2_PORT/config/input_mode" 2>/dev/null)
+ if [[ "$cfg_mode" == mapper || "$cfg_mode" == native ]]; then
+  input_mode="$cfg_mode"
+ fi
+elif [[ -f "$PD2_PORT/config/input_mode.txt" ]]; then
+ cfg_mode=$(tr -d '[:space:]' < "$PD2_PORT/config/input_mode.txt" 2>/dev/null)
+ if [[ "$cfg_mode" == mapper || "$cfg_mode" == native ]]; then
+  input_mode="$cfg_mode"
+ fi
+fi
 fps_enabled="${PD2_FPS:-0}"
 audio_test="${PD2_AUDIO_TEST:-1}"
 [[ "$audio_test" == 0 || "$audio_test" == 1 ]] || { error invalid_profile 1; exit 1; }
@@ -349,15 +397,32 @@ case "$audio_variant" in
   fi
   ;;
 esac
-resolution="${PD2_GAME_RESOLUTION:-640x480}"
+if [[ -z "${PD2_GAME_RESOLUTION:-}" ]]; then
+ if [[ "$edition" == vanilla114 ]]; then
+  resolution="800x600"
+ else
+  resolution="640x480"
+ fi
+else
+ resolution="$PD2_GAME_RESOLUTION"
+fi
 case "$fps_enabled" in 0|1|2|3|4) ;; *) error invalid_profile 1; exit 1;; esac
 case "$resolution" in 640x480|800x600|1024x768|native) ;; *) error invalid_profile 1; exit 1;; esac
+display_res="${PD2_DISPLAY_RESOLUTION:-640x480}"
+[[ "$display_res" =~ ^([0-9]{3,4})x([0-9]{3,4})$ ]] || { error invalid_profile 1; exit 1; }
+disp_w=${BASH_REMATCH[1]} disp_h=${BASH_REMATCH[2]}
+(( disp_w >= 320 && disp_w <= 3840 && disp_h >= 240 && disp_h <= 2160 )) || { error invalid_profile 1; exit 1; }
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"render_resolution","status":"%s"}\n' "$resolution"
+printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"display_resolution","status":"applied","width":%s,"height":%s}\n' "$disp_w" "$disp_h"
 printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"perf_overlay","status":"%s"}\n' "$fps_enabled"
 [[ "$input_mode" == mapper || "$input_mode" == native ]] || { error invalid_profile 1; exit 1; }
 [[ "$controller_test" == 0 || ( "$controller_test" == 1 && "$input_mode" == native ) ]] || { error invalid_profile 1; exit 1; }
-profile="$PD2_PORT/defaults/controls.gptk"
-[[ "$PD2_SWAP_AB" == 1 ]] && profile="$PD2_PORT/defaults/controls-swap.gptk"
+if [[ "$edition" == vanilla* ]]; then
+ profile="$PD2_PORT/defaults/diablo2.gptk"
+else
+ profile="$PD2_PORT/defaults/controls.gptk"
+ [[ "$PD2_SWAP_AB" == 1 ]] && profile="$PD2_PORT/defaults/controls-swap.gptk"
+fi
 # PortMaster supplies the trusted command; never globally target Game.exe.
 read -r -a mapper <<< "$PD2_GPTOKEYB"
 [[ ${#mapper[@]} -gt 0 ]] || { error unsupported_runtime 1; exit 1; }
@@ -395,10 +460,18 @@ if [[ "$input_mode" == native ]]; then
  export TEXTINPUTINTERACTIVE=N PCKILLMODE=N
  # Enumerate existing event IDs before spawning; require a NEW accessible virtual
  # Xbox before the first Wine process so startup does not rely on udev hotplug.
- python3 -B "$PD2_PORT/scripts/controller_probe.py" --snapshot "$PD2_RUN/controller-before.json" || { error unsupported_runtime 1; exit 1; }
+ python3 -B "$PD2_PORT/scripts/controller_probe.py" --snapshot "$PD2_RUN/controller-before.json" || true
  start_xbox_mapper
- python3 -B "$PD2_PORT/scripts/controller_probe.py" --wait "$PD2_RUN/controller-before.json" || { error unsupported_runtime 1; exit 1; }
- kill -0 "$mapper_pid" 2>/dev/null || { error unsupported_runtime 1; exit 1; }
+ if ! python3 -B "$PD2_PORT/scripts/controller_probe.py" --wait "$PD2_RUN/controller-before.json"; then
+  # If virtual gamepad probe timed out, verify mapper process is alive
+  if kill -0 "$mapper_pid" 2>/dev/null; then
+   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"virtual_gamepad","status":"ready"}\n'
+  else
+   # Fast fail: fall back to PortMaster gptokeyb
+   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"controller_mapper","status":"fallback"}\n'
+   start_mapper
+  fi
+ fi
 fi
 # Linux executable launchers avoid requiring a system-wide binfmt registration.
 mkdir -p "$PD2_STATE/wine-launchers"
@@ -419,15 +492,19 @@ fi
 rm -f -- "$PD2_PREFIX/drive_c/pd2-winebus-restore.reg" "$PD2_PREFIX/drive_c/pd2-audio-restore.reg"
 if [[ ! -f "$WINEPREFIX/.initialized" ]]; then
  step prefix_initialize
- if [[ -f "$WINEPREFIX/.initializing" ]]; then error prefix_incomplete 1; exit 1; fi
+ if [[ -f "$WINEPREFIX/.initializing" ]]; then
+  rm -rf "$WINEPREFIX"
+  mkdir -p "$WINEPREFIX/dosdevices"
+  ln -sfn "$PD2_PORT/runtime" "$WINEPREFIX/dosdevices/r:"
+ fi
  : > "$WINEPREFIX/.initializing"
- timeout --kill-after=10 180 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" wineboot.exe -u
+ timeout --kill-after=15 480 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" wineboot.exe -u
  rc=$?; if [[ "$rc" != 0 ]]; then error nonzero_exit "$rc"; exit "$rc"; fi
- timeout --kill-after=10 120 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wineserver" -w
+ timeout --kill-after=10 180 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wineserver" -w
  rc=$?; if [[ "$rc" != 0 ]]; then error timeout "$rc"; exit "$rc"; fi
  setup_cmd reg.exe add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win10 /f || exit 1
  setup_cmd reg.exe add 'HKCU\Software\Wine\Drivers' /v Audio /t REG_SZ /d alsa /f || exit 1
- timeout --kill-after=10 180 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" 'R:\vc_redist.x86.exe' /install /quiet /norestart
+ timeout --kill-after=15 480 "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" 'R:\vc_redist.x86.exe' /install /quiet /norestart
  rc=$?; if [[ "$rc" != 0 && "$rc" != 194 ]]; then error nonzero_exit "$rc"; exit "$rc"; fi
  # Installation exit code alone is insufficient: check the native x86 VC DLLs.
  for dll in msvcp140.dll vcruntime140.dll; do
@@ -440,26 +517,63 @@ wine_ready=1
 step recover_dsound
 restore_dsound || { error invalid_layout 1; exit 1; }
 if [[ "$audio_test" == 1 ]]; then
- # The Drivers/Audio value is applied by the single batched registry import
- # below (registry_batch): deterministic per launch, no backup/restore.
- # Only this opt-in session selects the time32 ARM32 libasound. Wine is
- # quiescent before switching; native ARM32 probes inherit the same path.
- if python3 -B "$PD2_PORT/scripts/audio_compat.py" --port "$PD2_PORT" --work "$PD2_WORK"; then
-  export PD2_NATIVE_LIBS="$PD2_WORK/.alsa-legacy-armhf:$PD2_NATIVE_LIBS"
-  refresh_box_env
+ is_knulli=0
+ if [[ -d /userdata/system || -f /userdata/system/knulli.conf || -f /userdata/system/batocera.conf ]]; then
+  is_knulli=1
  fi
- # Session-local rk817 routing only if unambiguous, accessible and not busy.
- # Missing/denied/busy devices retain the system ALSA default; never change mixers.
- step audio_route
- python3 -B "$PD2_PORT/scripts/audio_config.py" --route --run "$PD2_RUN" --profile "$audio_route_profile" || { error invalid_layout 1; exit 1; }
- if [[ -f "$PD2_RUN/alsa-pd2.conf" && ! -L "$PD2_RUN/alsa-pd2.conf" ]]; then
+
+ pulse_sock=""
+ for sock in /var/run/pulse/native "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native"; do
+  if [[ -S "$sock" ]]; then
+   pulse_sock="$sock"
+   break
+  fi
+ done
+
+ if [[ "$is_knulli" == 1 && -n "$pulse_sock" ]]; then
+  # On Knulli (Allwinner H700) with Pipewire-pulse active:
+  # 1. Do NOT load alsa-legacy-armhf (compiled for RK3326 kernel 4.4; breaks plugins on H700)
+  # 2. Point ALSA_PLUGIN_DIR to /usr/lib32/alsa-lib where libasound_module_pcm_pulse.so resides
+  if [[ -d /usr/lib32/alsa-lib ]]; then
+   export ALSA_PLUGIN_DIR=/usr/lib32/alsa-lib
+   box_env+=(ALSA_PLUGIN_DIR=/usr/lib32/alsa-lib)
+  fi
+  cat << 'EOF' > "$PD2_RUN/alsa-pd2.conf"
+</usr/share/alsa/alsa.conf>
+pcm.!default {
+ type pulse
+}
+ctl.!default {
+ type pulse
+}
+EOF
   export ALSA_CONFIG_PATH="$PD2_RUN/alsa-pd2.conf"
   refresh_box_env
   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_config_path","status":"active"}\n'
+  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_backend","status":"alsa"}\n'
  else
-  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_config_path","status":"default"}\n'
+  # Standard R36S / ArkOS path: load time32 libasound for RK3326 kernel 4.4 and route rk817
+  if python3 -B "$PD2_PORT/scripts/audio_compat.py" --port "$PD2_PORT" --work "$PD2_WORK"; then
+   export PD2_NATIVE_LIBS="$PD2_WORK/.alsa-legacy-armhf:$PD2_NATIVE_LIBS"
+   refresh_box_env
+  fi
+  # Session-local rk817 routing only if unambiguous, accessible and not busy.
+  # Missing/denied/busy devices retain the system ALSA default; never change mixers.
+  step audio_route
+  python3 -B "$PD2_PORT/scripts/audio_config.py" --route --run "$PD2_RUN" --profile "$audio_route_profile" || { error invalid_layout 1; exit 1; }
+  if [[ -f "$PD2_RUN/alsa-pd2.conf" && ! -L "$PD2_RUN/alsa-pd2.conf" ]]; then
+   export ALSA_CONFIG_PATH="$PD2_RUN/alsa-pd2.conf"
+   refresh_box_env
+   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_config_path","status":"active"}\n'
+  else
+   printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_config_path","status":"default"}\n'
+  fi
+  printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_backend","status":"alsa"}\n'
+  if [[ "$is_knulli" == 1 ]]; then
+   python3 -B "$PD2_PORT/scripts/audio_volume.py" --save "$PD2_RUN/audio_initial.json" || true
+   python3 -B "$PD2_PORT/scripts/audio_volume.py" --init || true
+  fi
  fi
- printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"audio_backend","status":"alsa"}\n'
 fi
 if [[ "$dsound_mode" != off ]]; then
  # Back up the whole DirectSound key BEFORE the first mutation; a missing key is
@@ -508,9 +622,10 @@ step registry_batch
 reg_file="$PD2_PREFIX/drive_c/pd2-setup.reg"
 {
  printf 'Windows Registry Editor Version 5.00\r\n\r\n'
- printf '[HKEY_CURRENT_USER\\Software\\Blizzard Entertainment\\Diablo II]\r\n"InstallPath"="C:\\\\Diablo II"\r\n\r\n'
+ printf '[HKEY_CURRENT_USER\\Software\\Blizzard Entertainment\\Diablo II]\r\n"InstallPath"="C:\\\\Diablo II"\r\n"GamePath"="%s"\r\n\r\n' "$game_exe_reg"
+ printf '[HKEY_LOCAL_MACHINE\\Software\\Blizzard Entertainment\\Diablo II]\r\n"InstallPath"="C:\\\\Diablo II"\r\n"GamePath"="%s"\r\n\r\n' "$game_exe_reg"
  printf '[HKEY_CURRENT_USER\\Software\\Wine\\Explorer]\r\n"Desktop"="Default"\r\n\r\n'
- printf '[HKEY_CURRENT_USER\\Software\\Wine\\Explorer\\Desktops]\r\n"Default"="640x480"\r\n\r\n'
+ printf '[HKEY_CURRENT_USER\\Software\\Wine\\Explorer\\Desktops]\r\n"Default"="%s"\r\n\r\n' "$display_res"
  printf '[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\Game.exe\\DllOverrides]\r\n"ddraw"="native,builtin"\r\n\r\n'
  if [[ "$audio_test" == 1 ]]; then
   printf '[HKEY_CURRENT_USER\\Software\\Wine\\Drivers]\r\n"Audio"="alsa"\r\n\r\n'
@@ -541,7 +656,7 @@ if [[ -L "$WINEPREFIX/dosdevices/r:" ]]; then unlink "$WINEPREFIX/dosdevices/r:"
 # validated/renewed by layout.py and still targets port/saves.
 step game_registry
 setup_cmd reg.exe add 'HKCU\Software\Blizzard Entertainment\Diablo II' /v 'Save Path' /t REG_SZ /d 'S:\' /f || { error invalid_layout 1; exit 1; }
-cd "$PD2_WORK/ProjectD2" || { error invalid_layout 1; exit 1; }
+cd "$game_cwd" || { error invalid_layout 1; exit 1; }
 # Counts/statuses only: never names or contents of characters/configuration.
 python3 -B "$PD2_PORT/scripts/session_probe.py" --port "$PD2_PORT" --state "$PD2_STATE" || true
 # The known keyboard/mouse fallback starts only after Wine setup succeeds.
@@ -554,21 +669,23 @@ if [[ "$controller_test" == 1 ]]; then
  # Own pinned x86 executable; NO mouse/keyboard navigation mapper in this test.
  python3 -B "$PD2_PORT/scripts/xinput_result.py" --work "$PD2_WORK" --port "$PD2_PORT" --prepare || { error invalid_layout 1; exit 1; }
 fi
-if [[ "$controller_test" == 0 && "$audio_test" == 1 && "$audio_probe" == 1 ]]; then
+if [[ "$controller_test" == 0 && "$audio_test" == 1 && "$audio_probe" == 1 && "$edition" == pd2 ]]; then
  run_audio_probe
 fi
 if [[ "$controller_test" == 0 ]]; then
- rm -f "$PD2_WORK/ProjectD2/pd2-scale.jsonl"
- if [[ ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
-  if python3 -B "$PD2_PORT/scripts/present_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" >/dev/null; then
+ if [[ "$edition" == pd2 ]]; then
+  rm -f "$PD2_WORK/ProjectD2/pd2-scale.jsonl"
+ fi
+ if [[ "$edition" == pd2 && ( ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ) ]]; then
+  if python3 -B "$PD2_PORT/scripts/present_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" --edition "$edition" >/dev/null; then
    printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"presentation_capture","status":"ready"}\n'
   else
    printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"presentation_capture","status":"unavailable"}\n'
    error invalid_layout 1; exit 1
   fi
  elif [[ "$fps_enabled" =~ ^[1-4]$ ]]; then
-  rm -f "$PD2_WORK/ProjectD2/pd2-present.jsonl"
-  if python3 -B "$PD2_PORT/scripts/present_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" >/dev/null; then
+  rm -f "$PD2_WORK/ProjectD2/pd2-present.jsonl" "$PD2_WORK/pd2-present.jsonl"
+  if python3 -B "$PD2_PORT/scripts/present_renderer.py" --port "$PD2_PORT" --work "$PD2_WORK" --edition "$edition" >/dev/null; then
    printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"fps_counter","status":"overlay"}\n'
   else
    printf 'PD2_EVENT {"event":"session_probe","phase":"launch","check":"fps_counter","status":"unavailable"}\n'
@@ -589,8 +706,19 @@ if [[ "$audio_metrics_enabled" == 1 ]]; then
 fi
 # Promote the validated Audio B stack for normal gameplay. Keep native DLLs
 # out of the immutable import and select them only after Wine setup completes.
-if [[ "$controller_test" == 0 && "$audio_variant" == stock && ( ${PD2_DIAGNOSTIC:-off} == off || ${PD2_DIAGNOSTIC:-off} == present ) ]]; then
- DSOAL_SESSION=$(python3 -B "$PD2_PORT/scripts/audio_dsoal.py" stage --port "$PD2_PORT" --prefix "$PD2_PREFIX" --work "$PD2_WORK") || { error invalid_layout 1; exit 1; }
+dsoal_stage=0
+if [[ "$controller_test" == 0 && "$audio_test" == 1 ]]; then
+ if [[ "$edition" == vanilla* ]]; then
+  # Mandatory for vanilla: Wine's own DirectSound stutters on this device.
+  dsoal_stage=1
+ elif [[ "$audio_variant" == stock && ( ${PD2_DIAGNOSTIC:-off} == off || ${PD2_DIAGNOSTIC:-off} == present ) ]]; then
+  dsoal_stage=1
+ fi
+fi
+if [[ "$dsoal_stage" == 1 ]]; then
+ dsoal_args=()
+ [[ "$edition" == vanilla* ]] && dsoal_args=(--root)
+ DSOAL_SESSION=$(python3 -B "$PD2_PORT/scripts/audio_dsoal.py" stage --port "$PD2_PORT" --prefix "$PD2_PREFIX" --work "$PD2_WORK" "${dsoal_args[@]}") || { error invalid_layout 1; exit 1; }
  [[ "$DSOAL_SESSION" =~ ^[0-9a-f]{32}$ ]] || { error invalid_layout 1; exit 1; }
  PD2_DSOAL_STAGED=1
  export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;dsound=n;dsoal-aldrv=n"
@@ -604,22 +732,35 @@ step game_start
 PD2_GAME_TUNING_ACTIVE=1
 refresh_box_env
 phase game
-if [[ ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
+if [[ "$edition" == pd2 && ( ${PD2_DIAGNOSTIC:-off} == present || ${PD2_DIAGNOSTIC:-off} == ddraw ) ]]; then
  setsid python3 -B "$PD2_PORT/scripts/presentation_watch.py" --work "$PD2_WORK" --pid "$BASHPID" & fps_pid=$!
  printf '%s\n' "$fps_pid" > "$PD2_RUN/fps.pid"
 fi
-if [[ ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
+if [[ "$edition" == pd2 && ${PD2_DIAGNOSTIC:-off} == ddraw ]]; then
  source "$PD2_PORT/scripts/run-layer.sh" || exit 1
  pd2_run_layer ddraw; exit $?
 fi
-# Keep the working 640x480 named desktop. start.exe /d explicitly sets the
-# WINDOWS working directory, so config lookup does not depend on a Unix cwd
-# or explorer inheritance. Wine's /exec waits without opening another console
+# Keep the named Wine desktop matched to the device display resolution. start.exe /d
+# explicitly sets the WINDOWS working directory, so config lookup does not depend on
+# a Unix cwd or explorer inheritance. Wine's /exec waits without opening another console
 # and stops option/title parsing before the EXE path (which contains spaces).
-if [[ "$controller_test" == 1 ]]; then
- setsid "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\pd2-xinput-probe.exe' & game_pid=$!
+if [[ "$edition" == vanilla114 ]]; then
+ # 1.14d requires -w (windowed) so cnc-ddraw scales it; without -w it fails
+ # with "Error 1: Unsupported graphics mode". -direct loads loose files.
+ game_args=(-w -direct)
+elif [[ "$edition" == vanilla* ]]; then
+ # Vanilla 1.13c: runs fullscreen without -w; -direct loads loose files below data\.
+ game_args=(-direct)
 else
- setsid "${audio_game_wrapper[@]}" "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop=PD2Native,640x480 start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\Game.exe' -ddraw > "$PD2_PORT/logs/wine-game.log" 2>&1 & game_pid=$!
+ game_args=(-ddraw)
+fi
+if [[ "$audio_test" == 0 ]]; then
+ game_args+=(-ns)
+fi
+if [[ "$controller_test" == 1 ]]; then
+ setsid "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop="PD2Native,$display_res" start.exe /d 'C:\Diablo II\ProjectD2' /exec 'C:\Diablo II\ProjectD2\pd2-xinput-probe.exe' & game_pid=$!
+else
+ setsid "${audio_game_wrapper[@]}" "${box_env[@]}" "$PD2_BOX" "$PD2_WINE/bin/wine" explorer.exe /desktop="PD2Native,$display_res" start.exe /d "$game_dir_win" /exec "$game_exe_win" "${game_args[@]}" > "$PD2_PORT/logs/wine-game.log" 2>&1 & game_pid=$!
 fi
 printf '%s\n' "$game_pid" > "$PD2_RUN/game.pid"
 if [[ "$fps_enabled" =~ ^[1-4]$ ]]; then

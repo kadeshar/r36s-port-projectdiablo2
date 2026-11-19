@@ -134,6 +134,19 @@ class TestFPSTracker(unittest.TestCase):
         self.assertAlmostEqual(data['avg_fps'], 25.0, places=1)
         self.assertEqual(data['low_1pct'], 20.0)
 
+    def test_telemetry_file_reading_vanilla_root_layout(self):
+        with tempfile.TemporaryDirectory() as td:
+            present_file = os.path.join(td, 'pd2-present.jsonl')
+            tracker = fps_tracker.FPSTracker(work_dir=td)
+            try:
+                with open(present_file, 'w', encoding='ascii') as f:
+                    f.write('{"event":1,"backend":1,"frames":30,"duration_ms":1000,"width":640,"height":480}\n')
+                data = tracker.update()
+                self.assertEqual(data['fps'], 30)
+                self.assertEqual(data['frametime_ms'], 33.3)
+            finally:
+                tracker.close()
+
     def test_reset_data(self):
         self.tracker.record_frame(16.6)
         self.tracker.record_frame(33.3)
@@ -385,8 +398,8 @@ class TestX11HUDVersion(unittest.TestCase):
             self.assertEqual(x11_hud.resolve_port_version('1.5'), '1.5')
 
             # 4. X11HUD initialization
-            hud = x11_hud.X11HUD(level=4, version='1.5-test.1')
-            self.assertEqual(hud.version, '1.5-test.1')
+            hud = x11_hud.X11HUD(level=4, version='1.5-test.11')
+            self.assertEqual(hud.version, '1.5-test.11')
             self.assertEqual(hud.width, x11_hud.LEVEL4_WIDTH)
             self.assertEqual(hud.width, 215)
 
@@ -403,6 +416,15 @@ class TestX11HUDVersion(unittest.TestCase):
                 os.environ['PORT_VERSION'] = orig_port_ver
             else:
                 os.environ.pop('PORT_VERSION', None)
+
+    def test_hud_centers_level2_using_detected_screen_width(self):
+        hud = x11_hud.X11HUD(level=2, version='1.5-test.11')
+        self.assertEqual(hud.x, (640 - x11_hud.LEVEL2_WIDTH) // 2)
+        hud.screen_width = 1280
+        hud.screen_height = 720
+        self.assertEqual(hud._get_default_x(2), (1280 - x11_hud.LEVEL2_WIDTH) // 2)
+        hud.screen_width = 480
+        self.assertEqual(hud._get_default_x(2), (480 - x11_hud.LEVEL2_WIDTH) // 2)
 
 if __name__ == '__main__':
     unittest.main()
